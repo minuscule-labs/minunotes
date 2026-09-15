@@ -7,6 +7,7 @@ import {
   List,
   ListChecks,
   ListOrdered,
+  MoreHorizontal,
   Plus,
   Quote,
   Redo2,
@@ -22,6 +23,8 @@ import { minuNotesResourceUrlResolver } from '../lib/resource-urls';
 import { getMermaidTheme, useNoteTheme } from '../lib/themes';
 
 type EditorViewLike = Parameters<NonNullable<ComponentProps<typeof MarkdownEditor>['onViewReady']>>[0];
+
+const DEFAULT_TABLE_INSERTION = { columns: 2, bodyRows: 1 } as const;
 
 type WikiLinksProp = ComponentProps<typeof MarkdownEditor>['wikiLinks'];
 type CommentsProp = ComponentProps<typeof MarkdownEditor>['comments'];
@@ -68,6 +71,8 @@ export function NoteEditor({
   const [uploadingImage, setUploadingImage] = useState(false);
   const [editorReady, setEditorReady] = useState(false);
   const [blockMenuOpen, setBlockMenuOpen] = useState(false);
+  const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [imageTab, setImageTab] = useState<'upload' | 'link'>('upload');
   const [imageUrl, setImageUrl] = useState('');
@@ -78,11 +83,34 @@ export function NoteEditor({
   const editorViewRef = useRef<EditorViewLike | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const editorKeydownCleanupRef = useRef<(() => void) | null>(null);
+  const toolbarSurfaceRef = useRef<HTMLDivElement | null>(null);
   const noteTheme = useNoteTheme();
   const mermaid = useMemo(() => ({ theme: getMermaidTheme(noteTheme) }), [noteTheme]);
   const titleValue = title === 'Untitled note' || title === 'Untitled template' ? '' : title;
 
   useEffect(() => () => editorKeydownCleanupRef.current?.(), []);
+
+  useEffect(() => {
+    if (!blockMenuOpen && !historyMenuOpen) return;
+
+    const dismissMenus = (event: PointerEvent) => {
+      if (event.target instanceof Node && toolbarSurfaceRef.current?.contains(event.target)) return;
+      setBlockMenuOpen(false);
+      setHistoryMenuOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setBlockMenuOpen(false);
+      setHistoryMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', dismissMenus, true);
+    document.addEventListener('keydown', dismissOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', dismissMenus, true);
+      document.removeEventListener('keydown', dismissOnEscape);
+    };
+  }, [blockMenuOpen, historyMenuOpen]);
 
   useEffect(() => {
     if (!reviewFocus || reviewFocus.detached) return;
@@ -187,12 +215,30 @@ export function NoteEditor({
     { label: 'Numbered list', icon: ListOrdered, markdown: '1. ' },
     { label: 'To-do list', icon: ListChecks, markdown: '- [ ] ' },
     { label: 'Quote', icon: Quote, markdown: '> ' },
-    { label: 'Table', icon: Table2, markdown: '| Column 1 | Column 2 |\n| --- | --- |\n|  |  |' },
   ];
 
+  const insertTable = () => {
+    editorRef.current?.insertTable();
+    setBlockMenuOpen(false);
+  };
+
   const openImagePicker = () => {
+    setBlockMenuOpen(false);
+    setHistoryMenuOpen(false);
     setImagePickerError(null);
     setImagePickerOpen(true);
+  };
+
+  const toggleHistoryMenu = () => {
+    setBlockMenuOpen(false);
+    if (historyMenuOpen) {
+      setHistoryMenuOpen(false);
+      return;
+    }
+
+    const state = editorRef.current?.getState();
+    setHistoryState({ canUndo: state?.canUndo ?? false, canRedo: state?.canRedo ?? false });
+    setHistoryMenuOpen(true);
   };
 
   const closeImagePicker = () => {
@@ -255,6 +301,9 @@ export function NoteEditor({
             onChange={onContentChange}
             readOnly={readOnly}
             mode={editorMode}
+            floatingToolbar
+            tableActions
+            tableInsertion={DEFAULT_TABLE_INSERTION}
             placeholder="Start typing..."
             minHeight={520}
             codeLanguages={editorCodeLanguages}
@@ -499,11 +548,15 @@ export function NoteEditor({
           className="fixed inset-x-0 bottom-3 z-40 px-3 sm:bottom-4 sm:px-6 md:left-72 md:right-0"
           style={keyboardOffset ? { bottom: keyboardOffset + 12 } : undefined}
         >
-          <div className="mx-auto flex max-w-3xl flex-col items-center">
+          <div ref={toolbarSurfaceRef} className="mx-auto flex max-w-3xl flex-col items-center">
             {blockMenuOpen ? (
-              <div className="mb-3 rounded-2xl border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 p-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85">
-                <p className="mb-2 px-1 text-xs font-medium uppercase tracking-wide text-[var(--notes-muted)]">
-                  Basic blocks
+              <fieldset
+                id="note-insert-menu"
+                className="mb-3 rounded-2xl border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 p-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85"
+                aria-label="Insert content"
+              >
+                <p className="mb-2 px-1 font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
+                  Insert
                 </p>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {blockItems.map((item) => {
@@ -512,65 +565,98 @@ export function NoteEditor({
                       <button
                         key={item.label}
                         type="button"
-                        className="flex items-center gap-3 rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-3 text-left text-sm font-medium hover:bg-[var(--notes-hover)]"
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          insertMarkdown(item.markdown);
-                        }}
+                        className="flex items-center gap-3 rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-3 text-left font-medium text-sm hover:bg-[var(--notes-hover)]"
+                        onPointerDown={(event) => event.preventDefault()}
+                        onClick={() => insertMarkdown(item.markdown)}
                       >
                         <Icon className="h-5 w-5 text-[var(--notes-muted)]" />
                         <span>{item.label}</span>
                       </button>
                     );
                   })}
+                  <button
+                    type="button"
+                    className="flex items-center gap-3 rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-3 text-left font-medium text-sm hover:bg-[var(--notes-hover)]"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={insertTable}
+                  >
+                    <Table2 className="h-5 w-5 text-[var(--notes-muted)]" />
+                    <span>Table</span>
+                  </button>
+                  {onImageUpload ? (
+                    <button
+                      type="button"
+                      className="flex items-center gap-3 rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-3 text-left font-medium text-sm hover:bg-[var(--notes-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Insert image"
+                      disabled={uploadingImage || !editorReady}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={openImagePicker}
+                    >
+                      <Image className="h-5 w-5 text-[var(--notes-muted)]" />
+                      <span>Image</span>
+                    </button>
+                  ) : null}
                 </div>
-              </div>
+              </fieldset>
             ) : null}
-            <div className="inline-flex w-fit max-w-full items-center gap-1 overflow-x-auto rounded-full border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 px-2 py-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85">
+            {historyMenuOpen ? (
+              <fieldset
+                id="note-editor-actions-menu"
+                className="mb-3 grid min-w-44 gap-1 rounded-xl border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 p-2 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85"
+                aria-label="Editor actions"
+              >
+                <button
+                  type="button"
+                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-left font-medium text-sm hover:bg-[var(--notes-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!editorReady || !historyState.canUndo}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    editorRef.current?.undo();
+                    setHistoryMenuOpen(false);
+                  }}
+                >
+                  <Undo2 className="h-4 w-4 text-[var(--notes-muted)]" />
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  className="flex items-center gap-3 rounded-lg px-3 py-2 text-left font-medium text-sm hover:bg-[var(--notes-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!editorReady || !historyState.canRedo}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    editorRef.current?.redo();
+                    setHistoryMenuOpen(false);
+                  }}
+                >
+                  <Redo2 className="h-4 w-4 text-[var(--notes-muted)]" />
+                  Redo
+                </button>
+              </fieldset>
+            ) : null}
+            <div className="inline-flex w-fit max-w-full items-center gap-1 rounded-full border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 px-2 py-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85">
               <button
                 type="button"
                 className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-                aria-label={blockMenuOpen ? 'Close block menu' : 'Open block menu'}
-                onClick={() => setBlockMenuOpen((open) => !open)}
+                aria-label={blockMenuOpen ? 'Close insert menu' : 'Open insert menu'}
+                aria-controls={blockMenuOpen ? 'note-insert-menu' : undefined}
+                aria-expanded={blockMenuOpen}
+                onClick={() => {
+                  setHistoryMenuOpen(false);
+                  setBlockMenuOpen((open) => !open);
+                }}
               >
                 {blockMenuOpen ? <X className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
               </button>
               <button
                 type="button"
                 className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-                aria-label="Undo"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  editorRef.current?.undo();
-                }}
+                aria-label={historyMenuOpen ? 'Close editor actions' : 'Open editor actions'}
+                aria-controls={historyMenuOpen ? 'note-editor-actions-menu' : undefined}
+                aria-expanded={historyMenuOpen}
+                onClick={toggleHistoryMenu}
               >
-                <Undo2 className="h-5 w-5" />
+                <MoreHorizontal className="h-5 w-5" />
               </button>
-              <button
-                type="button"
-                className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-                aria-label="Redo"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  editorRef.current?.redo();
-                }}
-              >
-                <Redo2 className="h-5 w-5" />
-              </button>
-              {onImageUpload ? (
-                <button
-                  type="button"
-                  className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)] disabled:opacity-50"
-                  aria-label="Insert image"
-                  disabled={uploadingImage || !editorReady}
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    openImagePicker();
-                  }}
-                >
-                  <Image className="h-5 w-5" />
-                </button>
-              ) : null}
             </div>
           </div>
         </div>
