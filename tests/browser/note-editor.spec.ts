@@ -268,10 +268,70 @@ test('inserts a heading through the slash-command menu', async ({ page }) => {
   await api.expectSavedContent('# Browser heading');
 });
 
+test('renders a table reached later in a long note', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  const longPrefix = Array.from({ length: 400 }, (_, index) => `Paragraph ${index}.`).join('\n\n');
+  api.notes.set(browserFixture.source.id, {
+    ...browserFixture.source,
+    content: `${longPrefix}\n\n## Table\n\n| Feature | Live | Shared | Source preserved |\n| --- | :---: | :---: | :---: |\n| Callouts | Yes | Yes | Yes |\n| Mermaid | Yes | Yes | Yes |`,
+  });
+
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  await page.locator('.cm-content').click();
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+ArrowDown' : 'Control+End');
+
+  await expect(page.locator('.me-table-widget')).toBeVisible();
+  await expect(page.locator('.me-table-render')).toContainText('Source preserved');
+});
+
+test('inserts a default table directly and keeps history actions in overflow', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+
+  const editor = page.locator('.cm-content');
+  await editor.click();
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+  await page.keyboard.press('Backspace');
+
+  await expect(page.getByLabel('Undo')).toHaveCount(0);
+  await expect(page.getByLabel('Insert image')).toHaveCount(0);
+  await page.getByLabel('Open insert menu').click();
+  await expect(page.getByLabel('Insert content')).toBeVisible();
+  await page.getByRole('button', { name: 'Table', exact: true }).click();
+
+  const table = '\n\n|  |  |\n| --- | --- |\n|  |  |\n\n';
+  await api.expectSavedContent(table);
+  await expect(page.locator('.me-table-picker')).toHaveCount(0);
+
+  const tableActions = page.locator('.me-table-actions');
+  const tableActionsTrigger = page.getByRole('button', { name: 'Table actions' });
+  await expect(tableActionsTrigger.locator('svg')).toBeVisible();
+  await expect(tableActionsTrigger.locator('svg circle')).toHaveCount(3);
+  await expect(tableActionsTrigger).not.toContainText('…');
+  await expect(tableActions).toHaveCSS('margin-bottom', '0px');
+  const tableActionsBounds = await tableActions.boundingBox();
+  const tableActionsTriggerBounds = await tableActionsTrigger.boundingBox();
+  expect(tableActionsBounds).not.toBeNull();
+  expect(tableActionsTriggerBounds).not.toBeNull();
+  if (!tableActionsBounds || !tableActionsTriggerBounds) throw new Error('Table actions bounds unavailable');
+  expect(Math.abs(tableActionsTriggerBounds.x - tableActionsBounds.x)).toBeLessThan(1);
+
+  await page.getByLabel('Open editor actions').click();
+  await expect(page.getByRole('group', { name: 'Editor actions' })).toBeVisible();
+  await page.getByRole('button', { name: 'Undo' }).click();
+  await api.expectSavedContent('');
+
+  await page.getByLabel('Open editor actions').click();
+  await page.getByRole('button', { name: 'Redo' }).click();
+  await api.expectSavedContent(table);
+});
+
 test('inserts an external image through the app image picker', async ({ page }) => {
   const api = await mockBrowserApi(page);
   await page.goto(`/notes/${browserFixture.source.id}`);
 
+  await page.getByLabel('Open insert menu').click();
   await page.getByLabel('Insert image').click();
   await page.getByRole('button', { name: 'Link', exact: true }).click();
   await page.getByPlaceholder('Paste the image link…').fill('https://example.com/browser.png');
@@ -286,6 +346,7 @@ test('uploads an app-owned image and saves its stable attachment URL', async ({ 
   const api = await mockBrowserApi(page);
   await page.goto(`/notes/${browserFixture.source.id}`);
 
+  await page.getByLabel('Open insert menu').click();
   await page.getByLabel('Insert image').click();
   await page.locator('input[type="file"]').setInputFiles({
     name: 'browser.png',
@@ -302,6 +363,7 @@ test('keeps the editor open and reports an app-owned image upload failure', asyn
   await mockBrowserApi(page, { uploadFails: true });
   await page.goto(`/notes/${browserFixture.source.id}`);
 
+  await page.getByLabel('Open insert menu').click();
   await page.getByLabel('Insert image').click();
   await page.locator('input[type="file"]').setInputFiles({
     name: 'browser.png',
