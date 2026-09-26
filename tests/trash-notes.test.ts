@@ -75,11 +75,11 @@ async function setupTrashNotesApp() {
   return { app, db, schema, storage, users };
 }
 
-async function createFolder(app: Hono, title: string, user = 'a') {
+async function createFolder(app: Hono, title: string, user = 'a', parentFolderId?: string) {
   const response = await app.request('/api/folders', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-user': user },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, ...(parentFolderId ? { parentFolderId } : {}) }),
   });
   expect(response.status).toBe(201);
   return ((await response.json()) as { folder: { id: string } }).folder;
@@ -107,6 +107,182 @@ afterEach(async () => {
 });
 
 describe('note Trash lifecycle', () => {
+  it('conditionally trashes only the original untouched UI draft', async () => {
+    const { app, db, schema } = await setupTrashNotesApp();
+    const folder = await createFolder(app, 'Drafts');
+    const create = async (body: object = {}, targetFolderId = folder.id) => {
+      const response = await app.request(`/api/folders/${targetFolderId}/notes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(201);
+      return ((await response.json()) as { note: { id: string; createdAt: string; updatedAt: string } }).note;
+    };
+    const trashDraft = (note: { id: string; createdAt: string; updatedAt: string }) =>
+      app.request(`/api/notes/${note.id}/empty-draft`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ createdAt: note.createdAt, updatedAt: note.updatedAt }),
+      });
+
+    const empty = await create();
+    expect((await trashDraft(empty)).status).toBe(200);
+    const [trashed] = await db.select().from(schema.notes).where(eq(schema.notes.id, empty.id));
+    expect(trashed.deletedAt).toBeInstanceOf(Date);
+    expect((await trashDraft(empty)).status).toBe(404);
+
+    const titled = await create({ title: 'Kept' });
+    const filled = await create({ content: 'Kept' });
+    const template = await create({ type: 'template' });
+    for (const note of [titled, filled, template]) expect((await trashDraft(note)).status).toBe(409);
+
+    const shared = await create();
+    expect(
+      (
+        await app.request(`/api/notes/${shared.id}/share-link`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).status
+    ).toBe(201);
+    expect((await trashDraft(shared)).status).toBe(200);
+    const [trashedShared] = await db.select().from(schema.notes).where(eq(schema.notes.id, shared.id));
+    expect(trashedShared.deletedAt).toBeInstanceOf(Date);
+
+    const changed = await create();
+    const update = await app.request(`/api/notes/${changed.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'Changed in another tab' }),
+    });
+    expect(update.status).toBe(200);
+    expect((await trashDraft(changed)).status).toBe(409);
+    for (const note of [titled, filled, template, changed]) {
+      const [stored] = await db.select().from(schema.notes).where(eq(schema.notes.id, note.id));
+      expect(stored.deletedAt).toBeNull();
+    }
+  });
+
+  it('trashes empty drafts even when shared directly or through their folder', async () => {
+    const { app, db, schema, users } = await setupTrashNotesApp();
+    const folder = await createFolder(app, 'Drafts');
+    const create = async (targetFolderId = folder.id) => {
+      const response = await app.request(`/api/folders/${targetFolderId}/notes`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      return ((await response.json()) as { note: { id: string; createdAt: string; updatedAt: string } }).note;
+    };
+    const trashDraft = (note: { id: string; createdAt: string; updatedAt: string }) =>
+      app.request(`/api/notes/${note.id}/empty-draft`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ createdAt: note.createdAt, updatedAt: note.updatedAt }),
+      });
+
+    const granted = await create();
+    await db.insert(schema.collaborationGrants).values({
+      id: 'empty_draft_note_grant',
+      ownerUserId: users[0].id,
+      granteeUserId: users[1].id,
+      noteId: granted.id,
+      folderId: null,
+      role: 'viewer',
+      createdByUserId: users[0].id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    expect((await trashDraft(granted)).status).toBe(200);
+
+    const invited = await create();
+    await db.insert(schema.collaborationInvitations).values({
+      id: 'empty_draft_note_invitation',
+      ownerUserId: users[0].id,
+      invitedEmailKey: 'invitee@example.com',
+      noteId: invited.id,
+      folderId: null,
+      role: 'viewer',
+      tokenHash: 'empty-draft-invitation-token',
+      invitedByUserId: users[0].id,
+      expiresAt: new Date(Date.now() + 60_000),
+      acceptedAt: null,
+      acceptedByUserId: null,
+      revokedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    expect((await trashDraft(invited)).status).toBe(200);
+
+    const sharedFolder = await createFolder(app, 'Shared parent');
+    await db.insert(schema.collaborationGrants).values({
+      id: 'empty_draft_folder_grant',
+      ownerUserId: users[0].id,
+      granteeUserId: users[1].id,
+      noteId: null,
+      folderId: sharedFolder.id,
+      role: 'viewer',
+      createdByUserId: users[0].id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(schema.folderShareLinks).values({
+      id: 'empty_draft_folder_share_link',
+      userId: users[0].id,
+      folderId: sharedFolder.id,
+      tokenHash: 'empty-draft-folder-share-token',
+      token: 'empty-draft-folder-token',
+      permission: 'read',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      expiresAt: null,
+      revokedAt: null,
+    });
+    const childFolder = await createFolder(app, 'Shared child', 'a', sharedFolder.id);
+    const inSharedFolder = await create(childFolder.id);
+    expect((await trashDraft(inSharedFolder)).status).toBe(200);
+
+    for (const note of [granted, invited, inSharedFolder]) {
+      const [stored] = await db.select().from(schema.notes).where(eq(schema.notes.id, note.id));
+      expect(stored.deletedAt).toBeInstanceOf(Date);
+    }
+  });
+
+  it('detects edits reverted within the note timestamp resolution', async () => {
+    const { app, db, schema } = await setupTrashNotesApp();
+    const folder = await createFolder(app, 'Drafts');
+    const response = await app.request(`/api/folders/${folder.id}/notes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const note = ((await response.json()) as { note: { id: string; createdAt: string; updatedAt: string } }).note;
+    for (const title of ['Temporary title', 'Untitled note']) {
+      const update = await app.request(`/api/notes/${note.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      expect(update.status).toBe(200);
+    }
+    await db
+      .update(schema.notes)
+      .set({ updatedAt: new Date(note.updatedAt) })
+      .where(eq(schema.notes.id, note.id));
+
+    const cleanup = await app.request(`/api/notes/${note.id}/empty-draft`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ createdAt: note.createdAt, updatedAt: note.updatedAt }),
+    });
+    expect(cleanup.status).toBe(409);
+    const [stored] = await db.select().from(schema.notes).where(eq(schema.notes.id, note.id));
+    expect(stored.title).toBe('Untitled note');
+    expect(stored.deletedAt).toBeNull();
+  });
+
   it('moves a note to Trash while preserving recoverable metadata and revoking its share', async () => {
     const { app, db, schema } = await setupTrashNotesApp();
     const folder = await createFolder(app, 'Notes');

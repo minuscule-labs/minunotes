@@ -264,6 +264,7 @@ export async function mockBrowserApi(
     uploadFails?: boolean;
     folderCreateFails?: boolean;
     noteTrashFails?: boolean;
+    emptyDraftTrashDelayMs?: number;
     trashLoadFails?: boolean;
     trashMutationFails?: boolean;
     emptyTrash?: boolean;
@@ -311,6 +312,7 @@ export async function mockBrowserApi(
     : [{ ...browserFixture.trashedNote }, { ...browserFixture.trashedTemplate }];
   const trashFolders = options.emptyTrash ? [] : [{ ...browserFixture.trashedFolder }];
   const trashMutationRequests: Array<{ method: string; path: string; body: unknown }> = [];
+  let createdNoteCount = 0;
   const noteShareTokens = new Map<string, string>([
     [`note_share_${browserFixture.linked.id}`, browserFixture.linked.id],
     [`note_share_${browserFixture.target.id}`, browserFixture.target.id],
@@ -697,6 +699,20 @@ export async function mockBrowserApi(
     }
 
     const folderNotesMatch = path.match(/^\/folders\/(folder_[a-zA-Z0-9_]+)\/notes$/);
+    if (folderNotesMatch && method === 'POST') {
+      const body = request.postDataJSON() as Partial<Pick<Note, 'title' | 'content' | 'documentType' | 'type'>>;
+      const note: Note = {
+        ...browserFixture.source,
+        id: `note_created_${++createdNoteCount}`,
+        folderId: folderNotesMatch[1],
+        title: body.title ?? 'Untitled note',
+        content: body.content ?? '',
+        documentType: body.documentType ?? 'markdown',
+        type: body.type ?? 'note',
+      };
+      notes.set(note.id, note);
+      return json({ note }, 201);
+    }
     if (folderNotesMatch && method === 'GET') {
       if (!folders.some((folder) => folder.id === folderNotesMatch[1])) return json({ error: 'Folder not found' }, 404);
       const type = url.searchParams.get('type') === 'template' ? 'template' : 'note';
@@ -1052,7 +1068,35 @@ export async function mockBrowserApi(
     const noteEventsMatch = path.match(/^\/notes\/(note_[a-zA-Z0-9]+)\/events$/);
     if (noteEventsMatch && method === 'GET') return json({ noteId: noteEventsMatch[1], events: [] });
 
-    const noteMatch = path.match(/^\/notes\/(note_[a-zA-Z0-9]+)$/);
+    const emptyDraftMatch = path.match(/^\/notes\/(note_[a-zA-Z0-9_]+)\/empty-draft$/);
+    if (emptyDraftMatch && method === 'DELETE') {
+      if (options.emptyDraftTrashDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.emptyDraftTrashDelayMs));
+      }
+      const note = notes.get(emptyDraftMatch[1]);
+      const body = request.postDataJSON() as { createdAt: string; updatedAt: string };
+      trashMutationRequests.push({ method, path, body });
+      if (options.noteTrashFails) return json({ error: 'Trash is temporarily unavailable' }, 500);
+      if (
+        note?.title !== 'Untitled note' ||
+        note.content ||
+        note.type !== 'note' ||
+        note.documentType !== 'markdown' ||
+        note.createdAt !== body.createdAt ||
+        note.updatedAt !== body.updatedAt
+      )
+        return json({ error: 'Draft changed' }, 409);
+      notes.delete(note.id);
+      trashNotes.push({
+        ...note,
+        deletedAt: now,
+        originalFolderTitle: browserFixture.folder.title,
+        originalFolderAvailable: true,
+      });
+      return json({ ok: true, deletedAt: now });
+    }
+
+    const noteMatch = path.match(/^\/notes\/(note_[a-zA-Z0-9_]+)$/);
     if (noteMatch) {
       const note = notes.get(noteMatch[1]);
       if (!note) return json({ error: 'Note not found' }, 404);

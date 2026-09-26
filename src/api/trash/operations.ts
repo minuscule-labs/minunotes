@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notExists, or, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import {
   attachments,
   folderShareLinks,
   folders,
+  noteCommentThreads,
   noteEvents,
   noteShareLinks,
   notes,
@@ -597,6 +598,7 @@ export async function trashNotes(input: {
   noteIds: string[];
   actorType?: 'user' | 'agent';
   actorId?: string | null;
+  emptyDraft?: { noteId: string; creatorUserId: string; createdAt: Date; updatedAt: Date };
 }): Promise<TrashOperationResult<{ deletedAt: Date; noteCount: number }>> {
   const noteIds = [...new Set(input.noteIds)];
   if (noteIds.length === 0) return { ok: false, status: 404, error: 'No notes were found' };
@@ -618,7 +620,42 @@ export async function trashNotes(input: {
           updatedByActorType: input.actorType ?? 'user',
           updatedByActorId: input.actorId ?? null,
         })
-        .where(activeNoteWhere(input.userId, inArray(notes.id, noteIds)))
+        .where(
+          activeNoteWhere(
+            input.userId,
+            inArray(notes.id, noteIds),
+            ...(input.emptyDraft
+              ? [
+                  eq(notes.id, input.emptyDraft.noteId),
+                  eq(notes.createdByUserId, input.emptyDraft.creatorUserId),
+                  eq(notes.updatedByActorType, 'user'),
+                  eq(notes.updatedByActorId, input.emptyDraft.creatorUserId),
+                  eq(notes.createdAt, input.emptyDraft.createdAt),
+                  eq(notes.updatedAt, input.emptyDraft.updatedAt),
+                  eq(notes.type, 'note'),
+                  eq(notes.documentType, 'markdown'),
+                  eq(notes.title, 'Untitled note'),
+                  eq(notes.content, ''),
+                  notExists(
+                    db
+                      .select({ id: noteCommentThreads.id })
+                      .from(noteCommentThreads)
+                      .where(eq(noteCommentThreads.noteId, notes.id))
+                  ),
+                  notExists(db.select({ id: noteTags.id }).from(noteTags).where(eq(noteTags.noteId, notes.id))),
+                  notExists(
+                    db.select({ id: attachments.id }).from(attachments).where(eq(attachments.noteId, notes.id))
+                  ),
+                  notExists(
+                    db
+                      .select({ id: noteEvents.id })
+                      .from(noteEvents)
+                      .where(and(eq(noteEvents.noteId, notes.id), ne(noteEvents.eventType, 'create')))
+                  ),
+                ]
+              : [])
+          )
+        )
         .returning({ id: notes.id });
       if (changed.length !== noteIds.length) throw new NoteTrashStateChangedError();
 
@@ -658,12 +695,14 @@ export async function trashNote(input: {
   noteId: string;
   actorType?: 'user' | 'agent';
   actorId?: string | null;
+  emptyDraft?: { creatorUserId: string; createdAt: Date; updatedAt: Date };
 }): Promise<TrashOperationResult<{ deletedAt: Date }>> {
   const result = await trashNotes({
     userId: input.userId,
     noteIds: [input.noteId],
     actorType: input.actorType,
     actorId: input.actorId,
+    emptyDraft: input.emptyDraft ? { ...input.emptyDraft, noteId: input.noteId } : undefined,
   });
   if (!result.ok) return result.status === 404 ? { ok: false, status: 404, error: 'Note not found' } : result;
   return { ok: true, value: { deletedAt: result.value.deletedAt } };

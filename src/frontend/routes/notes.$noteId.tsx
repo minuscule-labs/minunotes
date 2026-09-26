@@ -21,6 +21,7 @@ import {
   type CommentThread,
   type NoteCommentsResponse,
 } from '../lib/api';
+import { forgetEmptyDraft, getEmptyDraft } from '../lib/empty-draft';
 import { internalNoteLinkTarget } from '../lib/link-policy';
 import { createConfiguredInternalNoteUrlPasteResolver } from '../lib/note-urls';
 import { rootRoute } from './__root';
@@ -89,10 +90,12 @@ function NoteView() {
   } | null>(null);
   const [mappedAnchors, setMappedAnchors] = useState<Record<string, EditorCommentAnchor>>({});
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [emptyDraftCleanupActive, setEmptyDraftCleanupActive] = useState(false);
   const hydratedNoteId = useRef<string | null>(null);
   const lastSaved = useRef({ title: '', content: '' });
   const lastKnownHash = useRef<string | null>(null);
   const reviewFocusRequest = useRef(0);
+  const emptyDraftCleanupPending = useRef(false);
 
   useEffect(() => {
     if (!data?.note) return;
@@ -204,6 +207,7 @@ function NoteView() {
   const remove = useMutation({
     mutationFn: () => api.deleteNote(noteId),
     onSuccess: () => {
+      forgetEmptyDraft(noteId);
       const deletedNote = data?.note;
       qc.removeQueries({ queryKey: ['note', noteId] });
       qc.invalidateQueries({ queryKey: ['notes', 'recent'] });
@@ -236,7 +240,15 @@ function NoteView() {
     onError: (error) => setCommentError(error instanceof Error ? error.message : 'Comment action failed'),
   });
   const blocker = useBlocker({
-    shouldBlockFn: () => !isStale && (isDirty || isSaving),
+    shouldBlockFn: () =>
+      !isStale &&
+      (isDirty ||
+        isSaving ||
+        (Boolean(getEmptyDraft(noteId)) &&
+          data?.note.type === 'note' &&
+          data.note.documentType === 'markdown' &&
+          title === 'Untitled note' &&
+          !content)),
     enableBeforeUnload: false,
     withResolver: true,
   });
@@ -253,11 +265,15 @@ function NoteView() {
   };
 
   const updateTitle = (value: string) => {
+    if (emptyDraftCleanupPending.current) return;
+    if (value !== 'Untitled note') forgetEmptyDraft(noteId);
     setTitle(value);
     if (isStale) updateConflictDraft((draft) => ({ ...draft, title: value }));
   };
 
   const updateContent = (value: string) => {
+    if (emptyDraftCleanupPending.current) return;
+    if (value) forgetEmptyDraft(noteId);
     setContent(value);
     if (isStale) updateConflictDraft((draft) => ({ ...draft, content: value }));
   };
@@ -327,8 +343,40 @@ function NoteView() {
       saveNow();
       return;
     }
+    const draft = getEmptyDraft(noteId);
+    if (
+      draft &&
+      data?.note.type === 'note' &&
+      data.note.documentType === 'markdown' &&
+      title === 'Untitled note' &&
+      !content
+    ) {
+      if (emptyDraftCleanupPending.current) return;
+      emptyDraftCleanupPending.current = true;
+      setEmptyDraftCleanupActive(true);
+      void api
+        .trashEmptyDraft(noteId, draft)
+        .then(
+          () => {
+            forgetEmptyDraft(noteId);
+            qc.removeQueries({ queryKey: ['note', noteId] });
+            void qc.invalidateQueries({ queryKey: ['notes', data.note.folderId] });
+            void qc.invalidateQueries({ queryKey: ['notes', 'recent'] });
+          },
+          () => {
+            // Keep the note intact if it was changed elsewhere or cleanup failed.
+            forgetEmptyDraft(noteId);
+          }
+        )
+        .finally(() => {
+          emptyDraftCleanupPending.current = false;
+          setEmptyDraftCleanupActive(false);
+          blocker.proceed?.();
+        });
+      return;
+    }
     blocker.proceed?.();
-  }, [blocker, isDirty, title, content, save.isPending]);
+  }, [blocker, isDirty, title, content, save.isPending, noteId, data, qc]);
 
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -787,7 +835,7 @@ function NoteView() {
   );
   const actions = (
     <>
-      {canComment && data.note.documentType === 'markdown' && data.note.type === 'note' ? (
+      {!emptyDraftCleanupActive && canComment && data.note.documentType === 'markdown' && data.note.type === 'note' ? (
         <button
           type="button"
           className="rounded-md p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
@@ -803,7 +851,11 @@ function NoteView() {
           <MessageSquare className="h-4 w-4" />
         </button>
       ) : null}
-      {canEdit ? (
+      {emptyDraftCleanupActive ? (
+        <span role="status" className="notes-muted px-2 text-xs">
+          Moving empty draft to Trash…
+        </span>
+      ) : canEdit ? (
         <NoteActionsPopover
           note={data.note}
           icon="settings"
@@ -982,7 +1034,7 @@ function NoteView() {
         reviewFocus={reviewFocus}
         onCommentAnchorPosition={setCommentDialogPosition}
         actions={actions}
-        readOnly={!canEdit}
+        readOnly={!canEdit || emptyDraftCleanupActive}
       />
       {conflictDraftDialog}
     </>

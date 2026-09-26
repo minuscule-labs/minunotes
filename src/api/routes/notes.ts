@@ -941,6 +941,42 @@ noteRoutes.patch('/:noteId', async (c) => {
   );
 });
 
+noteRoutes.delete('/:noteId/empty-draft', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const body = (await c.req.json().catch(() => null)) as { createdAt?: unknown; updatedAt?: unknown } | null;
+  if (typeof body?.createdAt !== 'string' || typeof body.updatedAt !== 'string')
+    return c.json({ error: 'Draft timestamps are required' }, 400);
+  const createdAt = new Date(body.createdAt);
+  const updatedAt = new Date(body.updatedAt);
+  if (
+    !Number.isFinite(createdAt.getTime()) ||
+    !Number.isFinite(updatedAt.getTime()) ||
+    createdAt.toISOString() !== body.createdAt ||
+    updatedAt.toISOString() !== body.updatedAt
+  )
+    return c.json({ error: 'Invalid draft timestamps' }, 400);
+
+  const noteId = c.req.param('noteId');
+  const eligibility = await resolveNoteTrashEligibility({ actorUserId: user.id, noteId });
+  if (!eligibility.allowed) {
+    const error = trashEligibilityStatus(eligibility);
+    return c.json(
+      { error: error?.status === 404 ? 'Note not found' : (error?.error ?? 'Forbidden') },
+      error?.status ?? 403
+    );
+  }
+  const result = await trashNote({
+    userId: eligibility.resourceOwnerUserId,
+    noteId,
+    actorType: 'user',
+    actorId: user.id,
+    emptyDraft: { creatorUserId: user.id, createdAt, updatedAt },
+  });
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json({ ok: true, ...result.value });
+});
+
 noteRoutes.delete('/:noteId', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);

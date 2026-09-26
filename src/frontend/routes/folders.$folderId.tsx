@@ -11,6 +11,7 @@ import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/ui/empty-state';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
 import { ApiError, api, type Folder, type NoteListItem } from '../lib/api';
+import { markEmptyDraft } from '../lib/empty-draft';
 import { rootRoute } from './__root';
 
 function folderDepth(folder: Folder, folders: Folder[]) {
@@ -395,6 +396,7 @@ function FolderView() {
     mutationFn: (documentType: 'markdown' | 'canvas.default' | 'canvas.mindmap' = 'markdown') =>
       api.createNote(folderId, { documentType }),
     onSuccess: ({ note }) => {
+      markEmptyDraft(note);
       void nav({ to: '/notes/$noteId', params: { noteId: note.id } });
       void qc.invalidateQueries({ queryKey: ['notes', folderId] });
       void qc.invalidateQueries({ queryKey: ['notes', 'recent'] });

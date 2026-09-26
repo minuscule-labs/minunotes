@@ -195,6 +195,71 @@ test('supports Home to folder to note navigation with browser history', async ({
   await expect(page).toHaveURL(`/notes/${browserFixture.child.id}`);
 });
 
+test('moves a newly created untouched note to Trash when leaving it', async ({ page }) => {
+  const api = await mockBrowserApi(page, { emptyTrash: true });
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+  await page.getByRole('button', { name: 'New Note' }).click();
+  await expect(page).toHaveURL('/notes/note_created_1');
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: browserFixture.folder.title })
+    .click();
+  await expect(page).toHaveURL(`/folders/${browserFixture.folder.id}`);
+  await expect.poll(() => api.trashMutationRequests.length).toBe(1);
+  expect(api.notes.has('note_created_1')).toBe(false);
+  expect(api.trashNotes.some((note) => note.id === 'note_created_1')).toBe(true);
+});
+
+test('preserves a new note once its title is edited', async ({ page }) => {
+  const api = await mockBrowserApi(page, { emptyTrash: true });
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+  await page.getByRole('button', { name: 'New Note' }).click();
+  await expect(page).toHaveURL('/notes/note_created_1');
+  const title = page.getByRole('textbox', { name: 'Untitled note' });
+  await title.fill('Keep me');
+  await expect.poll(() => api.saveRequests.length).toBeGreaterThan(0);
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: browserFixture.folder.title })
+    .click();
+  await expect(page).toHaveURL(`/folders/${browserFixture.folder.id}`);
+  expect(api.trashMutationRequests).toHaveLength(0);
+  expect(api.notes.get('note_created_1')?.title).toBe('Keep me');
+});
+
+test('locks the editor while an empty-draft cleanup request is pending', async ({ page }) => {
+  const api = await mockBrowserApi(page, { emptyTrash: true, emptyDraftTrashDelayMs: 750 });
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+  await page.getByRole('button', { name: 'New Note' }).click();
+  await expect(page).toHaveURL('/notes/note_created_1');
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: browserFixture.folder.title })
+    .click();
+  const title = page.getByRole('textbox', { name: 'Untitled note' });
+  await expect(title).toHaveAttribute('readonly', '');
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+  await expect(page.getByText('Moving empty draft to Trash…')).toBeVisible();
+  await expect(page).toHaveURL(`/folders/${browserFixture.folder.id}`);
+  expect(api.notes.has('note_created_1')).toBe(false);
+});
+
+test('keeps an empty draft if another actor fills it before navigation', async ({ page }) => {
+  const api = await mockBrowserApi(page, { emptyTrash: true });
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+  await page.getByRole('button', { name: 'New Note' }).click();
+  await expect(page).toHaveURL('/notes/note_created_1');
+  api.externalUpdate('note_created_1', { content: 'Remote content' });
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: browserFixture.folder.title })
+    .click();
+  await expect(page).toHaveURL(`/folders/${browserFixture.folder.id}`);
+  await expect.poll(() => api.trashMutationRequests.length).toBe(1);
+  expect(api.notes.get('note_created_1')?.content).toBe('Remote content');
+  expect(api.trashNotes).toHaveLength(0);
+});
+
 test('saves a markdown note before structural folder navigation proceeds', async ({ page }) => {
   const api = await mockBrowserApi(page);
   await page.goto(`/notes/${browserFixture.source.id}`);
