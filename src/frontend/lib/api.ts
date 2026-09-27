@@ -880,4 +880,9 @@ export const api = {
       deletedAttachmentCount: number;
     }>(`/trash/folders/${folderId}`, { method: 'DELETE' }),
   deleteNote: (noteId: string) => request<{ ok: true; deletedAt: string }>(`/notes/${noteId}`, { method: 'DELETE' }),
+  trashEmptyDraft: (noteId: string, draft: { createdAt: string; updatedAt: string }) =>
+    request<{ ok: true; deletedAt: string }>(`/notes/${noteId}/empty-draft`, {
+      method: 'DELETE',
+      body: JSON.stringify(draft),
+    }),
 };
