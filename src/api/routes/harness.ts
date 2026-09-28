@@ -10,11 +10,13 @@ import {
   type OAuthAuthorization,
 } from '../db/schema';
 import {
+  type CanvasSyntaxFormat,
   canvasDocumentFromSyntax,
   createDocument,
   type DocumentEdit,
   type DocumentType,
   editDocument,
+  isCanvasSyntaxFormat,
   type LineSearchCursor,
   linkCanvasNodeToNote,
   listFolders,
@@ -843,14 +845,27 @@ harnessRoutes.post('/canvases/from-syntax', async (c) => {
     title?: string;
     syntax?: string;
     documentType?: 'canvas.default' | 'canvas.mindmap';
+    format?: CanvasSyntaxFormat;
   } | null;
   if (!body) return c.json({ error: 'Invalid JSON' }, 400);
   if (!body.folderId) return c.json({ error: 'Folder id is required' }, 400);
   if (!body.syntax?.trim()) return c.json({ error: 'Diagram syntax is required' }, 400);
+  if (
+    body.documentType !== undefined &&
+    body.documentType !== 'canvas.default' &&
+    body.documentType !== 'canvas.mindmap'
+  )
+    return c.json({ error: 'Document type must be canvas.default or canvas.mindmap' }, 400);
+  if (body.format !== undefined && !isCanvasSyntaxFormat(body.format))
+    return c.json({ error: 'Format must be auto, minu, or mermaid' }, 400);
   const access = await resolveHarnessFolder(c, body.folderId, 'create');
   if (!access) return c.json({ error: 'Forbidden' }, 403);
 
-  const compiled = canvasDocumentFromSyntax({ syntax: body.syntax, documentType: body.documentType });
+  const compiled = await canvasDocumentFromSyntax({
+    syntax: body.syntax,
+    documentType: body.documentType,
+    format: body.format,
+  });
   if (!compiled.ok) return c.json({ error: 'Diagram syntax has errors', diagnostics: compiled.errors }, 400);
   if ((await sanitizeHarnessCanvasContent(c, JSON.stringify(compiled.canvas))).hiddenLinkCount > 0)
     return c.json({ error: 'Canvas contains inaccessible note links' }, 403);
@@ -1530,15 +1545,28 @@ harnessRoutes.put('/notes/:noteId/canvas/from-syntax', async (c) => {
     documentType?: 'canvas.default' | 'canvas.mindmap';
     title?: string;
     baseHash?: string;
+    format?: CanvasSyntaxFormat;
   } | null;
   if (!body) return c.json({ error: 'Invalid JSON' }, 400);
   if (!body.syntax?.trim()) return c.json({ error: 'Diagram syntax is required' }, 400);
+  if (
+    body.documentType !== undefined &&
+    body.documentType !== 'canvas.default' &&
+    body.documentType !== 'canvas.mindmap'
+  )
+    return c.json({ error: 'Document type must be canvas.default or canvas.mindmap' }, 400);
+  if (body.format !== undefined && !isCanvasSyntaxFormat(body.format))
+    return c.json({ error: 'Format must be auto, minu, or mermaid' }, 400);
 
   const current = await readHarnessDocument(c, c.req.param('noteId'), 'edit');
   if (!current) return c.json({ error: 'Note not found' }, 404);
   if (current.hiddenCanvasLinkCount > 0) return c.json({ error: 'Canvas contains inaccessible note links' }, 403);
 
-  const compiled = canvasDocumentFromSyntax({ syntax: body.syntax, documentType: body.documentType });
+  const compiled = await canvasDocumentFromSyntax({
+    syntax: body.syntax,
+    documentType: body.documentType,
+    format: body.format,
+  });
   if (!compiled.ok) return c.json({ error: 'Diagram syntax has errors', diagnostics: compiled.errors }, 400);
   if ((await sanitizeHarnessCanvasContent(c, JSON.stringify(compiled.canvas))).hiddenLinkCount > 0)
     return c.json({ error: 'Canvas contains inaccessible note links' }, 403);

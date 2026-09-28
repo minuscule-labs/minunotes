@@ -67,11 +67,16 @@ describe('config', () => {
     const canvas = { nodes: [], edges: [] };
 
     await client.canvases.create({ folderId: 'folder-1', title: 'Flow', canvas });
-    await client.canvases.createFromSyntax({ folderId: 'folder-1', syntax: 'diagram "Flow" { A > B }' });
+    await client.canvases.createFromSyntax({
+      folderId: 'folder-1',
+      syntax: 'diagram "Flow" { A > B }',
+      format: 'auto',
+    });
     await client.canvases.replace('canvas/1', { baseHash: 'hash', canvas });
     await client.canvases.replaceFromSyntax('canvas/1', {
       baseHash: 'hash',
-      syntax: 'diagram "Flow" { A > C }',
+      syntax: 'flowchart LR\n  A --> C',
+      format: 'mermaid',
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -84,7 +89,7 @@ describe('config', () => {
       'https://example.com/v1/harness/canvases/from-syntax',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ folderId: 'folder-1', syntax: 'diagram "Flow" { A > B }' }),
+        body: JSON.stringify({ folderId: 'folder-1', syntax: 'diagram "Flow" { A > B }', format: 'auto' }),
       })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -97,7 +102,7 @@ describe('config', () => {
       'https://example.com/v1/harness/notes/canvas%2F1/canvas/from-syntax',
       expect.objectContaining({
         method: 'PUT',
-        body: JSON.stringify({ baseHash: 'hash', syntax: 'diagram "Flow" { A > C }' }),
+        body: JSON.stringify({ baseHash: 'hash', syntax: 'flowchart LR\n  A --> C', format: 'mermaid' }),
       })
     );
   });

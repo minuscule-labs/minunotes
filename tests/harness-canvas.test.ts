@@ -154,6 +154,211 @@ describe('harness canvas operations', () => {
     );
   });
 
+  it('auto-detects Mermaid flowcharts and persists editable native canvas data', async () => {
+    const { app, folder } = await setupHarnessApp();
+    const syntax = `flowchart LR
+  start["Start"] --> decision{Approved?}
+  decision -->|yes| done([Done])
+  decision -. retry .-> start`;
+
+    const response = await app.request('/api/harness/canvases/from-syntax', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ folderId: folder.id, title: 'Mermaid flow', syntax }),
+    });
+
+    expect(response.status).toBe(201);
+    const { note, diagnostics } = (await response.json()) as {
+      note: { id: string; title: string; documentType: string };
+      diagnostics: unknown[];
+    };
+    expect(note).toMatchObject({ title: 'Mermaid flow', documentType: 'canvas.default' });
+    expect(diagnostics).toEqual([]);
+
+    const read = await app.request(`/api/harness/notes/${note.id}`);
+    const { note: fullNote } = (await read.json()) as { note: { content: string } };
+    const canvas = JSON.parse(fullNote.content) as {
+      nodes: Array<{ id: string; shape?: string; text?: string }>;
+      edges: Array<{ fromNode: string; toNode: string; label?: string; style?: { strokeStyle?: string } }>;
+    };
+    expect(canvas.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'start', shape: 'rectangle', text: 'Start' }),
+        expect.objectContaining({ id: 'decision', shape: 'diamond' }),
+        expect.objectContaining({ id: 'done', shape: 'pill' }),
+      ])
+    );
+    expect(canvas.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ fromNode: 'decision', toNode: 'done', label: 'yes' }),
+        expect.objectContaining({
+          fromNode: 'decision',
+          toNode: 'start',
+          label: 'retry',
+          style: { routing: 'elbow', strokeStyle: 'dotted' },
+        }),
+      ])
+    );
+  });
+
+  it('keeps Minu identifiers named graph and flowchart in auto mode', async () => {
+    const { app, folder } = await setupHarnessApp();
+
+    for (const identifier of ['graph', 'flowchart']) {
+      const response = await app.request('/api/harness/canvases/from-syntax', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ folderId: folder.id, syntax: `${identifier} > End` }),
+      });
+
+      expect(response.status).toBe(201);
+      const { note } = (await response.json()) as { note: { id: string } };
+      const read = await app.request(`/api/harness/notes/${note.id}`);
+      const { note: fullNote } = (await read.json()) as { note: { content: string } };
+      expect(JSON.parse(fullNote.content)).toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ id: identifier }),
+          expect.objectContaining({ id: 'End' }),
+        ]),
+        edges: expect.arrayContaining([expect.objectContaining({ fromNode: identifier, toNode: 'End' })]),
+      });
+    }
+  });
+
+  it('honors explicit Minu and Mermaid syntax format overrides', async () => {
+    const { app, db, schema, folder } = await setupHarnessApp();
+    const cases = [
+      { format: 'mermaid', syntax: 'graph > End' },
+      { format: 'minu', syntax: 'graph TD\\n  source --> target' },
+    ];
+
+    for (const { format, syntax } of cases) {
+      const response = await app.request('/api/harness/canvases/from-syntax', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ folderId: folder.id, syntax, format }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'Diagram syntax has errors' });
+    }
+
+    expect(await db.select().from(schema.notes)).toEqual([]);
+  });
+
+  it('replaces a canvas from explicitly selected Mermaid syntax', async () => {
+    const { app } = await setupHarnessApp();
+    const create = await app.request('/api/harness/canvases', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ folderId: 'folder_canvas', title: 'Before', canvas: { nodes: [], edges: [] } }),
+    });
+    const created = (await create.json()) as { note: { id: string } };
+
+    const replace = await app.request(`/api/harness/notes/${created.note.id}/canvas/from-syntax`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        format: 'mermaid',
+        syntax: 'graph TD\n  source --> target',
+      }),
+    });
+
+    expect(replace.status).toBe(200);
+    const read = await app.request(`/api/harness/notes/${created.note.id}`);
+    const { note } = (await read.json()) as { note: { content: string } };
+    expect(JSON.parse(note.content)).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ id: 'source' }),
+        expect.objectContaining({ id: 'target' }),
+      ]),
+      edges: [expect.objectContaining({ fromNode: 'source', toNode: 'target', toEnd: 'arrow' })],
+    });
+  });
+
+  it('rejects Mermaid flowcharts requested as mind maps', async () => {
+    const { app, db, schema, folder } = await setupHarnessApp();
+
+    const response = await app.request('/api/harness/canvases/from-syntax', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        folderId: folder.id,
+        format: 'mermaid',
+        documentType: 'canvas.mindmap',
+        syntax: 'flowchart LR\n  source --> target',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { diagnostics: Array<{ code?: string; severity: string }> };
+    expect(body.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ severity: 'error', code: 'unsupported_diagram' })])
+    );
+    expect(await db.select().from(schema.notes)).toEqual([]);
+  });
+
+  it('rejects unsupported Mermaid flowchart features without creating a canvas', async () => {
+    const { app, db, schema, folder } = await setupHarnessApp();
+
+    const response = await app.request('/api/harness/canvases/from-syntax', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        folderId: folder.id,
+        syntax: 'flowchart LR\n  A --> B\n  style A fill:#f00',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      error: string;
+      diagnostics: Array<{ severity: string; code?: string; line?: number; column?: number }>;
+    };
+    expect(body.error).toBe('Diagram syntax has errors');
+    expect(body.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: 'error', code: 'unsupported_feature', line: 3, column: 3 }),
+      ])
+    );
+    expect(await db.select().from(schema.notes)).toEqual([]);
+  });
+
+  it('rejects an unknown syntax format without creating a canvas', async () => {
+    const { app, db, schema, folder } = await setupHarnessApp();
+
+    const response = await app.request('/api/harness/canvases/from-syntax', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ folderId: folder.id, syntax: 'diagram { A > B }', format: 'unknown' }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'Format must be auto, minu, or mermaid' });
+    expect(await db.select().from(schema.notes)).toEqual([]);
+  });
+
+  it('rejects an unsupported canvas document type before Mermaid compilation', async () => {
+    const { app, db, schema, folder } = await setupHarnessApp();
+
+    const response = await app.request('/api/harness/canvases/from-syntax', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        folderId: folder.id,
+        format: 'mermaid',
+        documentType: 'unknown',
+        syntax: 'flowchart LR\n  source --> target',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Document type must be canvas.default or canvas.mindmap',
+    });
+    expect(await db.select().from(schema.notes)).toEqual([]);
+  });
+
   it('rejects malformed syntax with line-specific diagnostics without creating a canvas', async () => {
     const { app, db, schema, folder } = await setupHarnessApp();
 

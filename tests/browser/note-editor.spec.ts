@@ -21,6 +21,82 @@ test('autosaves editor content and preserves it after reload', async ({ page }) 
   await expect(page.locator('.cm-content')).toContainText('Start here. Updated.');
 });
 
+test('shows contextual actions in the fixed mobile toolbar and preserves list history', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  const initial = 'Start here.\n\n- Parent\n- Child';
+  api.notes.set(browserFixture.source.id, { ...browserFixture.source, content: initial });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+
+  const editor = page.locator('.cm-content');
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await expect(page.getByLabel('Indent list item')).toBeEnabled();
+  await expect(page.getByLabel('Outdent list item')).toBeDisabled();
+  await expect(page.locator('.me-toolbar--floating')).toHaveCount(0);
+
+  await page.getByLabel('Indent list item').click();
+  await api.expectSavedContent('Start here.\n\n- Parent\n    - Child');
+  await expect(page.getByLabel('Outdent list item')).toBeEnabled();
+  await page.getByLabel('Outdent list item').click();
+  await api.expectSavedContent(initial);
+  await expect(page.getByLabel('Outdent list item')).toBeDisabled();
+
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+Home');
+  await page.keyboard.press('Shift+End');
+  await expect(page.getByLabel('Bold')).toBeVisible();
+  await expect(page.getByLabel('Italic')).toBeVisible();
+  await expect(page.getByLabel('Inline code')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Comment', exact: true })).toBeVisible();
+  await expect(page.locator('.me-toolbar--floating')).toHaveCount(0);
+
+  await page.getByLabel('Bold').click();
+  await api.expectSavedContent('**Start here.**\n\n- Parent\n- Child');
+  await page.getByLabel('Open editor actions').click();
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await api.expectSavedContent(initial);
+
+  await page.getByLabel('Open note actions').click();
+  await page.getByRole('button', { name: 'Source mode', exact: true }).click();
+  await editor.locator('.cm-line').filter({ hasText: 'Parent' }).first().click();
+  await expect(page.getByLabel('Indent list item')).toBeDisabled();
+  await expect(page.getByLabel('Outdent list item')).toBeDisabled();
+});
+
+test('tracks inline formatting state from the selected text', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  api.notes.set(browserFixture.source.id, {
+    ...browserFixture.source,
+    content: 'plain **bold** text',
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+
+  const editor = page.locator('.cm-content');
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+Home');
+  await page.keyboard.press('Shift+End');
+  await expect(page.getByLabel('Bold')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByLabel('Italic')).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('does not offer list actions for list-shaped fenced code', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  api.notes.set(browserFixture.source.id, {
+    ...browserFixture.source,
+    content: '```text\n    - code\n```',
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+
+  await page.getByLabel('Open note actions').click();
+  await page.getByRole('button', { name: 'Source mode', exact: true }).click();
+  await page.locator('.cm-line').filter({ hasText: '- code' }).click();
+  await expect(page.getByLabel('Indent list item')).toHaveCount(0);
+  await expect(page.getByLabel('Outdent list item')).toHaveCount(0);
+});
+
 test('detects a clean note changed externally and reloads the latest content', async ({ page }) => {
   await page.clock.install();
   const api = await mockBrowserApi(page);

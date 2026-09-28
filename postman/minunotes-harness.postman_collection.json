@@ -305,7 +305,7 @@
                 "type": "text"
               }
             ],
-            "description": "Returns compact active folder metadata only. Owner/database fields are omitted; trashed folders and descendants of trashed folders are excluded.",
+            "description": "Returns compact owned and explicitly scoped shared-folder metadata. Owner/database and grant identifiers are omitted; inaccessible ancestry and trashed folder subtrees are excluded.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/folders?limit=10&cursor={{folderCursor}}",
               "host": [
@@ -354,7 +354,7 @@
                 "type": "text"
               }
             ],
-            "description": "Requires the API key to have folder-creation permission. Created folders are automatically scoped to the same key and returned as compact metadata.",
+            "description": "Requires folder-creation permission. Creates an owned folder or a subfolder in an editable explicitly scoped shared folder. Shared resources remain in the owner corpus and are attributed to the authorizing user.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"title\": \"Harness evaluation\",\n  \"parentFolderId\": \"{{folderId}}\"\n}",
@@ -388,6 +388,44 @@
               }
             }
           ]
+        },
+        {
+          "name": "Move an eligible folder subtree to Trash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Destructive. Requires edit capability. Shared-folder Editors may move only a subtree created entirely by the authorizing user, excluding shared roots and owner-managed sharing configuration. Trash restore and permanent deletion remain owner-only.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/trash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "harness",
+                "folders",
+                "{{folderId}}",
+                "trash"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -405,7 +443,7 @@
                 "type": "text"
               }
             ],
-            "description": "Searches active notes only. Returns compact metadata without note content; use the read-note, lines, or section endpoints to expand a selected note. Trashed notes and notes below trashed folders are excluded.",
+            "description": "Searches active owned and explicitly scoped shared notes. Returns compact metadata with privacy-safe role/source context but without note content. Direct-note grants return null folder context. Use the read-note, lines, or section endpoints to expand a selected note.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/search?q=project&tag=release-notes&limit=10&cursor={{searchCursor}}",
               "host": [
@@ -676,7 +714,7 @@
                 "type": "text"
               }
             ],
-            "description": "Returns not found when the note or any folder ancestor is trashed.",
+            "description": "Reads an owned or explicitly scoped shared note when its content is needed and returns privacy-safe role/source context. Do not read solely to inspect permissions. Direct-note grants return null folder context. Owner and grant database identifiers are never returned. Not found can also mean inaccessible, revoked, or trashed.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}",
               "host": [
@@ -1008,6 +1046,44 @@
           ]
         },
         {
+          "name": "Move an eligible note to Trash",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Destructive. Requires edit capability and API editability. Shared-folder Editors may move only notes created by the authorizing user. Direct-note grants and resources with owner-managed sharing configuration are denied. Trash restore and permanent deletion remain owner-only.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/trash",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "harness",
+                "notes",
+                "{{noteId}}",
+                "trash"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Edit a note",
           "request": {
             "method": "POST",
@@ -1104,7 +1180,7 @@
           ]
         },
         {
-          "name": "Create a canvas note from Minu diagram syntax",
+          "name": "Create a canvas note from Minu or Mermaid flowchart syntax",
           "request": {
             "method": "POST",
             "header": [
@@ -1116,7 +1192,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"folderId\": \"{{folderId}}\",\n  \"title\": \"Harness diagram\",\n  \"syntax\": \"diagram \\\"Harness flow\\\" {\\n  Start > Finish\\n}\"\n}",
+              "raw": "{\n  \"folderId\": \"{{folderId}}\",\n  \"title\": \"Harness diagram\",\n  \"format\": \"auto\",\n  \"syntax\": \"flowchart LR\\n  Start --> Finish\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1294,7 +1370,7 @@
           ]
         },
         {
-          "name": "Replace a canvas note with compiled Minu diagram syntax",
+          "name": "Replace a canvas note with compiled Minu or Mermaid flowchart syntax",
           "request": {
             "method": "PUT",
             "header": [
@@ -1306,7 +1382,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"baseHash\": \"{{baseHash}}\",\n  \"syntax\": \"diagram \\\"Harness flow\\\" {\\n  Start > Finish\\n}\"\n}",
+              "raw": "{\n  \"baseHash\": \"{{baseHash}}\",\n  \"format\": \"minu\",\n  \"syntax\": \"diagram \\\"Harness flow\\\" {\\n  Start > Finish\\n}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1356,7 +1432,7 @@
                 "type": "text"
               }
             ],
-            "description": "Lists Review threads on an active markdown note. Explicit Review comments permission and read access to the note folder are required.",
+            "description": "Lists Review threads on an active markdown note. Explicit Comment permission and read access to the note folder are required.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
               "host": [
@@ -1394,7 +1470,7 @@
                 "type": "text"
               }
             ],
-            "description": "Creates a thread and first message. Explicit Review comments permission, read access, a current document hash, and an exact markdown anchor are required. Note edit permission is not required.",
+            "description": "Creates a thread and first message. Explicit Comment permission, read access, a current document hash, and an exact markdown anchor are required. Note edit permission is not required.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
               "host": [
@@ -1709,7 +1785,7 @@
                 "type": "text"
               }
             ],
-            "description": "Adds the selected reaction for the current actor, or removes it when already present. Requires read and explicit Review comments permission.",
+            "description": "Adds the selected reaction for the current actor, or removes it when already present. Requires read and explicit Comment permission.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/messages/{{messageId}}/reactions",
               "host": [
@@ -1765,6 +1841,85 @@
                 "internal",
                 "share",
                 "{{shareToken}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read an attachment owned by a publicly shared note",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/share/{{shareToken}}/attachments/{{attachmentId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "share",
+                "{{shareToken}}",
+                "attachments",
+                "{{attachmentId}}",
+                "content"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read an attachment owned by one note in a publicly shared folder",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/share/folders/{{shareToken}}/notes/{{noteId}}/attachments/{{attachmentId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "share",
+                "folders",
+                "{{shareToken}}",
+                "notes",
+                "{{noteId}}",
+                "attachments",
+                "{{attachmentId}}",
+                "content"
               ]
             }
           },

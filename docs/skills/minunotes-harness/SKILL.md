@@ -44,15 +44,15 @@ Discovery tools are cursor-paginated when their registered input exposes `cursor
 
 Do not read every search result automatically. Rank candidates by title, folder, document type, and matched context, then expand only the notes needed to answer the task.
 - Section edit: `minunotes_read_outline` → `minunotes_read_section` → targeted `replace_text` or `replace_range`.
-- Canvas create/update: default to `minunotes_create_canvas_from_syntax` for any agent-composed conceptual diagram, flowchart, architecture diagram, or mind map. Use raw JSON Canvas only for exact imports or when the user explicitly requires specific IDs, coordinates, links, or metadata.
+- Canvas create/update: use `minunotes_create_canvas_from_syntax` for generated diagrams. It auto-detects Mermaid `flowchart`/`graph` headers; optional `format: "minu" | "mermaid"` forces a parser. Mermaid's supported flowchart subset compiles to editable native JSON Canvas (not SVG): standard directions, basic shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs. Styling, actions, rich labels, and other diagram types fail with diagnostics; imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Use Minu syntax for mind maps or Minu-specific layout; use raw JSON Canvas for exact imports or when the user explicitly requires specific IDs, coordinates, links, or metadata.
 - Canvas replacement: `minunotes_read_note` → use `minunotes_replace_canvas` or `minunotes_replace_canvas_from_syntax` with `baseHash`.
 
 ## Canvas generation default
 
-- Use Minu diagram syntax for net-new generated diagrams; do not hand-place nodes with JSON coordinates when the compiler can lay them out.
-- Use the default flow layout with `direction right` or `direction down` for workflows and directed graphs. Use `layout mindmap` only when the relationships form a true tree.
+- Use the syntax tool for net-new generated diagrams; it auto-detects Mermaid `flowchart`/`graph` headers and otherwise parses Minu syntax. Do not hand-place nodes with JSON coordinates when the compiler can lay them out.
+- Use Mermaid for supported flowcharts. For Minu syntax, use the default flow layout with `direction right` or `direction down` for workflows and directed graphs. Use Minu `layout mindmap` only when the relationships form a true tree.
 - Keep node labels short and plain text. Canvas nodes do not render Markdown, so do not add heading markers, emphasis markers, or Markdown-only formatting.
-- Put the diagram title in the canvas note title or the syntax `diagram` title instead of creating a detached title node.
+- Put the diagram title in the canvas note title or, for Minu syntax, the `diagram` title instead of creating a detached title node.
 - Prefer explicit card shapes and meaningful connections while avoiding repetitive edge labels.
 - Use JSON Canvas when importing an existing document or preserving exact IDs, positions, external URLs, internal note links, groups, styles, or host metadata.
 - Syntax replacement is whole-document regeneration. Read the latest canvas and obtain approval before replacing a manually arranged or metadata-rich canvas.
@@ -140,7 +140,7 @@ Review tools require explicit Comment permission plus read scope for every opera
 - Capture `contentHash` before edits and pass it as `baseHash`.
 - Use exact, small edits.
 - Markdown patch edits only work for `documentType: "markdown"`.
-- For generated `canvas.default` and `canvas.mindmap` documents, use Minu diagram syntax by default. Use JSON Canvas only for exact imports or deterministic preservation of IDs, coordinates, links, and metadata.
+- For generated `canvas.default` documents, use the syntax creation tool; it auto-detects supported Mermaid flowcharts and otherwise parses Minu diagram syntax. Use Mermaid for supported flowcharts and Minu syntax for mind maps. Use JSON Canvas only for exact imports or deterministic preservation of IDs, coordinates, links, and metadata.
 - Syntax replacement regenerates the complete canvas and can replace node IDs, layout, links, and metadata. Obtain approval before using it on a manually arranged or metadata-rich canvas.
 - Prefer focused canvas link/unlink tools over whole-document replacement when only an internal target changes.
 - Internal canvas note links and external URLs are independent. Link/unlink operations must preserve `node.url` and unrelated node metadata.

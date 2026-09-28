@@ -88,9 +88,9 @@ Structured reads:
 Canvas lifecycle and links:
 
 - `notes_create_canvas`
-- `notes_create_canvas_from_syntax`
+- `notes_create_canvas_from_syntax` (Minu syntax or auto-detected Mermaid; optional `format` override)
 - `notes_replace_canvas`
-- `notes_replace_canvas_from_syntax`
+- `notes_replace_canvas_from_syntax` (Minu syntax or auto-detected Mermaid; optional `format` override)
 - `notes_set_canvas_node_note_link`
 - `notes_remove_canvas_node_note_link`
 
@@ -100,7 +100,7 @@ Tags:
 - `notes_read_note_tags`
 - `notes_replace_note_tags`
 
-## Canvas JSON and Minu syntax
+## Canvas JSON, Minu syntax, and Mermaid flowcharts
 
 Use JSON Canvas when exact node IDs, positions, external URLs, internal note links, or host metadata must be retained:
 
@@ -113,7 +113,9 @@ Use JSON Canvas when exact node IDs, positions, external URLs, internal note lin
 }
 ```
 
-Use Minu diagram syntax when an agent should generate a laid-out flow or mind map without calculating coordinates:
+Use Minu diagram syntax for mind maps or Minu-specific layouts. The syntax tools also auto-detect Mermaid `flowchart`/`graph` headers and compile the supported flowchart subset into editable native JSON Canvas (not SVG): standard directions, basic node shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs. Styling, actions, rich labels, and other diagram types are rejected with diagnostics. Imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Set `format: "minu"` or `format: "mermaid"` to force a parser; unsupported Mermaid features return diagnostics without a partial canvas.
+
+Example Minu mind map:
 
 ```txt
 diagram "Product plan" {
@@ -122,6 +124,14 @@ diagram "Product plan" {
   Product > Research
   Product > Build
 }
+```
+
+Example Mermaid flowchart:
+
+```txt
+flowchart LR
+  draft[Draft] --> review{Approved?}
+  review -->|yes| shipped([Shipped])
 ```
 
 Declare styled nodes as `id [label: "Label", shape: card]`. Connect nodes with `A > B` or `A --> B`. The forms `node A ...` and `A -> B` are unsupported and return line-specific diagnostics instead of producing literal nodes.

@@ -55,6 +55,6 @@ POST /mcp
 
 Use `X-API-Key` for direct `/v1/harness/*` API and OpenAPI-authenticated requests. Hosted MCP uses OAuth bearer tokens at `/mcp` (`Authorization: Bearer mnoac_...`). Local stdio MCP uses an owner-managed API key in the local process environment and calls the harness API.
 
-For generated canvases and mind maps, prefer Minu diagram syntax through the canvas harness endpoints. Use raw JSON Canvas when exact import or deterministic replacement is needed. Syntax replacement regenerates the whole canvas and can replace node IDs, positions, links, and metadata; use focused node-link operations for internal note targets.
+For generated canvases, use the syntax harness endpoints: they auto-detect Mermaid `flowchart`/`graph` headers and otherwise use Minu diagram syntax. Mermaid's supported flowchart subset becomes editable native JSON Canvas, not SVG; imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Unsupported features return diagnostics. Use Minu syntax for mind maps and raw JSON Canvas for exact import or deterministic replacement. Syntax replacement regenerates the whole canvas and can replace node IDs, positions, links, and metadata; use focused node-link operations for internal note targets.
 
 MCP exposes canvas lifecycle and note-link operations, note outlines and events, and user-facing tag behavior. Broader outgoing-link, backlink, orphan, and graph inspection tools remain deferred until MinuNotes has corresponding product UI semantics.

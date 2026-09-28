@@ -92,6 +92,29 @@ export function emptyCanvasDocument(documentType: DocumentType = 'canvas.default
   );
 }
 
+export type CanvasSyntaxFormat = 'auto' | 'minu' | 'mermaid';
+
+export function isCanvasSyntaxFormat(value: unknown): value is CanvasSyntaxFormat {
+  return value === 'auto' || value === 'minu' || value === 'mermaid';
+}
+
+function detectCanvasSyntaxFormat(syntax: string): Exclude<CanvasSyntaxFormat, 'auto'> {
+  for (const line of syntax.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('%%{')) return 'mermaid';
+    if (trimmed.startsWith('%%')) continue;
+
+    const header = /^(?:flowchart|graph)\b(.*)$/i.exec(trimmed);
+    if (!header) return 'minu';
+
+    const remainder = header[1].trim();
+    if (!remainder || /^(?:>|-->|\[)/.test(remainder)) return 'minu';
+    return 'mermaid';
+  }
+  return 'minu';
+}
+
 export function compileDiagramSyntax(input: { syntax: string; documentType?: DocumentType }) {
   const result = compileMinuDiagramSyntax(input.syntax, {
     strict: true,
@@ -1268,7 +1291,39 @@ export async function replaceCanvasDocument(
   });
 }
 
-export function canvasDocumentFromSyntax(input: { syntax: string; documentType?: DocumentType }) {
+export async function canvasDocumentFromSyntax(input: {
+  syntax: string;
+  documentType?: DocumentType;
+  format?: CanvasSyntaxFormat;
+}) {
+  const format =
+    input.format === undefined || input.format === 'auto' ? detectCanvasSyntaxFormat(input.syntax) : input.format;
+
+  if (format === 'mermaid') {
+    if (input.documentType === 'canvas.mindmap')
+      return {
+        ok: false as const,
+        errors: [
+          {
+            severity: 'error' as const,
+            code: 'unsupported_diagram' as const,
+            message: 'Mermaid flowcharts cannot be compiled as mind maps',
+          },
+        ],
+      };
+
+    const { compileMermaidSyntax } = await import('@dpklabs/minucanvas/mermaid');
+    const compiled = await compileMermaidSyntax(input.syntax);
+    if (!compiled.success) return { ok: false as const, errors: compiled.diagnostics };
+    return {
+      ok: true as const,
+      canvas: compiled.document,
+      documentType: input.documentType ?? 'canvas.default',
+      diagnostics: compiled.diagnostics,
+      title: undefined,
+    };
+  }
+
   const compiled = compileDiagramSyntax(input);
   if (!compiled.ok) return compiled;
   return {

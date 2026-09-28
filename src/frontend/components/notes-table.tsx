@@ -187,7 +187,8 @@ export function NotesTable({
                 />
                 <div className="min-w-0">
                   <Link
-                    className="truncate font-medium hover:text-[var(--notes-blue)]"
+                    className="line-clamp-2 font-medium leading-snug [overflow-wrap:anywhere] hover:text-[var(--notes-blue)]"
+                    title={note.title}
                     to="/notes/$noteId"
                     params={{ noteId: note.id }}
                   >

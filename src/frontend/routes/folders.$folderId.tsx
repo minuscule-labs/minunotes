@@ -221,7 +221,9 @@ function FolderContentsTable({
                     </span>
                     <span className="min-w-0">
                       <span className="flex min-w-0 items-center gap-2 font-medium hover:text-[var(--notes-blue)]">
-                        <span className="truncate">{item.note.title}</span>
+                        <span className="line-clamp-2 min-w-0 flex-1 [overflow-wrap:anywhere]" title={item.note.title}>
+                          {item.note.title}
+                        </span>
                       </span>
                       <span className="mt-1 block text-[var(--notes-muted)] text-xs">
                         {item.note.documentType === 'canvas.mindmap'
