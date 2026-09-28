@@ -110,13 +110,23 @@ curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
   -d '{"folderId":"folder_xxx","title":"Flow","canvas":{"nodes":[],"edges":[]}}'
 ```
 
-Create from Minu diagram syntax:
+Create from Minu diagram syntax (the endpoint also auto-detects supported Mermaid flowcharts):
 
 ```bash
 curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
   -X POST "$API/v1/harness/canvases/from-syntax" \
   -d '{"folderId":"folder_xxx","syntax":"diagram \"Product plan\" {\n  layout mindmap\n  Product\n  Product > Research\n}"}'
 ```
+
+Create an editable native canvas from the supported Mermaid flowchart subset. `format` defaults to `auto`; set it to `minu` or `mermaid` to force a parser. Mermaid source is compiled, not retained or rendered as SVG, and unsupported features return diagnostics without creating a partial canvas.
+
+```bash
+curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
+  -X POST "$API/v1/harness/canvases/from-syntax" \
+  -d '{"folderId":"folder_xxx","title":"Release flow","format":"auto","syntax":"flowchart LR\n  draft[Draft] --> review{Approved?}\n  review -->|yes| shipped([Shipped])"}'
+```
+
+Supported input is Mermaid `flowchart`/`graph` with omitted direction or `TB`/`TD`/`BT`/`LR`/`RL`; explicit or implicit nodes with plain-text labels; rectangle, rounded rectangle, stadium, diamond, circle, and hexagon shapes; directed, undirected, bidirectional, or dotted edges with labels; and nested subgraphs. Styling, classes, click actions, HTML/Markdown labels, icons/images, advanced metadata, and non-flowchart diagram types are rejected. Harness imports enforce 100,000 source characters, 500 native nodes (including groups), 1,000 edges, and 16 subgraph levels.
 
 Replace an existing canvas:
 
@@ -126,7 +136,7 @@ curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
   -d '{"baseHash":"hash_from_read","syntax":"diagram \"Auth flow\" {\n  User > Login\n  Login > Dashboard\n}"}'
 ```
 
-Use syntax for generated diagrams/mind maps. Use raw JSON Canvas for exact imports or deterministic replacements.
+Use Minu syntax for mind maps and Mermaid for its supported flowchart subset. Auto-detection recognizes Mermaid `flowchart`/`graph` headers; unsupported Mermaid syntax fails closed. Use raw JSON Canvas for exact imports or deterministic replacements.
 
 ### Link canvas nodes to notes
 

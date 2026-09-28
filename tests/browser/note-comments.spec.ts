@@ -112,6 +112,29 @@ test('uses an anchored dialog for creation and viewing, with full discussion in 
   await expect(page.getByRole('dialog', { name: 'Review' }).getByText(/could not be reattached/)).toBeVisible();
 });
 
+test('keeps range comments in the fixed toolbar for read-only commenters', async ({ page }) => {
+  await mockBrowserApi(page, { noteAccessRole: 'commenter' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+
+  const editor = page.locator('.cm-content');
+  await expect(editor).toContainText('Start here.');
+  const line = editor.locator('.cm-line').filter({ hasText: 'Start here.' });
+  const lineBounds = await line.boundingBox();
+  expect(lineBounds).not.toBeNull();
+  const selectionY = (lineBounds?.y ?? 0) + (lineBounds?.height ?? 0) / 2;
+  await page.mouse.move((lineBounds?.x ?? 0) + 1, selectionY);
+  await page.mouse.down();
+  await page.mouse.move((lineBounds?.x ?? 0) + (lineBounds?.width ?? 0) - 1, selectionY, { steps: 8 });
+  await page.mouse.up();
+
+  await expect(page.locator('.me-toolbar--floating')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Comment', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Open insert menu')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Comment', exact: true }).click();
+  await expect(page.getByLabel('Add comment')).toBeVisible();
+});
+
 test('creates a whole-line comment from a simple themed gutter icon', async ({ page }) => {
   await mockBrowserApi(page);
   await page.goto(`/notes/${browserFixture.source.id}`);

@@ -1,12 +1,23 @@
-import { type EditorCommentAnchor, MarkdownEditor, type MarkdownEditorHandle } from '@dpklabs/minueditor';
 import {
+  type EditorCommentAnchor,
+  MarkdownEditor,
+  type MarkdownEditorHandle,
+  type MarkdownEditorState,
+} from '@dpklabs/minueditor';
+import {
+  Bold,
+  Code,
   Heading1,
   Heading2,
   Heading3,
   Image,
+  Italic,
   List,
   ListChecks,
+  ListIndentDecrease,
+  ListIndentIncrease,
   ListOrdered,
+  MessageSquare,
   MoreHorizontal,
   Plus,
   Quote,
@@ -25,6 +36,9 @@ import { getMermaidTheme, useNoteTheme } from '../lib/themes';
 type EditorViewLike = Parameters<NonNullable<ComponentProps<typeof MarkdownEditor>['onViewReady']>>[0];
 
 const DEFAULT_TABLE_INSERTION = { columns: 2, bodyRows: 1 } as const;
+const toolbarActionClassName =
+  'rounded-full p-1.5 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)] disabled:cursor-not-allowed disabled:opacity-50';
+const toolbarActiveActionClassName = `${toolbarActionClassName} bg-[var(--notes-hover)] text-[var(--notes-text)]`;
 
 type WikiLinksProp = ComponentProps<typeof MarkdownEditor>['wikiLinks'];
 type CommentsProp = ComponentProps<typeof MarkdownEditor>['comments'];
@@ -73,6 +87,7 @@ export function NoteEditor({
   const [blockMenuOpen, setBlockMenuOpen] = useState(false);
   const [historyMenuOpen, setHistoryMenuOpen] = useState(false);
   const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
+  const [editorState, setEditorState] = useState<MarkdownEditorState | null>(null);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
   const [imageTab, setImageTab] = useState<'upload' | 'link'>('upload');
   const [imageUrl, setImageUrl] = useState('');
@@ -87,6 +102,10 @@ export function NoteEditor({
   const noteTheme = useNoteTheme();
   const mermaid = useMemo(() => ({ theme: getMermaidTheme(noteTheme) }), [noteTheme]);
   const titleValue = title === 'Untitled note' || title === 'Untitled template' ? '' : title;
+  const hasTextSelection = Boolean(editorState && !editorState.selection.empty);
+  const isListContext = Boolean(editorState?.activeMarks.list);
+  const canCommentSelection = hasTextSelection && Boolean(comments?.onRequest || comments?.onCreate);
+  const showBottomToolbar = !readOnly || canCommentSelection;
 
   useEffect(() => () => editorKeydownCleanupRef.current?.(), []);
 
@@ -273,14 +292,14 @@ export function NoteEditor({
 
   return (
     <section className="mx-auto w-full max-w-6xl">
-      <div className="border-b border-[var(--notes-border)] bg-[var(--notes-bg)] pb-4 md:sticky md:-top-6 md:z-20 md:-mt-6 md:pt-6">
+      <div className="border-[var(--notes-border)] border-b bg-[var(--notes-bg)] pb-4 md:sticky md:-top-6 md:z-20 md:-mt-6 md:pt-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <p className="notes-muted min-w-0 text-xs">{uploadingImage ? 'Uploading image...' : saveLabel}</p>
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         </div>
         {staleNotice}
         <input
-          className="w-full bg-transparent text-2xl font-semibold outline-none sm:text-3xl"
+          className="w-full bg-transparent font-semibold text-2xl outline-none sm:text-3xl"
           value={titleValue}
           readOnly={readOnly}
           onChange={(e) => onTitleChange(e.target.value)}
@@ -301,7 +320,8 @@ export function NoteEditor({
             onChange={onContentChange}
             readOnly={readOnly}
             mode={editorMode}
-            floatingToolbar
+            floatingToolbar={false}
+            floatingCommentToolbar={false}
             tableActions
             tableInsertion={DEFAULT_TABLE_INSERTION}
             placeholder="Start typing..."
@@ -317,6 +337,10 @@ export function NoteEditor({
             onRequestImage={onImageUpload ? () => openImagePicker() : undefined}
             wikiLinks={wikiLinks}
             comments={positionedComments}
+            onStateChange={(state) => {
+              setEditorState(state);
+              setHistoryState({ canUndo: state.canUndo, canRedo: state.canRedo });
+            }}
             onImageUpload={
               onImageUpload
                 ? async (file) => {
@@ -455,8 +479,8 @@ export function NoteEditor({
       {imagePickerOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-end bg-black/40 p-0 sm:place-items-center sm:p-6">
           <div className="max-h-[min(82vh,42rem)] w-full max-w-lg overflow-hidden rounded-t-2xl border border-[var(--notes-border)] bg-[var(--notes-panel)] text-[var(--notes-text)] shadow-2xl sm:rounded-2xl">
-            <div className="flex items-center justify-between border-b border-[var(--notes-border)] px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:pb-3">
-              <h2 className="text-sm font-semibold">Add an image</h2>
+            <div className="flex items-center justify-between border-[var(--notes-border)] border-b px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] sm:pb-3">
+              <h2 className="font-semibold text-sm">Add an image</h2>
               <button
                 type="button"
                 className="rounded-md p-1.5 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
@@ -466,17 +490,17 @@ export function NoteEditor({
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex gap-1 border-b border-[var(--notes-border)] px-4">
+            <div className="flex gap-1 border-[var(--notes-border)] border-b px-4">
               <button
                 type="button"
-                className={`border-b-2 px-3 py-2 text-sm font-medium ${imageTab === 'upload' ? 'border-[var(--notes-blue)] text-[var(--notes-text)]' : 'border-transparent text-[var(--notes-muted)] hover:text-[var(--notes-text)]'}`}
+                className={`border-b-2 px-3 py-2 font-medium text-sm ${imageTab === 'upload' ? 'border-[var(--notes-blue)] text-[var(--notes-text)]' : 'border-transparent text-[var(--notes-muted)] hover:text-[var(--notes-text)]'}`}
                 onClick={() => setImageTab('upload')}
               >
                 Upload
               </button>
               <button
                 type="button"
-                className={`border-b-2 px-3 py-2 text-sm font-medium ${imageTab === 'link' ? 'border-[var(--notes-blue)] text-[var(--notes-text)]' : 'border-transparent text-[var(--notes-muted)] hover:text-[var(--notes-text)]'}`}
+                className={`border-b-2 px-3 py-2 font-medium text-sm ${imageTab === 'link' ? 'border-[var(--notes-blue)] text-[var(--notes-text)]' : 'border-transparent text-[var(--notes-muted)] hover:text-[var(--notes-text)]'}`}
                 onClick={() => setImageTab('link')}
               >
                 Link
@@ -500,13 +524,13 @@ export function NoteEditor({
                   />
                   <button
                     type="button"
-                    className="w-full rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-4 text-base font-semibold hover:bg-[var(--notes-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:py-3 sm:text-sm"
+                    className="w-full rounded-lg border border-[var(--notes-border)] bg-[var(--notes-bg)] px-3 py-4 font-semibold text-base hover:bg-[var(--notes-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:py-3 sm:text-sm"
                     disabled={uploadingImage || !onImageUpload}
                     onClick={() => imageInputRef.current?.click()}
                   >
                     {uploadingImage ? 'Uploading...' : 'Upload file'}
                   </button>
-                  <p className="mt-2 text-center text-xs text-[var(--notes-muted)]">Choose an image from your device</p>
+                  <p className="mt-2 text-center text-[var(--notes-muted)] text-xs">Choose an image from your device</p>
                 </div>
               ) : (
                 <form
@@ -526,16 +550,16 @@ export function NoteEditor({
                   />
                   <button
                     type="submit"
-                    className="w-full rounded-lg border border-[var(--notes-blue)] bg-[var(--notes-blue)] px-3 py-4 text-base font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 sm:py-3 sm:text-sm"
+                    className="w-full rounded-lg border border-[var(--notes-blue)] bg-[var(--notes-blue)] px-3 py-4 font-semibold text-base text-white disabled:cursor-not-allowed disabled:opacity-50 sm:py-3 sm:text-sm"
                     disabled={!imageUrl.trim()}
                   >
                     Embed image
                   </button>
-                  <p className="text-center text-xs text-[var(--notes-muted)]">Works with any image from the web</p>
+                  <p className="text-center text-[var(--notes-muted)] text-xs">Works with any image from the web</p>
                 </form>
               )}
               {imagePickerError ? (
-                <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+                <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-800 text-sm dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
                   {imagePickerError}
                 </p>
               ) : null}
@@ -543,13 +567,13 @@ export function NoteEditor({
           </div>
         </div>
       ) : null}
-      {!readOnly ? (
+      {showBottomToolbar ? (
         <div
-          className="fixed inset-x-0 bottom-3 z-40 px-3 sm:bottom-4 sm:px-6 md:left-72 md:right-0"
+          className="fixed inset-x-0 bottom-3 z-40 px-3 sm:bottom-4 sm:px-6 md:right-0 md:left-72"
           style={keyboardOffset ? { bottom: keyboardOffset + 12 } : undefined}
         >
           <div ref={toolbarSurfaceRef} className="mx-auto flex max-w-3xl flex-col items-center">
-            {blockMenuOpen ? (
+            {!readOnly && blockMenuOpen ? (
               <fieldset
                 id="note-insert-menu"
                 className="mb-3 rounded-2xl border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 p-3 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85"
@@ -599,7 +623,7 @@ export function NoteEditor({
                 </div>
               </fieldset>
             ) : null}
-            {historyMenuOpen ? (
+            {!readOnly && historyMenuOpen ? (
               <fieldset
                 id="note-editor-actions-menu"
                 className="mb-3 grid min-w-44 gap-1 rounded-xl border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 p-2 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85"
@@ -633,30 +657,112 @@ export function NoteEditor({
                 </button>
               </fieldset>
             ) : null}
-            <div className="inline-flex w-fit max-w-full items-center gap-1 rounded-full border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 px-2 py-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85">
-              <button
-                type="button"
-                className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-                aria-label={blockMenuOpen ? 'Close insert menu' : 'Open insert menu'}
-                aria-controls={blockMenuOpen ? 'note-insert-menu' : undefined}
-                aria-expanded={blockMenuOpen}
-                onClick={() => {
-                  setHistoryMenuOpen(false);
-                  setBlockMenuOpen((open) => !open);
-                }}
-              >
-                {blockMenuOpen ? <X className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
-              </button>
-              <button
-                type="button"
-                className="rounded-full p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-                aria-label={historyMenuOpen ? 'Close editor actions' : 'Open editor actions'}
-                aria-controls={historyMenuOpen ? 'note-editor-actions-menu' : undefined}
-                aria-expanded={historyMenuOpen}
-                onClick={toggleHistoryMenu}
-              >
-                <MoreHorizontal className="h-5 w-5" />
-              </button>
+            <div className="inline-flex w-fit max-w-full items-center gap-1 rounded-full border border-[var(--notes-border)] bg-[var(--notes-panel)]/95 px-1.5 py-1.5 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-[var(--notes-panel)]/85">
+              {!readOnly && isListContext ? (
+                <>
+                  <button
+                    type="button"
+                    className={toolbarActionClassName}
+                    aria-label="Outdent list item"
+                    title="Outdent list item"
+                    disabled={!editorReady || !editorState?.canOutdentList}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => editorRef.current?.outdentList()}
+                  >
+                    <ListIndentDecrease className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    className={toolbarActionClassName}
+                    aria-label="Indent list item"
+                    title="Indent list item"
+                    disabled={!editorReady || !editorState?.canIndentList}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => editorRef.current?.indentList()}
+                  >
+                    <ListIndentIncrease className="h-5 w-5" />
+                  </button>
+                </>
+              ) : null}
+              {!readOnly && hasTextSelection ? (
+                <>
+                  <button
+                    type="button"
+                    className={editorState?.activeMarks.bold ? toolbarActiveActionClassName : toolbarActionClassName}
+                    aria-label="Bold"
+                    aria-pressed={editorState?.activeMarks.bold ?? false}
+                    disabled={!editorReady}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => editorRef.current?.toggleBold()}
+                  >
+                    <Bold className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    className={editorState?.activeMarks.italic ? toolbarActiveActionClassName : toolbarActionClassName}
+                    aria-label="Italic"
+                    aria-pressed={editorState?.activeMarks.italic ?? false}
+                    disabled={!editorReady}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => editorRef.current?.toggleItalic()}
+                  >
+                    <Italic className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    className={editorState?.activeMarks.code ? toolbarActiveActionClassName : toolbarActionClassName}
+                    aria-label="Inline code"
+                    aria-pressed={editorState?.activeMarks.code ?? false}
+                    disabled={!editorReady}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => editorRef.current?.toggleInlineCode()}
+                  >
+                    <Code className="h-5 w-5" />
+                  </button>
+                </>
+              ) : null}
+              {canCommentSelection ? (
+                <button
+                  type="button"
+                  className={toolbarActionClassName}
+                  aria-label="Comment"
+                  title="Comment"
+                  disabled={!editorReady}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => editorRef.current?.requestComment()}
+                >
+                  <MessageSquare className="h-5 w-5" />
+                </button>
+              ) : null}
+              {!readOnly ? (
+                <button
+                  type="button"
+                  className={toolbarActionClassName}
+                  aria-label={blockMenuOpen ? 'Close insert menu' : 'Open insert menu'}
+                  aria-controls={blockMenuOpen ? 'note-insert-menu' : undefined}
+                  aria-expanded={blockMenuOpen}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setHistoryMenuOpen(false);
+                    setBlockMenuOpen((open) => !open);
+                  }}
+                >
+                  {blockMenuOpen ? <X className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
+                </button>
+              ) : null}
+              {!readOnly ? (
+                <button
+                  type="button"
+                  className={toolbarActionClassName}
+                  aria-label={historyMenuOpen ? 'Close editor actions' : 'Open editor actions'}
+                  aria-controls={historyMenuOpen ? 'note-editor-actions-menu' : undefined}
+                  aria-expanded={historyMenuOpen}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={toggleHistoryMenu}
+                >
+                  <MoreHorizontal className="h-5 w-5" />
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

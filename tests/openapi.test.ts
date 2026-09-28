@@ -35,6 +35,16 @@ describe('harness OpenAPI spec', () => {
     expect(spec.paths).toHaveProperty('/v1/harness/folders');
     expect(spec.paths).toHaveProperty('/v1/harness/notes/{noteId}/edit');
     expect(spec.paths).toHaveProperty('/v1/harness/notes/orphans');
+    expect(spec.components.schemas.CreateCanvasFromSyntaxRequest?.properties?.format?.enum).toEqual([
+      'auto',
+      'minu',
+      'mermaid',
+    ]);
+    expect(spec.components.schemas.ReplaceCanvasFromSyntaxRequest?.properties?.format?.enum).toEqual([
+      'auto',
+      'minu',
+      'mermaid',
+    ]);
     expect(spec.components.schemas.SearchNotesResponse?.properties?.notes).toMatchObject({
       items: { $ref: '#/components/schemas/CompactNote' },
     });

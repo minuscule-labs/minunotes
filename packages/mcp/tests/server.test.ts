@@ -253,6 +253,7 @@ describe('createNotesMcpServer', () => {
       folderId: 'folder-1',
       syntax: 'diagram "Flow" { A > B }',
       documentType: 'canvas.mindmap',
+      format: 'auto',
     } as never);
     await tools(server).notes_replace_canvas.handler({
       noteId: 'canvas-1',
@@ -263,7 +264,8 @@ describe('createNotesMcpServer', () => {
       noteId: 'canvas-1',
       baseHash: 'hash',
       title: 'Updated flow',
-      syntax: 'diagram "Flow" { A > C }',
+      syntax: 'flowchart LR\n  A --> C',
+      format: 'mermaid',
     } as never);
 
     expect(client.canvases.create).toHaveBeenCalledWith({
@@ -277,6 +279,7 @@ describe('createNotesMcpServer', () => {
       title: undefined,
       syntax: 'diagram "Flow" { A > B }',
       documentType: 'canvas.mindmap',
+      format: 'auto',
     });
     expect(client.canvases.replace).toHaveBeenCalledWith('canvas-1', {
       baseHash: 'hash',
@@ -287,8 +290,9 @@ describe('createNotesMcpServer', () => {
     expect(client.canvases.replaceFromSyntax).toHaveBeenCalledWith('canvas-1', {
       baseHash: 'hash',
       title: 'Updated flow',
-      syntax: 'diagram "Flow" { A > C }',
+      syntax: 'flowchart LR\n  A --> C',
       documentType: undefined,
+      format: 'mermaid',
     });
   });
 

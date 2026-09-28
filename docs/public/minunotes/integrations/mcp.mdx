@@ -70,9 +70,9 @@ Structured reads:
 Canvases and internal node links:
 
 - `notes_create_canvas`
-- `notes_create_canvas_from_syntax`
+- `notes_create_canvas_from_syntax` (Minu syntax or auto-detected Mermaid flowchart; optional `format` override)
 - `notes_replace_canvas`
-- `notes_replace_canvas_from_syntax`
+- `notes_replace_canvas_from_syntax` (Minu syntax or auto-detected Mermaid flowchart; optional `format` override)
 - `notes_set_canvas_node_note_link`
 - `notes_remove_canvas_node_note_link`
 
@@ -98,7 +98,7 @@ Move operations are all-or-nothing, capped at 100 owned notes, and require edit 
 
 Use JSON Canvas for exact imports and replacements where node IDs, positions, external URLs, internal links, and metadata must remain deterministic.
 
-Use Minu diagram syntax for generated flows and mind maps:
+Use Minu diagram syntax for mind maps and Minu-specific layouts:
 
 ```txt
 diagram "Product plan" {
@@ -109,7 +109,7 @@ diagram "Product plan" {
 }
 ```
 
-Syntax is compiled into JSON Canvas. Replacing from syntax regenerates the complete document and can replace node IDs, layout, links, and metadata. Use the focused node-link tools after generation when nodes need internal note targets.
+The syntax tools also auto-detect Mermaid `flowchart`/`graph` input and compile the supported flowchart subset into editable native JSON Canvas (not SVG). It supports the standard directions, basic node shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs; styling, actions, rich labels, and other diagram types are rejected with diagnostics. Imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Use `format: "minu"` or `format: "mermaid"` to force a parser. Unsupported Mermaid syntax creates no partial canvas. Syntax is compiled into JSON Canvas; replacing from syntax regenerates the complete document and can replace node IDs, layout, links, and metadata. Use the focused node-link tools after generation when nodes need internal note targets.
 
 Canvas replacement and node-link mutations require a current `baseHash`. Setting a node link creates or changes its internal target; removing it only removes the internal target. Both operations preserve the node’s external `url` and unrelated metadata.
 

@@ -74,10 +74,15 @@ const bodyExamples: Record<string, unknown> = {
   CreateCanvasFromSyntaxRequest: {
     folderId: '{{folderId}}',
     title: 'Harness diagram',
-    syntax: 'diagram "Harness flow" {\n  Start > Finish\n}',
+    format: 'auto',
+    syntax: 'flowchart LR\n  Start --> Finish',
   },
   ReplaceCanvasRequest: { baseHash: '{{baseHash}}', canvas: { nodes: [], edges: [] } },
-  ReplaceCanvasFromSyntaxRequest: { baseHash: '{{baseHash}}', syntax: 'diagram "Harness flow" {\n  Start > Finish\n}' },
+  ReplaceCanvasFromSyntaxRequest: {
+    baseHash: '{{baseHash}}',
+    format: 'minu',
+    syntax: 'diagram "Harness flow" {\n  Start > Finish\n}',
+  },
   LinkCanvasNodeToNoteRequest: { targetNoteId: '{{targetNoteId}}', baseHash: '{{baseHash}}' },
   UpdateTagsRequest: { tags: ['evaluation'] },
   EditNoteRequest: { baseHash: '{{baseHash}}', edits: [{ type: 'append', text: '\n- Checked by harness\n' }] },

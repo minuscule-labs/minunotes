@@ -256,9 +256,9 @@ curl -s "${AUTH[@]}" \
 
 Message bodies are plain text and Markdown syntax is not rendered. Messages include grouped reaction counts and `reactedByCurrentActor`. Reactions accept one standard Unicode emoji, including joined and skin-tone emoji; `👍`, `❤️`, `😂`, `🎉`, `👀`, and `🚀` are the human UI's quick defaults. Every comment operation requires explicit Comment permission plus read access. Note edit permission and `isApiEditable` are not required for comments. Existing and new credentials have Comment disabled until the owner grants it. Message edits/deletes are author-only. Use the current document hash for creation and anchor updates; stale anchors return `409`. When a listed thread is `detached`, do not guess a replacement location. Comments are unavailable for canvases, templates, Trash, and public shares.
 
-Create canvases from JSON Canvas or Minu diagram syntax.
+Create canvases from JSON Canvas, Minu diagram syntax, or the supported Mermaid flowchart subset.
 
-For any net-new agent-composed conceptual diagram, flowchart, architecture diagram, or mind map, use the syntax endpoint by default. Use flow layout with `direction right` or `direction down` for workflows and directed graphs, and use `layout mindmap` only for a true tree. Keep node labels concise and plain text because canvas nodes do not render Markdown. Put the diagram title in the note or syntax title rather than a detached node. Reserve raw JSON Canvas for exact imports or user-requested IDs, positions, links, groups, styles, and metadata.
+For generated diagrams, use the syntax endpoint. It auto-detects Mermaid `flowchart`/`graph` headers; set `format` to `minu` or `mermaid` to force a parser. Mermaid is compiled into editable native JSON Canvas, not SVG. It supports standard flowchart directions, basic node shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs; styling, actions, rich labels, and other diagram types fail closed with diagnostics. Server limits are 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Use Mermaid for supported flowcharts and Minu syntax for mind maps or Minu-specific layout. Keep node labels concise and plain text because canvas nodes do not render Markdown. Put the diagram title in the note or syntax title rather than a detached node. Reserve raw JSON Canvas for exact imports or user-requested IDs, positions, links, groups, styles, and metadata.
 
 ```bash
 curl -s "${AUTH[@]}" \
@@ -268,6 +268,11 @@ curl -s "${AUTH[@]}" \
 curl -s "${AUTH[@]}" \
   -X POST "$API/v1/harness/canvases/from-syntax" \
   -d '{"folderId":"folder_xxx","syntax":"diagram \"Product plan\" {\n  layout mindmap\n  Product\n  Product > Research\n}"}'
+
+# Auto-detect Mermaid flowcharts and persist them as editable native canvas data
+curl -s "${AUTH[@]}" \
+  -X POST "$API/v1/harness/canvases/from-syntax" \
+  -d '{"folderId":"folder_xxx","title":"Release flow","format":"auto","syntax":"flowchart LR\n  draft[\"Draft\"] --> review{Approved?}\n  review -->|yes| shipped([Shipped])"}'
 ```
 
 Replace an existing canvas:
@@ -320,7 +325,7 @@ curl -s "${AUTH[@]}" "$API/v1/harness/notes/orphans"
 - `POST /v1/harness/notes`
 - `POST /v1/harness/notes/move`
 - `POST /v1/harness/canvases`
-- `POST /v1/harness/canvases/from-syntax`
+- `POST /v1/harness/canvases/from-syntax` — accepts `format: auto | minu | mermaid` (default `auto`); Mermaid supports only the documented flowchart subset.
 - `GET /v1/harness/notes/orphans?limit=25&cursor=...`
 - `GET /v1/harness/notes/:noteId`
 - `POST /v1/harness/notes/:noteId/trash` (destructive; requires explicit user intent)
@@ -345,7 +350,7 @@ curl -s "${AUTH[@]}" "$API/v1/harness/notes/orphans"
 - `PUT /v1/harness/notes/:noteId/canvas`
 - `POST /v1/harness/notes/:noteId/canvas/nodes/:nodeId/link-note`
 - `DELETE /v1/harness/notes/:noteId/canvas/nodes/:nodeId/link?baseHash=...`
-- `PUT /v1/harness/notes/:noteId/canvas/from-syntax`
+- `PUT /v1/harness/notes/:noteId/canvas/from-syntax` — accepts the same `format` field and diagnostics.
 - `POST /v1/harness/notes/:noteId/edit`
 
 ## Edit payload types

@@ -232,7 +232,7 @@ export const harnessOpenApiSpec = {
       post: {
         tags: ['Canvases'],
         operationId: 'createCanvasFromSyntax',
-        summary: 'Create a canvas note from Minu diagram syntax',
+        summary: 'Create a canvas note from Minu or Mermaid flowchart syntax',
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateCanvasFromSyntaxRequest' } } },
@@ -736,7 +736,7 @@ export const harnessOpenApiSpec = {
       put: {
         tags: ['Canvases'],
         operationId: 'replaceCanvasFromSyntax',
-        summary: 'Replace a canvas note with compiled Minu diagram syntax',
+        summary: 'Replace a canvas note with compiled Minu or Mermaid flowchart syntax',
         parameters: [{ $ref: '#/components/parameters/NoteId' }],
         requestBody: {
           required: true,
@@ -1192,6 +1192,9 @@ export const harnessOpenApiSpec = {
           severity: { type: 'string', enum: ['warning', 'error'] },
           message: { type: 'string' },
           line: { type: 'integer' },
+          column: { type: 'integer' },
+          code: { type: 'string' },
+          suggestion: { type: 'string' },
         },
       },
       Note: {
@@ -1386,7 +1389,12 @@ export const harnessOpenApiSpec = {
           syntax: {
             type: 'string',
             description:
-              'Minu diagram syntax. Declare nodes as `A [label: "Label", shape: card]` and connections as `A > B` or `A --> B`. Do not use `node A ...` or `A -> B`. Use `layout mindmap` for mind maps.',
+              'Minu diagram syntax or a supported Mermaid flowchart. Auto-detection recognizes Mermaid `flowchart`/`graph` headers; unsupported Mermaid features fail with diagnostics.',
+          },
+          format: {
+            type: 'string',
+            enum: ['auto', 'minu', 'mermaid'],
+            description: 'Syntax dialect. Defaults to auto-detection; use minu or mermaid to force a parser.',
           },
         },
       },
@@ -1399,7 +1407,12 @@ export const harnessOpenApiSpec = {
           syntax: {
             type: 'string',
             description:
-              'Minu diagram syntax. Declare nodes as `A [label: "Label", shape: card]` and connections as `A > B` or `A --> B`. Do not use `node A ...` or `A -> B`. Use `layout mindmap` for mind maps.',
+              'Minu diagram syntax or a supported Mermaid flowchart. Auto-detection recognizes Mermaid `flowchart`/`graph` headers; unsupported Mermaid features fail with diagnostics.',
+          },
+          format: {
+            type: 'string',
+            enum: ['auto', 'minu', 'mermaid'],
+            description: 'Syntax dialect. Defaults to auto-detection; use minu or mermaid to force a parser.',
           },
           baseHash: { type: 'string' },
         },

@@ -95,6 +95,7 @@ export type NotesMcpClient = {
       title?: string;
       syntax: string;
       documentType?: 'canvas.default' | 'canvas.mindmap';
+      format?: 'auto' | 'minu' | 'mermaid';
     }) => Promise<unknown>;
     replace: (
       noteId: string,
@@ -112,6 +113,7 @@ export type NotesMcpClient = {
         title?: string;
         syntax: string;
         documentType?: 'canvas.default' | 'canvas.mindmap';
+        format?: 'auto' | 'minu' | 'mermaid';
       }
     ) => Promise<unknown>;
     setNoteLink: (
@@ -374,7 +376,7 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     {
       title: 'Create canvas from syntax',
       description:
-        'Create a generated canvas or mind map from Minu diagram syntax. Declare nodes as `id [label: "Label", shape: card]` and connections as `A > B` or `A --> B`; `node ...` and `->` are unsupported. The compiler assigns layout and node ids.',
+        'Create an editable canvas from Minu diagram syntax or a supported Mermaid flowchart. Syntax defaults to auto-detection (`flowchart`/`graph` headers select Mermaid). Mermaid imports preserve supported flowchart structure as native JSON Canvas, not SVG; unsupported Mermaid syntax returns diagnostics. Use Minu syntax for mind maps.',
       inputSchema: {
         folderId: z.string(),
         title: z.string().optional(),
@@ -382,15 +384,27 @@ export function createNotesMcpServer(client: NotesMcpClient) {
           .string()
           .min(1)
           .describe(
-            'Minu diagram syntax. Use `A [label: "Label", shape: card]` and `A > B`; do not use `node A ...` or `A -> B`.'
+            'Minu diagram syntax or a supported Mermaid flowchart. Auto-detection recognizes Mermaid `flowchart`/`graph` headers.'
           ),
         documentType: canvasDocumentTypeSchema.optional(),
+        format: z
+          .enum(['auto', 'minu', 'mermaid'])
+          .optional()
+          .describe('Syntax dialect; defaults to auto-detection. Use minu or mermaid to force a parser.'),
       },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ folderId, title, syntax, documentType }) =>
-      toolResult(await client.canvases.createFromSyntax({ folderId, title, syntax, documentType }))
+    async ({ folderId, title, syntax, documentType, format }) =>
+      toolResult(
+        await client.canvases.createFromSyntax({
+          folderId,
+          title,
+          syntax,
+          documentType,
+          ...(format === undefined ? {} : { format }),
+        })
+      )
   );
 
   server.registerTool(
@@ -418,7 +432,7 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     {
       title: 'Replace canvas from syntax',
       description:
-        'Regenerate and replace a complete canvas from Minu diagram syntax using a base hash. Declare nodes as `id [label: "Label", shape: card]` and connections as `A > B` or `A --> B`; `node ...` and `->` are unsupported. This can replace node ids, layout, links, and metadata.',
+        'Regenerate and replace a complete canvas from Minu diagram syntax or a supported Mermaid flowchart using a base hash. Syntax defaults to auto-detection (`flowchart`/`graph` headers select Mermaid). Mermaid imports become native JSON Canvas, not SVG; unsupported syntax returns diagnostics. Use Minu syntax for mind maps. Replacement can change node ids, layout, links, and metadata.',
       inputSchema: {
         noteId: z.string(),
         baseHash: z.string().min(1),
@@ -427,15 +441,27 @@ export function createNotesMcpServer(client: NotesMcpClient) {
           .string()
           .min(1)
           .describe(
-            'Minu diagram syntax. Use `A [label: "Label", shape: card]` and `A > B`; do not use `node A ...` or `A -> B`.'
+            'Minu diagram syntax or a supported Mermaid flowchart. Auto-detection recognizes Mermaid `flowchart`/`graph` headers.'
           ),
         documentType: canvasDocumentTypeSchema.optional(),
+        format: z
+          .enum(['auto', 'minu', 'mermaid'])
+          .optional()
+          .describe('Syntax dialect; defaults to auto-detection. Use minu or mermaid to force a parser.'),
       },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    async ({ noteId, baseHash, title, syntax, documentType }) =>
-      toolResult(await client.canvases.replaceFromSyntax(noteId, { baseHash, title, syntax, documentType }))
+    async ({ noteId, baseHash, title, syntax, documentType, format }) =>
+      toolResult(
+        await client.canvases.replaceFromSyntax(noteId, {
+          baseHash,
+          title,
+          syntax,
+          documentType,
+          ...(format === undefined ? {} : { format }),
+        })
+      )
   );
 
   server.registerTool(
