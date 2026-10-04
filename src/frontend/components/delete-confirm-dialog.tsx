@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from 'react';
+import { type ReactNode, type RefObject, useRef, useState } from 'react';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from './ui/dialog';
 import { ModalCloseButton } from './ui/modal-close-button';
@@ -13,6 +13,9 @@ export function DeleteConfirmDialog({
   onConfirm,
   trigger,
   onOpenChange,
+  open: controlledOpen,
+  hideTrigger = false,
+  returnFocusRef,
 }: {
   label: string;
   heading?: string;
@@ -23,12 +26,16 @@ export function DeleteConfirmDialog({
   onConfirm: () => unknown | Promise<unknown>;
   trigger?: ReactNode;
   onOpenChange?: (open: boolean) => void;
+  open?: boolean;
+  hideTrigger?: boolean;
+  returnFocusRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLButtonElement | null>(null);
   const confirmationInputRef = useRef<HTMLInputElement | null>(null);
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
   const [value, setValue] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +43,7 @@ export function DeleteConfirmDialog({
   const changeOpen = (nextOpen: boolean) => {
     if (pending && !nextOpen) return;
     setOpen(nextOpen);
-    if (!nextOpen && previousFocusRef.current) window.setTimeout(() => previousFocusRef.current?.focus(), 0);
+    if (!nextOpen) window.setTimeout(() => (returnFocusRef?.current ?? previousFocusRef.current)?.focus(), 0);
     setValue('');
     setError(null);
     onOpenChange?.(nextOpen);
@@ -57,7 +64,7 @@ export function DeleteConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
-      {trigger ? (
+      {hideTrigger ? null : trigger ? (
         <button
           ref={triggerRef}
           type="button"
@@ -85,9 +92,10 @@ export function DeleteConfirmDialog({
           );
         }}
         onCloseAutoFocus={(event) => {
-          if (previousFocusRef.current) {
+          const target = returnFocusRef?.current ?? previousFocusRef.current;
+          if (target) {
             event.preventDefault();
-            previousFocusRef.current.focus();
+            target.focus();
           }
         }}
         onEscapeKeyDown={(event) => {

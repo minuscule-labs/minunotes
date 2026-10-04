@@ -468,6 +468,31 @@ export const api = {
     request<{ client: OAuthClient }>('/oauth/clients', { method: 'POST', body: JSON.stringify(data) }),
   revokeOAuthClient: (clientId: string) => request<{ ok: true }>(`/oauth/clients/${clientId}`, { method: 'DELETE' }),
   oauthAuthorizations: () => request<{ authorizations: OAuthAuthorization[] }>('/oauth/authorizations'),
+  updateOAuthAuthorization: (
+    authorizationId: string,
+    data: {
+      accessMode: ApiKeyAccessMode;
+      canCreateFolders: boolean;
+      canRead: boolean;
+      canCreate: boolean;
+      canEdit: boolean;
+      canComment: boolean;
+      sharedAccessMode: SharedAccessMode;
+      collaborationGrantIds: string[];
+      permissions: Array<{
+        folderId: string;
+        canRead?: boolean;
+        canCreate?: boolean;
+        canEdit?: boolean;
+        canComment?: boolean;
+        appliesTo?: 'exact' | 'subtree';
+      }>;
+    }
+  ) =>
+    request<{ ok: true }>(`/oauth/authorizations/${authorizationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
   revokeOAuthAuthorization: (authorizationId: string) =>
     request<{ ok: true }>(`/oauth/authorizations/${authorizationId}`, { method: 'DELETE' }),
   oauthAuthorizePreview: (params: OAuthAuthorizeRequest) =>
@@ -480,7 +505,15 @@ export const api = {
       canEdit: boolean;
       canComment: boolean;
       canCreateFolders: boolean;
-      folderIds: string[];
+      folderIds?: string[];
+      permissions?: Array<{
+        folderId: string;
+        canRead: boolean;
+        canCreate: boolean;
+        canEdit: boolean;
+        canComment: boolean;
+        appliesTo: 'exact' | 'subtree';
+      }>;
       sharedAccessMode: SharedAccessMode;
       collaborationGrantIds: string[];
     }
@@ -502,6 +535,7 @@ export const api = {
         canComment: data.canComment,
         canCreateFolders: data.canCreateFolders,
         folderIds: data.folderIds,
+        permissions: data.permissions,
         sharedAccessMode: data.sharedAccessMode,
         collaborationGrantIds: data.collaborationGrantIds,
       }),
