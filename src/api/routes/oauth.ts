@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull } from 'drizzle-orm';
 import { type Context, Hono } from 'hono';
 import { db, libsql } from '../db/client';
 import {
@@ -46,6 +46,31 @@ type Variables = {
 export const oauthRoutes = new Hono<{ Variables: Variables }>();
 
 const { frontendUrl } = getApiRuntimeConfig();
+
+type AuthorizationAccessMode = 'all' | 'top_level' | 'specific';
+type AuthorizationSharedAccessMode = 'none' | 'specific' | 'all';
+type AuthorizationPermissionInput = {
+  folderId: string;
+  canRead?: boolean;
+  canCreate?: boolean;
+  canEdit?: boolean;
+  canComment?: boolean;
+  appliesTo?: 'exact' | 'subtree';
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isAuthorizationPermissionInput(value: unknown): value is AuthorizationPermissionInput {
+  if (!isRecord(value) || typeof value.folderId !== 'string') return false;
+  return (
+    ['canRead', 'canCreate', 'canEdit', 'canComment'].every(
+      (key) => value[key] === undefined || typeof value[key] === 'boolean'
+    ) &&
+    (value.appliesTo === undefined || value.appliesTo === 'exact' || value.appliesTo === 'subtree')
+  );
+}
 
 function getOrigin(c: Context<{ Variables: Variables }>) {
   return new URL(c.req.url).origin;
@@ -354,6 +379,188 @@ oauthRoutes.get('/authorizations', async (c) => {
         .map((scope) => publicCollaborationAccessKey(scope.collaborationGrantId)),
     })),
   });
+});
+
+oauthRoutes.patch('/authorizations/:authorizationId', async (c) => {
+  const user = c.get('user');
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+
+  const body = await c.req.json().catch(() => null);
+  if (
+    !isRecord(body) ||
+    (body.accessMode !== 'all' && body.accessMode !== 'top_level' && body.accessMode !== 'specific') ||
+    typeof body.canRead !== 'boolean' ||
+    typeof body.canCreate !== 'boolean' ||
+    typeof body.canEdit !== 'boolean' ||
+    typeof body.canComment !== 'boolean' ||
+    typeof body.canCreateFolders !== 'boolean' ||
+    (body.sharedAccessMode !== 'none' && body.sharedAccessMode !== 'specific' && body.sharedAccessMode !== 'all') ||
+    !Array.isArray(body.collaborationGrantIds) ||
+    !body.collaborationGrantIds.every((grantId): grantId is string => typeof grantId === 'string') ||
+    body.collaborationGrantIds.length > 100 ||
+    !Array.isArray(body.permissions) ||
+    !body.permissions.every(isAuthorizationPermissionInput)
+  )
+    return c.json({ error: 'Invalid authorization settings' }, 400);
+
+  const accessMode = body.accessMode as AuthorizationAccessMode;
+  const sharedAccessMode = body.sharedAccessMode as AuthorizationSharedAccessMode;
+  const capabilities = {
+    canRead: body.canRead,
+    canCreate: body.canCreate,
+    canEdit: body.canEdit,
+    canComment: body.canComment,
+    canCreateFolders: body.canCreateFolders,
+  };
+  if (capabilities.canComment && !capabilities.canRead)
+    return c.json({ error: 'Comment permission requires read permission' }, 400);
+  if (
+    !capabilities.canRead &&
+    !capabilities.canCreate &&
+    !capabilities.canEdit &&
+    !capabilities.canComment &&
+    !capabilities.canCreateFolders
+  )
+    return c.json({ error: 'At least one permission is required' }, 400);
+
+  const collaborationGrantKeys = [...new Set(body.collaborationGrantIds)];
+  if (sharedAccessMode === 'specific' && collaborationGrantKeys.length === 0)
+    return c.json({ error: 'At least one collaboration grant is required for specific shared access' }, 400);
+  if (sharedAccessMode !== 'specific' && collaborationGrantKeys.length > 0)
+    return c.json({ error: 'Collaboration grant selections require specific shared access mode' }, 400);
+
+  const [existing] = await db
+    .select({ connection: oauthAuthorizations, authorization: integrationAuthorizations })
+    .from(oauthAuthorizations)
+    .innerJoin(
+      integrationAuthorizations,
+      eq(oauthAuthorizations.integrationAuthorizationId, integrationAuthorizations.id)
+    )
+    .where(
+      and(
+        eq(oauthAuthorizations.id, c.req.param('authorizationId')),
+        eq(oauthAuthorizations.userId, user.id),
+        eq(integrationAuthorizations.userId, user.id),
+        isNull(integrationAuthorizations.revokedAt)
+      )
+    )
+    .limit(1);
+  if (!existing) return c.json({ error: 'OAuth authorization not found' }, 404);
+
+  let collaborationGrantIds: string[] = [];
+  if (collaborationGrantKeys.length > 0) {
+    const validGrants = await db
+      .select({ id: collaborationGrants.id })
+      .from(collaborationGrants)
+      .where(eq(collaborationGrants.granteeUserId, user.id));
+    const internalIdByPublicKey = new Map(
+      validGrants.map((grant) => [publicCollaborationAccessKey(grant.id), grant.id])
+    );
+    const resolvedIds = collaborationGrantKeys.map((key) => internalIdByPublicKey.get(key));
+    if (!resolvedIds.every((id): id is string => Boolean(id)))
+      return c.json({ error: 'One or more collaboration grants are invalid' }, 400);
+    collaborationGrantIds = resolvedIds;
+  }
+
+  if (accessMode !== 'all' && body.permissions.length === 0)
+    return c.json({ error: 'At least one folder is required' }, 400);
+  const selectablePermissions = await filterSelectablePermissionRows({
+    userId: user.id,
+    accessMode,
+    permissions: body.permissions,
+  });
+  if (selectablePermissions.length !== body.permissions.length)
+    return c.json({ error: 'One or more folders cannot be selected' }, 400);
+
+  const now = new Date();
+  const scope = oauthScopeForCapabilities(capabilities);
+  const folderRules = selectablePermissions.flatMap((permission) => {
+    if (!permission.folderId) return [];
+    return [
+      {
+        id: createId('auth_rule'),
+        authorizationId: existing.authorization.id,
+        userId: user.id,
+        folderId: permission.folderId,
+        canRead: capabilities.canRead && (permission.canRead ?? capabilities.canRead),
+        canCreate: capabilities.canCreate && (permission.canCreate ?? capabilities.canCreate),
+        canEdit: capabilities.canEdit && (permission.canEdit ?? capabilities.canEdit),
+        canComment: capabilities.canComment && (permission.canComment ?? capabilities.canComment),
+        canCreateFolders: capabilities.canCreateFolders,
+        appliesTo:
+          accessMode === 'top_level'
+            ? ('subtree' as const)
+            : accessMode === 'specific'
+              ? ('exact' as const)
+              : (permission.appliesTo ?? 'exact'),
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+  });
+
+  const updated = await db.transaction(async (tx) => {
+    const [activeAuthorization] = await tx
+      .update(integrationAuthorizations)
+      .set({ ...capabilities, accessMode, sharedAccessMode, updatedAt: now })
+      .where(
+        and(
+          eq(integrationAuthorizations.id, existing.authorization.id),
+          eq(integrationAuthorizations.userId, user.id),
+          isNull(integrationAuthorizations.revokedAt)
+        )
+      )
+      .returning({ id: integrationAuthorizations.id });
+    if (!activeAuthorization) return false;
+
+    await tx
+      .update(oauthAuthorizations)
+      .set({ scope, updatedAt: now })
+      .where(eq(oauthAuthorizations.id, existing.connection.id));
+    await tx
+      .update(oauthTokens)
+      .set({ scope, updatedAt: now })
+      .where(and(eq(oauthTokens.authorizationId, existing.connection.id), isNull(oauthTokens.revokedAt)));
+    await tx
+      .update(oauthAuthorizationCodes)
+      .set({ scope })
+      .where(
+        and(
+          eq(oauthAuthorizationCodes.authorizationId, existing.connection.id),
+          isNull(oauthAuthorizationCodes.usedAt),
+          gt(oauthAuthorizationCodes.expiresAt, now)
+        )
+      );
+
+    await tx
+      .delete(authorizationCollaborationScopes)
+      .where(eq(authorizationCollaborationScopes.authorizationId, existing.authorization.id));
+    if (sharedAccessMode === 'specific' && collaborationGrantIds.length > 0)
+      await tx.insert(authorizationCollaborationScopes).values(
+        collaborationGrantIds.map((collaborationGrantId) => ({
+          id: createId('auth_collaboration_scope'),
+          authorizationId: existing.authorization.id,
+          userId: user.id,
+          collaborationGrantId,
+          createdAt: now,
+        }))
+      );
+
+    await tx
+      .delete(authorizationFolderRules)
+      .where(eq(authorizationFolderRules.authorizationId, existing.authorization.id));
+    if (folderRules.length > 0)
+      await tx
+        .insert(authorizationFolderRules)
+        .values(folderRules)
+        .onConflictDoNothing({
+          target: [authorizationFolderRules.authorizationId, authorizationFolderRules.folderId],
+        });
+
+    return true;
+  });
+  if (!updated) return c.json({ error: 'OAuth authorization not found' }, 404);
+  return c.json({ ok: true });
 });
 
 oauthRoutes.delete('/authorizations/:authorizationId', async (c) => {
@@ -696,7 +903,6 @@ async function exchangeAuthorizationCode(
         args: [toEpochSeconds(now), row.id, toEpochSeconds(now)],
       },
       row.authorizationId,
-      row.scope,
       now
     );
     return tokens ? c.json(tokens) : c.json(oauthError('invalid_grant'), 400);
@@ -731,7 +937,6 @@ async function refreshAccessToken(
         args: [toEpochSeconds(now), toEpochSeconds(now), token.id, toEpochSeconds(now)],
       },
       token.authorizationId,
-      token.scope,
       now
     );
     return tokens ? c.json(tokens) : c.json(oauthError('invalid_grant'), 400);
@@ -749,7 +954,6 @@ function toEpochSeconds(value: Date) {
 async function claimAndIssueTokens(
   claim: { sql: string; args: Array<string | number> },
   authorizationId: string,
-  scope: string,
   now: Date
 ) {
   const accessToken = generateOAuthToken('mnoac');
@@ -767,18 +971,20 @@ async function claimAndIssueTokens(
                   id, authorization_id, access_token_hash, refresh_token_hash, scope,
                   access_token_expires_at, refresh_token_expires_at, created_at, updated_at
                 )
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-                WHERE changes() = 1`,
+                SELECT ?, ?, ?, ?, oauth_authorizations.scope, ?, ?, ?, ?
+                FROM oauth_authorizations
+                WHERE oauth_authorizations.id = ? AND changes() = 1
+                RETURNING scope`,
           args: [
             tokenId,
             authorizationId,
             hashOAuthToken(accessToken),
             hashOAuthToken(refreshToken),
-            scope,
             toEpochSeconds(accessTokenExpiresAt),
             toEpochSeconds(refreshTokenExpiresAt),
             toEpochSeconds(now),
             toEpochSeconds(now),
+            authorizationId,
           ],
         },
         {
@@ -793,7 +999,8 @@ async function claimAndIssueTokens(
       'write'
     )
   );
-  if (results[0]?.rowsAffected !== 1 || results[1]?.rowsAffected !== 1) return null;
+  const scope = results[1]?.rows[0]?.scope;
+  if (results[0]?.rowsAffected !== 1 || results[1]?.rows.length !== 1 || typeof scope !== 'string') return null;
 
   return {
     token_type: 'Bearer',

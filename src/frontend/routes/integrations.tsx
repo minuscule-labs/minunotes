@@ -260,16 +260,25 @@ function IntegrationsView() {
                     {authorization.revokedAt ? (
                       <Button disabled>Revoked</Button>
                     ) : (
-                      <DeleteConfirmDialog
-                        label="connected app"
-                        warning="This app will immediately lose access to MinuNotes and cannot use existing tokens."
-                        onConfirm={() => revokeConnectedApp.mutateAsync(authorization.id)}
-                        trigger={
-                          <span className="block rounded-md border border-[var(--notes-button-secondary-border)] bg-[var(--notes-button-secondary-bg)] px-3 py-2 text-[var(--notes-button-secondary-text)] text-sm transition-colors hover:bg-[var(--notes-button-secondary-hover)]">
-                            Revoke
-                          </span>
-                        }
-                      />
+                      <>
+                        <ApiKeyAccessDialog
+                          folders={folders.data?.folders ?? []}
+                          collaborations={collaborations.data?.collaborations ?? []}
+                          oauthAuthorization={authorization}
+                          onSaved={() => qc.invalidateQueries({ queryKey: ['oauth-authorizations'] })}
+                          trigger={(open) => <Button onClick={open}>Edit</Button>}
+                        />
+                        <DeleteConfirmDialog
+                          label="connected app"
+                          warning="This app will immediately lose access to MinuNotes and cannot use existing tokens."
+                          onConfirm={() => revokeConnectedApp.mutateAsync(authorization.id)}
+                          trigger={
+                            <span className="block rounded-md border border-[var(--notes-button-secondary-border)] bg-[var(--notes-button-secondary-bg)] px-3 py-2 text-[var(--notes-button-secondary-text)] text-sm transition-colors hover:bg-[var(--notes-button-secondary-hover)]">
+                              Revoke
+                            </span>
+                          }
+                        />
+                      </>
                     )}
                   </div>
                 </div>

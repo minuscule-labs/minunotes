@@ -338,6 +338,291 @@ describe('oauth foundations', () => {
     ).toBeTruthy();
   });
 
+  it('edits connected-app permissions and updates active OAuth tokens', async () => {
+    const { app, bearerApp, db, schema, user, hashOAuthToken } = await setupApp();
+    const now = new Date();
+    const accessToken = 'mnoac_editable_access';
+    const refreshToken = 'mnort_editable_refresh';
+
+    await db.insert(schema.folders).values({
+      id: 'folder_editable',
+      userId: user.id,
+      parentFolderId: null,
+      title: 'Editable folder',
+      isPrivate: false,
+      isAgentReadOnly: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const sharedOwner = {
+      id: 'user_edit_shared_owner',
+      name: 'Shared Owner',
+      email: 'shared-owner@example.com',
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.insert(schema.user).values(sharedOwner);
+    await db.insert(schema.folders).values({
+      id: 'folder_shared_edit',
+      userId: sharedOwner.id,
+      parentFolderId: null,
+      title: 'Shared folder',
+      isPrivate: false,
+      isAgentReadOnly: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.collaborationGrants).values({
+      id: 'grant_shared_edit',
+      ownerUserId: sharedOwner.id,
+      granteeUserId: user.id,
+      folderId: 'folder_shared_edit',
+      role: 'viewer',
+      createdByUserId: sharedOwner.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.integrationAuthorizations).values({
+      id: 'oauth_auth_editable',
+      userId: user.id,
+      accessMode: 'all',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      canCreateFolders: false,
+      sharedAccessMode: 'none',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.oauthAuthorizations).values({
+      id: 'oauth_auth_editable',
+      integrationAuthorizationId: 'oauth_auth_editable',
+      userId: user.id,
+      clientId: 'client_a',
+      scope: 'notes.read',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.oauthAuthorizationCodes).values({
+      id: 'oauth_code_editable',
+      codeHash: hashOAuthToken('pending_code'),
+      clientId: 'client_a',
+      userId: user.id,
+      redirectUri: 'https://client.example/callback',
+      scope: 'notes.read',
+      codeChallenge: 'challenge',
+      codeChallengeMethod: 'S256',
+      authorizationId: 'oauth_auth_editable',
+      expiresAt: new Date(now.getTime() + 60_000),
+      createdAt: now,
+    });
+    await db.insert(schema.oauthTokens).values({
+      id: 'oauth_token_editable',
+      authorizationId: 'oauth_auth_editable',
+      accessTokenHash: hashOAuthToken(accessToken),
+      refreshTokenHash: hashOAuthToken(refreshToken),
+      scope: 'notes.read',
+      accessTokenExpiresAt: new Date(now.getTime() + 60_000),
+      refreshTokenExpiresAt: new Date(now.getTime() + 60_000),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const update = await app.request('/api/oauth/authorizations/oauth_auth_editable', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accessMode: 'specific',
+        canRead: true,
+        canCreate: true,
+        canEdit: true,
+        canComment: true,
+        canCreateFolders: true,
+        sharedAccessMode: 'specific',
+        collaborationGrantIds: [publicCollaborationAccessKey('grant_shared_edit')],
+        permissions: [{ folderId: 'folder_editable', canRead: true, canCreate: true, canEdit: true, canComment: true }],
+      }),
+    });
+    expect(update.status).toBe(200);
+    await expect(update.json()).resolves.toEqual({ ok: true });
+
+    const expectedScope = 'notes.read notes.create notes.edit comments.write folders.create';
+    const authorization = await bearerApp.request('/', { headers: { authorization: `Bearer ${accessToken}` } });
+    expect(authorization.status).toBe(200);
+    await expect(authorization.json()).resolves.toMatchObject({
+      authorization: {
+        canRead: true,
+        canCreate: true,
+        canEdit: true,
+        canComment: true,
+        canCreateFolders: true,
+      },
+    });
+
+    const [oauthGrant] = await db.select().from(schema.oauthAuthorizations);
+    const [integrationGrant] = await db.select().from(schema.integrationAuthorizations);
+    const [authorizationCode] = await db.select().from(schema.oauthAuthorizationCodes);
+    const [token] = await db.select().from(schema.oauthTokens);
+    const [folderRule] = await db.select().from(schema.authorizationFolderRules);
+    const [collaborationScope] = await db.select().from(schema.authorizationCollaborationScopes);
+    expect(oauthGrant.scope).toBe(expectedScope);
+    expect(integrationGrant).toMatchObject({
+      accessMode: 'specific',
+      sharedAccessMode: 'specific',
+      canCreateFolders: true,
+    });
+    expect(authorizationCode.scope).toBe(expectedScope);
+    expect(folderRule).toMatchObject({ folderId: 'folder_editable', canRead: true, canComment: true });
+    expect(collaborationScope).toMatchObject({ collaborationGrantId: 'grant_shared_edit' });
+    expect(token.scope).toBe(expectedScope);
+
+    // Refresh must use the current grant scope even if an older token row is stale.
+    await db.update(schema.oauthTokens).set({ scope: 'notes.read' });
+    const refreshed = await app.request('/api/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: 'client_a' }),
+    });
+    expect(refreshed.status).toBe(200);
+    await expect(refreshed.json()).resolves.toMatchObject({ scope: expectedScope });
+  });
+
+  it('rejects foreign, invalid-comment, private-folder, and invalid-share authorization edits', async () => {
+    const { app, db, schema, user } = await setupApp();
+    const now = new Date();
+    await db.insert(schema.integrationAuthorizations).values({
+      id: 'oauth_auth_edit_owner',
+      userId: user.id,
+      accessMode: 'all',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      canCreateFolders: false,
+      sharedAccessMode: 'none',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.oauthAuthorizations).values({
+      id: 'oauth_auth_edit_owner',
+      integrationAuthorizationId: 'oauth_auth_edit_owner',
+      userId: user.id,
+      clientId: 'client_a',
+      scope: 'notes.read',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const otherUser = { ...user, id: 'user_b', name: 'User B', email: 'b@example.com' };
+    await db.insert(schema.user).values(otherUser);
+    await db.insert(schema.integrationAuthorizations).values({
+      id: 'oauth_auth_edit_other',
+      userId: otherUser.id,
+      accessMode: 'all',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      canCreateFolders: false,
+      sharedAccessMode: 'none',
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.oauthAuthorizations).values({
+      id: 'oauth_auth_edit_other',
+      integrationAuthorizationId: 'oauth_auth_edit_other',
+      userId: otherUser.id,
+      clientId: 'client_a',
+      scope: 'notes.read',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const base = {
+      accessMode: 'all',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      canCreateFolders: false,
+      sharedAccessMode: 'none',
+      collaborationGrantIds: [],
+      permissions: [],
+    };
+    const foreign = await app.request('/api/oauth/authorizations/oauth_auth_edit_other', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(base),
+    });
+    expect(foreign.status).toBe(404);
+
+    const invalidComment = await app.request('/api/oauth/authorizations/oauth_auth_edit_owner', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...base, canRead: false, canComment: true }),
+    });
+    expect(invalidComment.status).toBe(400);
+
+    await db.insert(schema.folders).values({
+      id: 'folder_edit_private',
+      userId: user.id,
+      parentFolderId: null,
+      title: 'Private folder',
+      isPrivate: true,
+      isAgentReadOnly: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const privateFolder = await app.request('/api/oauth/authorizations/oauth_auth_edit_owner', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...base,
+        accessMode: 'specific',
+        permissions: [{ folderId: 'folder_edit_private', canRead: true }],
+      }),
+    });
+    expect(privateFolder.status).toBe(400);
+
+    const invalidShare = await app.request('/api/oauth/authorizations/oauth_auth_edit_owner', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...base,
+        sharedAccessMode: 'specific',
+        collaborationGrantIds: ['invalid-grant'],
+      }),
+    });
+    expect(invalidShare.status).toBe(400);
+
+    const unchanged = (await db.select().from(schema.integrationAuthorizations)).find(
+      (authorization) => authorization.id === 'oauth_auth_edit_owner'
+    );
+    expect(unchanged).toMatchObject({ canRead: true, canComment: false });
+    const unchangedOAuth = (await db.select().from(schema.oauthAuthorizations)).find(
+      (authorization) => authorization.id === 'oauth_auth_edit_owner'
+    );
+    expect(unchangedOAuth?.scope).toBe('notes.read');
+
+    const folderCreationOnly = await app.request('/api/oauth/authorizations/oauth_auth_edit_owner', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...base, canRead: false, canCreateFolders: true }),
+    });
+    expect(folderCreationOnly.status).toBe(200);
+    const updated = (await db.select().from(schema.integrationAuthorizations)).find(
+      (authorization) => authorization.id === 'oauth_auth_edit_owner'
+    );
+    const updatedOAuth = (await db.select().from(schema.oauthAuthorizations)).find(
+      (authorization) => authorization.id === 'oauth_auth_edit_owner'
+    );
+    expect(updated).toMatchObject({ canRead: false, canCreateFolders: true });
+    expect(updatedOAuth?.scope).toBe('folders.create');
+  });
+
   it('serves OAuth endpoints from root aliases for MCP clients', async () => {
     const { app } = await setupApp();
     const verifier = 'b'.repeat(64);

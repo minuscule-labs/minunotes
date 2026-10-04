@@ -5,6 +5,7 @@ import {
   type ApiKeyAccessMode,
   api,
   type Folder,
+  type OAuthAuthorization,
   type SharedAccessMode,
   type SharedCollaboration,
 } from '../lib/api';
@@ -141,12 +142,14 @@ export function ApiKeyAccessDialog({
   folders,
   collaborations,
   apiKey,
+  oauthAuthorization,
   onSaved,
   trigger,
 }: {
   folders: Folder[];
   collaborations: SharedCollaboration[];
   apiKey?: ApiKey;
+  oauthAuthorization?: OAuthAuthorization;
   onSaved: () => void;
   trigger: (open: () => void) => ReactNode;
 }) {
@@ -163,7 +166,9 @@ export function ApiKeyAccessDialog({
   const [sharedAccessMode, setSharedAccessMode] = useState<SharedAccessMode>('none');
   const [selectedGrantIds, setSelectedGrantIds] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
-  const isEditing = !!apiKey;
+  const currentGrant = oauthAuthorization ?? apiKey;
+  const isOAuthAuthorization = !!oauthAuthorization;
+  const isEditing = !!currentGrant;
   const selectableFolders = useMemo(
     () => folders.filter((folder) => !isEffectivelyPrivate(folder, folders)),
     [folders]
@@ -204,24 +209,24 @@ export function ApiKeyAccessDialog({
     setQuery('');
     setCreatedKey(null);
     setCopied(false);
-    setCanCreateFolders(apiKey?.canCreateFolders ?? false);
-    setAccessMode(apiKey?.accessMode ?? 'all');
-    setSharedAccessMode(apiKey?.sharedAccessMode ?? 'none');
-    setSelectedGrantIds(new Set(apiKey?.collaborationGrantIds ?? []));
+    setCanCreateFolders(currentGrant?.canCreateFolders ?? false);
+    setAccessMode(currentGrant?.accessMode ?? 'all');
+    setSharedAccessMode(currentGrant?.sharedAccessMode ?? 'none');
+    setSelectedGrantIds(new Set(currentGrant?.collaborationGrantIds ?? []));
     setKeyPermission(
-      apiKey
+      currentGrant
         ? {
-            canRead: apiKey.canRead,
-            canCreate: apiKey.canCreate,
-            canEdit: apiKey.canEdit,
-            canComment: apiKey.canComment,
+            canRead: currentGrant.canRead,
+            canCreate: currentGrant.canCreate,
+            canEdit: currentGrant.canEdit,
+            canComment: currentGrant.canComment,
           }
         : defaultPermission
     );
-    setSelectedFolderIds(new Set((apiKey?.permissions ?? []).map((permission) => permission.folderId)));
+    setSelectedFolderIds(new Set((currentGrant?.permissions ?? []).map((permission) => permission.folderId)));
     setFolderPermissions(
       new Map(
-        (apiKey?.permissions ?? []).map((permission) => [
+        (currentGrant?.permissions ?? []).map((permission) => [
           permission.folderId,
           {
             canRead: permission.canRead,
@@ -232,7 +237,7 @@ export function ApiKeyAccessDialog({
         ])
       )
     );
-  }, [apiKey, open]);
+  }, [apiKey, oauthAuthorization, currentGrant, open]);
 
   const close = () => setOpen(false);
   const addFolder = (folder: Folder) => {
@@ -268,8 +273,7 @@ export function ApiKeyAccessDialog({
   const submit = async () => {
     setSaving(true);
     try {
-      const payload = {
-        name,
+      const accessPayload = {
         accessMode,
         canCreateFolders,
         sharedAccessMode,
@@ -277,11 +281,14 @@ export function ApiKeyAccessDialog({
         ...effectiveKeyPermission,
         permissions: selectedPermissions(),
       };
-      if (apiKey) {
-        await api.updateApiKey(apiKey.id, payload);
+      if (oauthAuthorization) {
+        await api.updateOAuthAuthorization(oauthAuthorization.id, accessPayload);
+        setOpen(false);
+      } else if (apiKey) {
+        await api.updateApiKey(apiKey.id, { ...accessPayload, name });
         setOpen(false);
       } else {
-        const result = await api.createApiKey(payload);
+        const result = await api.createApiKey({ ...accessPayload, name });
         setCreatedKey(result.key);
       }
       onSaved();
@@ -304,10 +311,24 @@ export function ApiKeyAccessDialog({
           <div className="notes-modal-scroll max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg border bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-950 sm:p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold">{isEditing ? 'Edit API key' : 'Create API key'}</h2>
-                <p className="mt-1 text-sm text-slate-500">Choose a scope, then set what this key can do there.</p>
+                <h2 className="text-lg font-semibold">
+                  {isOAuthAuthorization
+                    ? `Edit ${oauthAuthorization.client.name} access`
+                    : isEditing
+                      ? 'Edit API key'
+                      : 'Create API key'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {isOAuthAuthorization
+                    ? 'Choose what this connected app can access. Changes apply to its existing tokens.'
+                    : 'Choose a scope, then set what this key can do there.'}
+                </p>
               </div>
-              <ModalCloseButton label="Close API key access" disabled={saving} onClick={close} />
+              <ModalCloseButton
+                label={isOAuthAuthorization ? 'Close connected app access' : 'Close API key access'}
+                disabled={saving}
+                onClick={close}
+              />
             </div>
 
             {createdKey ? (
@@ -328,12 +349,14 @@ export function ApiKeyAccessDialog({
               </div>
             ) : (
               <>
-                <input
-                  className="mt-4 w-full rounded-md border bg-transparent px-3 py-2 text-sm dark:border-slate-800"
-                  placeholder="Key name, e.g. Workout Script"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
+                {!isOAuthAuthorization ? (
+                  <input
+                    className="mt-4 w-full rounded-md border bg-transparent px-3 py-2 text-sm dark:border-slate-800"
+                    placeholder="Key name, e.g. Workout Script"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                ) : null}
 
                 <div className="mt-4">
                   <label className="text-sm font-medium">Scope</label>
@@ -427,7 +450,9 @@ export function ApiKeyAccessDialog({
                     <span>
                       <span className="block font-medium">Allow folder creation</span>
                       <span className="mt-1 block text-xs text-slate-500">
-                        New folders created by this key follow this key's scope.
+                        {isOAuthAuthorization
+                          ? "New folders created by this app follow this authorization's scope."
+                          : "New folders created by this key follow this key's scope."}
                       </span>
                     </span>
                   </label>
@@ -547,7 +572,7 @@ export function ApiKeyAccessDialog({
                 <div className="mt-4 flex justify-end">
                   <Button
                     disabled={
-                      !name.trim() ||
+                      (!isOAuthAuthorization && !name.trim()) ||
                       saving ||
                       (accessMode !== 'all' && selectedFolderIds.size === 0) ||
                       (sharedAccessMode === 'specific' && selectedGrantIds.size === 0) ||
@@ -555,7 +580,8 @@ export function ApiKeyAccessDialog({
                         effectiveKeyPermission.canRead ||
                         effectiveKeyPermission.canCreate ||
                         effectiveKeyPermission.canEdit ||
-                        effectiveKeyPermission.canComment
+                        effectiveKeyPermission.canComment ||
+                        (isOAuthAuthorization && canCreateFolders)
                       )
                     }
                     onClick={submit}
