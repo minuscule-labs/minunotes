@@ -505,7 +505,15 @@ export const api = {
       canEdit: boolean;
       canComment: boolean;
       canCreateFolders: boolean;
-      folderIds: string[];
+      folderIds?: string[];
+      permissions?: Array<{
+        folderId: string;
+        canRead: boolean;
+        canCreate: boolean;
+        canEdit: boolean;
+        canComment: boolean;
+        appliesTo: 'exact' | 'subtree';
+      }>;
       sharedAccessMode: SharedAccessMode;
       collaborationGrantIds: string[];
     }
@@ -527,6 +535,7 @@ export const api = {
         canComment: data.canComment,
         canCreateFolders: data.canCreateFolders,
         folderIds: data.folderIds,
+        permissions: data.permissions,
         sharedAccessMode: data.sharedAccessMode,
         collaborationGrantIds: data.collaborationGrantIds,
       }),

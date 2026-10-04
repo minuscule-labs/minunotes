@@ -687,6 +687,158 @@ describe('oauth foundations', () => {
     await expect(approve.json()).resolves.toMatchObject({ error: 'invalid_scope' });
   });
 
+  it.each([
+    'all',
+    'specific',
+    'top_level',
+  ])('stores mixed consent folder permissions in %s mode', async (accessMode) => {
+    const { app, db, schema, user } = await setupApp();
+    await db.insert(schema.folders).values(
+      ['folder_read', 'folder_write'].map((id) => ({
+        id,
+        userId: user.id,
+        title: id,
+        parentFolderId: null,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }))
+    );
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('m'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read notes.create notes.edit comments.write',
+        accessMode,
+        canRead: true,
+        canCreate: true,
+        canEdit: true,
+        canComment: true,
+        permissions: [
+          { folderId: 'folder_read', canRead: true, canCreate: false, canEdit: false, canComment: false },
+          { folderId: 'folder_write', canRead: true, canCreate: true, canEdit: true, canComment: true },
+        ],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const rules = await db.select().from(schema.authorizationFolderRules);
+    expect(rules).toHaveLength(2);
+    expect(rules.find((rule) => rule.folderId === 'folder_read')).toMatchObject({
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      appliesTo: accessMode === 'top_level' ? 'subtree' : 'exact',
+    });
+    expect(rules.find((rule) => rule.folderId === 'folder_write')).toMatchObject({
+      canRead: true,
+      canCreate: true,
+      canEdit: true,
+      canComment: true,
+    });
+  });
+
+  it('retains legacy folderIds consent payloads', async () => {
+    const { app, db, schema, user } = await setupApp();
+    await db.insert(schema.folders).values({
+      id: 'legacy_folder',
+      userId: user.id,
+      title: 'Legacy',
+      parentFolderId: null,
+      isPrivate: false,
+      isAgentReadOnly: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('l'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read',
+        accessMode: 'specific',
+        canRead: true,
+        folderIds: ['legacy_folder'],
+      }),
+    });
+    expect(response.status).toBe(200);
+    await expect(db.select().from(schema.authorizationFolderRules)).resolves.toMatchObject([
+      { folderId: 'legacy_folder', canRead: true, canCreate: false, canEdit: false, canComment: false },
+    ]);
+  });
+
+  it.each([
+    { name: 'scope escalation', permissions: [{ folderId: 'folder_test', canEdit: true }], error: 'invalid_scope' },
+    {
+      name: 'comment without read',
+      permissions: [{ folderId: 'folder_test', canRead: false, canComment: true }],
+      error: 'Comment permission requires read permission',
+    },
+    {
+      name: 'private folder',
+      permissions: [{ folderId: 'folder_private' }],
+      error: 'One or more folders cannot be selected',
+    },
+    {
+      name: 'foreign folder',
+      permissions: [{ folderId: 'foreign_folder' }],
+      error: 'One or more folders cannot be selected',
+    },
+    {
+      name: 'duplicate folder',
+      permissions: [{ folderId: 'folder_test' }, { folderId: 'folder_test' }],
+      error: 'Duplicate folder permissions',
+    },
+    {
+      name: 'invalid permission type',
+      permissions: [{ folderId: 'folder_test', canRead: 'yes' }],
+      error: 'Invalid folder permissions',
+    },
+  ])('rejects $name during consent without persisting an authorization', async ({ permissions, error }) => {
+    const { app, db, schema, user } = await setupApp();
+    await db.insert(schema.folders).values(
+      ['folder_test', 'folder_private'].map((id) => ({
+        id,
+        userId: user.id,
+        title: id,
+        parentFolderId: null,
+        isPrivate: id === 'folder_private',
+        isAgentReadOnly: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }))
+    );
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('r'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read',
+        accessMode: 'all',
+        canRead: true,
+        permissions,
+      }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error });
+    await expect(db.select().from(schema.oauthAuthorizations)).resolves.toHaveLength(0);
+    await expect(db.select().from(schema.oauthAuthorizationCodes)).resolves.toHaveLength(0);
+  });
+
   it('stores selected shared collaboration grants during consent', async () => {
     const { app, db, schema, user } = await setupApp();
     const owner = {

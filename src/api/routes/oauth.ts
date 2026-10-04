@@ -650,10 +650,17 @@ oauthRoutes.post('/authorize/approve', async (c) => {
     canComment?: boolean;
     canCreateFolders?: boolean;
     folderIds?: string[];
+    permissions?: AuthorizationPermissionInput[];
     sharedAccessMode?: 'none' | 'specific' | 'all';
     collaborationGrantIds?: string[];
   } | null;
-  if (!body) return c.json({ error: 'Invalid JSON' }, 400);
+  if (!isRecord(body)) return c.json({ error: 'Invalid JSON' }, 400);
+  if (
+    !(['canRead', 'canCreate', 'canEdit', 'canComment', 'canCreateFolders'] as const).every(
+      (key) => body[key] === undefined || typeof body[key] === 'boolean'
+    )
+  )
+    return c.json({ error: 'Invalid permissions' }, 400);
   const result = await validateAuthorizeRequest({
     clientId: body.clientId,
     redirectUri: body.redirectUri,
@@ -719,17 +726,40 @@ oauthRoutes.post('/authorize/approve', async (c) => {
       return c.json({ error: 'One or more collaboration grants are invalid' }, 400);
     collaborationGrantIds = resolvedIds;
   }
+  if (
+    (body.folderIds !== undefined &&
+      (!Array.isArray(body.folderIds) || !body.folderIds.every((id) => typeof id === 'string'))) ||
+    (body.permissions !== undefined &&
+      (!Array.isArray(body.permissions) || !body.permissions.every(isAuthorizationPermissionInput)))
+  )
+    return c.json({ error: 'Invalid folder permissions' }, 400);
   const folderIds = [...new Set(body.folderIds ?? [])];
-  if (accessMode !== 'all' && folderIds.length === 0) return c.json({ error: 'At least one folder is required' }, 400);
-  const selectedPermissions =
-    accessMode === 'all'
-      ? []
-      : await filterSelectablePermissionRows({
-          userId: user.id,
-          accessMode,
-          permissions: folderIds.map((folderId) => ({ folderId, canRead, canCreate, canEdit, canComment })),
-        });
-  if (accessMode !== 'all' && selectedPermissions.length !== folderIds.length)
+  const permissionInputs =
+    body.permissions ??
+    (accessMode === 'all' ? [] : folderIds.map((folderId) => ({ folderId, canRead, canCreate, canEdit, canComment })));
+  if (new Set(permissionInputs.map((permission) => permission.folderId)).size !== permissionInputs.length)
+    return c.json({ error: 'Duplicate folder permissions' }, 400);
+  for (const permission of permissionInputs) {
+    const capabilities = {
+      canRead: permission.canRead ?? canRead,
+      canCreate: permission.canCreate ?? canCreate,
+      canEdit: permission.canEdit ?? canEdit,
+      canComment: permission.canComment ?? canComment,
+      canCreateFolders,
+    };
+    if (capabilities.canComment && !capabilities.canRead)
+      return c.json({ error: 'Comment permission requires read permission' }, 400);
+    if (!oauthCapabilitiesFitScope(capabilities, requestedScope.scopes))
+      return c.json(oauthError('invalid_scope', 'Folder permissions exceed the requested OAuth scope'), 400);
+  }
+  if (accessMode !== 'all' && permissionInputs.length === 0)
+    return c.json({ error: 'At least one folder is required' }, 400);
+  const selectedPermissions = await filterSelectablePermissionRows({
+    userId: user.id,
+    accessMode,
+    permissions: permissionInputs,
+  });
+  if (selectedPermissions.length !== permissionInputs.length)
     return c.json({ error: 'One or more folders cannot be selected' }, 400);
 
   const now = new Date();
@@ -773,24 +803,29 @@ oauthRoutes.post('/authorize/approve', async (c) => {
         }))
       );
 
-    if (accessMode !== 'all' && selectedPermissions.length > 0) {
+    if (selectedPermissions.length > 0) {
       await tx
         .insert(authorizationFolderRules)
         .values(
-          selectedPermissions.flatMap(({ folderId }) =>
-            folderId
+          selectedPermissions.flatMap((permission) =>
+            permission.folderId
               ? [
                   {
                     id: createId('auth_rule'),
                     authorizationId: authorization.id,
                     userId: user.id,
-                    folderId,
-                    canRead,
-                    canCreate,
-                    canEdit,
-                    canComment,
+                    folderId: permission.folderId,
+                    canRead: canRead && (permission.canRead ?? canRead),
+                    canCreate: canCreate && (permission.canCreate ?? canCreate),
+                    canEdit: canEdit && (permission.canEdit ?? canEdit),
+                    canComment: canComment && (permission.canComment ?? canComment),
                     canCreateFolders,
-                    appliesTo: accessMode === 'top_level' ? ('subtree' as const) : ('exact' as const),
+                    appliesTo:
+                      accessMode === 'top_level'
+                        ? ('subtree' as const)
+                        : accessMode === 'specific'
+                          ? ('exact' as const)
+                          : (permission.appliesTo ?? 'exact'),
                     createdAt: now,
                     updatedAt: now,
                   },

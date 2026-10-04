@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ApiError, api, type OAuthClient } from '../lib/api';
+import { CopyClientIdButton } from './copy-client-id-button';
 import { Button } from './ui/button';
 
 type AppMode = 'picker' | 'custom';
@@ -88,6 +89,7 @@ export function OAuthAppDialog({
               <code className="mt-1 block break-all rounded bg-white/70 p-2 text-xs dark:bg-black/20">
                 {created.id}
               </code>
+              <CopyClientIdButton clientId={created.id} />
               <p className="mt-2 text-xs">
                 Use Authorization Code + PKCE. No client secret is issued for public clients.
               </p>
