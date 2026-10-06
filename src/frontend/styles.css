@@ -639,6 +639,16 @@ select {
 .notes-minu-renderer > :first-child {
   margin-top: 0 !important;
 }
+/* Restore Markdown list markers removed by Tailwind's preflight reset. */
+.notes-minu-renderer ol {
+  list-style-type: decimal;
+}
+.notes-minu-renderer ul:not(.contains-task-list) {
+  list-style-type: disc;
+}
+.notes-minu-renderer li:has(> input[type="checkbox"], > p > input[type="checkbox"]) {
+  list-style-type: none;
+}
 .notes-minu-renderer :not(pre) > code {
   font-size: 1em;
   line-height: inherit;
