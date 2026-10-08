@@ -44,6 +44,10 @@ export function FolderActionsPopover({
       qc.invalidateQueries({ queryKey: ['notes'] });
       qc.invalidateQueries({ queryKey: ['templates'] });
       qc.invalidateQueries({ queryKey: ['folder-templates'] });
+      if (!ownerControls) {
+        void qc.invalidateQueries({ queryKey: ['shared-folder-navigation-roots'] });
+        void qc.invalidateQueries({ queryKey: ['shared-folder-navigation-children'] });
+      }
       qc.removeQueries({ queryKey: ['note'] });
       return nav(
         !ownerControls && folder.parentFolderId

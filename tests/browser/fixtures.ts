@@ -273,6 +273,7 @@ export async function mockBrowserApi(
     folderAccessRole?: 'owner' | 'viewer' | 'commenter' | 'editor';
     creatorTrashAccess?: boolean;
     includeSharedCollaborations?: boolean;
+    includeSharedFolderNavigation?: boolean;
     includeSharedByMe?: boolean;
     sharedByMeLoadFails?: boolean;
     sessionEmail?: string | null;
@@ -312,6 +313,7 @@ export async function mockBrowserApi(
     : [{ ...browserFixture.trashedNote }, { ...browserFixture.trashedTemplate }];
   const trashFolders = options.emptyTrash ? [] : [{ ...browserFixture.trashedFolder }];
   const trashMutationRequests: Array<{ method: string; path: string; body: unknown }> = [];
+  const sharedFolderNavigationRequests: string[] = [];
   let createdNoteCount = 0;
   const noteShareTokens = new Map<string, string>([
     [`note_share_${browserFixture.linked.id}`, browserFixture.linked.id],
@@ -406,6 +408,69 @@ export async function mockBrowserApi(
           destination: `/notes/${browserFixture.source.id}`,
         });
       }
+    }
+
+    if (path === '/collaborations/shared-folder-roots' && method === 'GET') {
+      sharedFolderNavigationRequests.push(path);
+      const folders = options.includeSharedFolderNavigation
+        ? [
+            {
+              id: 'folder_shared_nav',
+              title: 'Shared project',
+              updatedAt: now,
+              role: 'viewer',
+              hasChildren: true,
+            },
+          ]
+        : [];
+      return json({ folders, pageInfo: { hasMore: false } });
+    }
+
+    const sharedChildrenMatch = path.match(/^\/folders\/([^/]+)\/children$/);
+    if (sharedChildrenMatch && method === 'GET') {
+      sharedFolderNavigationRequests.push(path);
+      const parentId = sharedChildrenMatch[1];
+      if (parentId !== 'folder_shared_nav' && parentId !== 'folder_shared_nav_child')
+        return json({ error: 'Folder not found' }, 404);
+      const baseChildren = !options.includeSharedFolderNavigation
+        ? []
+        : parentId === 'folder_shared_nav'
+          ? [
+              {
+                id: 'folder_shared_nav_child',
+                title: 'Shared subfolder',
+                parentFolderId: parentId,
+                updatedAt: now,
+                isPrivate: false,
+                isAgentReadOnly: false,
+                hasChildren: true,
+              },
+            ]
+          : [
+              {
+                id: 'folder_shared_nav_grandchild',
+                title: 'Shared nested folder',
+                parentFolderId: parentId,
+                updatedAt: now,
+                isPrivate: false,
+                isAgentReadOnly: false,
+                hasChildren: false,
+              },
+            ];
+      const createdChildren = options.includeSharedFolderNavigation
+        ? folders
+            .filter((folder) => folder.parentFolderId === parentId)
+            .map((folder) => ({
+              id: folder.id,
+              title: folder.title,
+              parentFolderId: parentId,
+              updatedAt: folder.updatedAt,
+              isPrivate: folder.isPrivate,
+              isAgentReadOnly: folder.isAgentReadOnly,
+              hasChildren: folders.some((child) => child.parentFolderId === folder.id),
+            }))
+        : [];
+      return json({ folders: [...baseChildren, ...createdChildren], pageInfo: { hasMore: false, nextCursor: null } });
     }
 
     if (path === '/collaborations/shared-with-me' && method === 'GET') {
@@ -522,6 +587,16 @@ export async function mockBrowserApi(
       noteShareLink = null;
       return json({ ok: true });
     }
+
+    if (/^\/(notes|folders)\/[^/]+\/collaborators$/.test(path) && method === 'POST')
+      return json(
+        {
+          kind: 'grant',
+          emailDelivery: 'disabled',
+          grant: { key: 'access_added', role: 'viewer' },
+        },
+        201
+      );
 
     if (/^\/(notes|folders)\/[^/]+\/collaborators$/.test(path) && method === 'GET')
       return json({
@@ -659,6 +734,33 @@ export async function mockBrowserApi(
 
     const folderDetailMatch = path.match(/^\/folders\/(folder_[a-zA-Z0-9_]+)\/detail$/);
     if (folderDetailMatch && method === 'GET') {
+      if (options.includeSharedFolderNavigation && folderDetailMatch[1] === 'folder_shared_nav_child') {
+        return json({
+          folder: {
+            id: 'folder_shared_nav_child',
+            parentFolderId: 'folder_shared_nav',
+            title: 'Shared subfolder',
+            isPrivate: false,
+            isAgentReadOnly: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+          ancestors: [
+            {
+              id: 'folder_shared_nav',
+              parentFolderId: null,
+              title: 'Shared project',
+              isPrivate: false,
+              isAgentReadOnly: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          childFolders: [],
+          access: { role: options.folderAccessRole ?? 'viewer', source: 'folder_grant' },
+          sharedBy: sharedOwnerIdentity,
+        });
+      }
       const folder = folders.find((candidate) => candidate.id === folderDetailMatch[1]);
       if (!folder) return json({ error: 'Folder not found' }, 404);
       const folderAccessRole = options.folderAccessRole ?? 'owner';
@@ -673,6 +775,7 @@ export async function mockBrowserApi(
           role: folderAccessRole,
           source: folderAccessRole === 'owner' ? 'owner' : 'folder_grant',
         },
+        sharedBy: folderAccessRole === 'owner' ? null : sharedOwnerIdentity,
       });
     }
 
@@ -714,7 +817,9 @@ export async function mockBrowserApi(
       return json({ note }, 201);
     }
     if (folderNotesMatch && method === 'GET') {
-      if (!folders.some((folder) => folder.id === folderNotesMatch[1])) return json({ error: 'Folder not found' }, 404);
+      const sharedFolder = options.includeSharedFolderNavigation && folderNotesMatch[1] === 'folder_shared_nav_child';
+      if (!sharedFolder && !folders.some((folder) => folder.id === folderNotesMatch[1]))
+        return json({ error: 'Folder not found' }, 404);
       const type = url.searchParams.get('type') === 'template' ? 'template' : 'note';
       const folderAccessRole = options.folderAccessRole ?? 'owner';
       return json({
@@ -1172,6 +1277,7 @@ export async function mockBrowserApi(
     trashNotes,
     trashFolders,
     trashMutationRequests,
+    sharedFolderNavigationRequests,
     saveRequests,
     statusRequests,
     commentThreads,

@@ -236,6 +236,26 @@ export type SharedCollaborationsPage = {
   collaborations: SharedCollaboration[];
   pageInfo: { hasMore: boolean; nextCursor: string | null };
 };
+export type SharedFolderNavigationRoot = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  role: CollaborationRole;
+  hasChildren: boolean;
+};
+export type SharedFolderNavigationChild = Pick<Folder, 'id' | 'title' | 'parentFolderId' | 'updatedAt'> & {
+  isPrivate: boolean;
+  isAgentReadOnly: boolean;
+  hasChildren: boolean;
+};
+export type SharedFolderRootsPage = {
+  folders: SharedFolderNavigationRoot[];
+  pageInfo: { hasMore: boolean };
+};
+export type SharedFolderChildrenPage = {
+  folders: SharedFolderNavigationChild[];
+  pageInfo: { hasMore: boolean; nextCursor: string | null };
+};
 export type OwnedSharedResource = {
   type: CollaborationResourceType;
   resource: { id: string; title: string; updatedAt: string };
@@ -583,6 +603,12 @@ export const api = {
   ) => request<{ apiKey: ApiKey }>(`/api-keys/${keyId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   revokeApiKey: (keyId: string) => request<{ ok: true }>(`/api-keys/${keyId}`, { method: 'DELETE' }),
   folders: () => request<{ folders: Folder[] }>('/folders'),
+  sharedFolderRoots: () => request<SharedFolderRootsPage>('/collaborations/shared-folder-roots?limit=50'),
+  sharedFolderChildren: (folderId: string, cursor?: string | null, limit = 100) => {
+    const search = new URLSearchParams({ limit: String(limit) });
+    if (cursor) search.set('cursor', cursor);
+    return request<SharedFolderChildrenPage>(`/folders/${encodeURIComponent(folderId)}/children?${search}`);
+  },
   sharedWithMe: () => request<{ collaborations: SharedCollaboration[] }>('/collaborations/shared-with-me'),
   sharedWithMePage: (type: CollaborationResourceType, cursor?: string | null, limit = 25) => {
     const search = new URLSearchParams({ type, limit: String(limit) });
@@ -689,9 +715,13 @@ export const api = {
       body: JSON.stringify({ folderIds }),
     }),
   folderDetail: (folderId: string) =>
-    request<{ folder: Folder; ancestors: Folder[]; childFolders: Folder[]; access: CollaborationAccess }>(
-      `/folders/${folderId}/detail`
-    ),
+    request<{
+      folder: Folder;
+      ancestors: Folder[];
+      childFolders: Folder[];
+      access: CollaborationAccess;
+      sharedBy: CollaborationIdentity | null;
+    }>(`/folders/${folderId}/detail`),
   notes: (folderId: string, type: NoteType = 'note', page = 1, limit = 50) =>
     request<PageResponse & { notes: NoteListItem[]; access: CollaborationAccess }>(
       `/folders/${folderId}/notes?type=${type}&page=${page}&limit=${limit}`

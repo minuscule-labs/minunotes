@@ -4,6 +4,7 @@ import {
   InvalidDirectCollaborationCursorError,
   listDirectCollaborations,
   listDirectCollaborationsPage,
+  listSharedFolderRoots,
 } from '../lib/collaboration-access';
 import { sendCollaborationGrantedEmail, sendCollaborationInvitationEmail } from '../lib/collaboration-email';
 import { publicCollaborationAccessKey } from '../lib/collaboration-identity';
@@ -199,6 +200,15 @@ collaborationRoutes.delete('/collaboration-invitations/:invitationId', async (c)
   const result = await revokeCollaborationInvitation({ ownerUserId: user.id, invitationId });
   if (!result.ok) return c.json({ error: result.error }, result.status);
   return c.json(result.value);
+});
+
+collaborationRoutes.get('/collaborations/shared-folder-roots', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const requestedLimit = Number(c.req.query('limit') ?? 50);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100)
+    return c.json({ error: 'Limit must be between 1 and 100' }, 400);
+  return c.json(await listSharedFolderRoots({ actorUserId: user.id, limit: requestedLimit }));
 });
 
 collaborationRoutes.get('/collaborations/shared-with-me', async (c) => {

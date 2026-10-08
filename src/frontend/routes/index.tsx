@@ -14,15 +14,17 @@ function Index() {
 
   return (
     <section className="mx-auto w-full max-w-5xl">
-      <div className="mb-6">
-        <h2 className="text-xl font-semibold">Recent notes</h2>
-        <p className="notes-muted mt-1 text-sm">Your latest notes across all folders.</p>
+      <div>
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold">Recent notes</h2>
+          <p className="notes-muted mt-1 text-sm">Your latest notes across all folders.</p>
+        </div>
+        {data?.notes.length ? (
+          <NotesTable notes={data.notes} queryKey={['notes', 'recent']} folderTitles={folderTitles} />
+        ) : (
+          <EmptyState>Create or select a folder to begin.</EmptyState>
+        )}
       </div>
-      {data?.notes.length ? (
-        <NotesTable notes={data.notes} queryKey={['notes', 'recent']} folderTitles={folderTitles} />
-      ) : (
-        <EmptyState>Create or select a folder to begin.</EmptyState>
-      )}
     </section>
   );
 }

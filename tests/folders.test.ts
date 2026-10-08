@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const tempDirs: string[] = [];
 
 async function runMigrations(libsql: { executeMultiple: (sql: string) => Promise<unknown> }) {
-  for (let index = 0; index <= 39; index += 1) {
+  for (let index = 0; index <= 40; index += 1) {
     const [file] = await Array.fromAsync(
       (await import('node:fs/promises')).glob(`drizzle/${String(index).padStart(4, '0')}_*.sql`)
     );
@@ -143,6 +143,51 @@ describe('folder hierarchy', () => {
     expect(tooDeepResponse.status).toBe(400);
   });
 
+  it('excludes active folders beneath deleted ancestors from the active hierarchy', async () => {
+    const { app, db, schema, user } = await setupFolderApp();
+    const now = new Date();
+    await db.insert(schema.folders).values([
+      {
+        id: 'folder_active_root',
+        userId: user.id,
+        parentFolderId: null,
+        title: 'Active root',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_active_child',
+        userId: user.id,
+        parentFolderId: 'folder_active_root',
+        title: 'Active child',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_deleted_root',
+        userId: user.id,
+        parentFolderId: null,
+        title: 'Deleted root',
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_orphaned_active_child',
+        userId: user.id,
+        parentFolderId: 'folder_deleted_root',
+        title: 'Orphaned active child',
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const response = await app.request('/api/folders');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { folders: Array<{ id: string }> };
+    expect(body.folders.map(({ id }) => id).sort()).toEqual(['folder_active_child', 'folder_active_root']);
+  });
+
   it('keeps owner folder-detail access checks bounded as child folders grow', async () => {
     const { app, db, libsql, schema, user } = await setupFolderApp();
     const parent = await createFolder(app, 'Parent');
@@ -174,7 +219,9 @@ describe('folder hierarchy', () => {
     const body = (await response.json()) as {
       folder: { canTrash: boolean };
       childFolders: Array<{ canTrash: boolean }>;
+      sharedBy: { label: string } | null;
     };
+    expect(body.sharedBy).toBeNull();
     expect(body.folder.canTrash).toBe(true);
     expect(body.childFolders).toHaveLength(30);
     expect(body.childFolders.every((folder) => folder.canTrash)).toBe(true);

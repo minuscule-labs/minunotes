@@ -1,8 +1,28 @@
-import { and, eq, inArray, isNull, or, type SQL, type SQLWrapper, sql } from 'drizzle-orm';
-import { db } from '../db/client';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  type SQL,
+  type SQLWrapper,
+  sql,
+} from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
+import { db, libsql } from '../db/client';
 import { authorizationCollaborationScopes, collaborationGrants, folders, notes, user } from '../db/schema';
-import { filterActiveFolderHierarchy } from '../trash/policy';
-import { publicCollaborationAccessKey, serializeCollaborationUserIdentity } from './collaboration-identity';
+import { activeFolderPathWhere, filterActiveFolderHierarchy } from '../trash/policy';
+import {
+  type CollaborationIdentity,
+  publicCollaborationAccessKey,
+  serializeCollaborationUserIdentity,
+} from './collaboration-identity';
 import { isDescendantOrSelf, loadFolderAccessTree } from './folder-access';
 
 export type CollaborationRole = 'viewer' | 'commenter' | 'editor';
@@ -339,6 +359,46 @@ function ownerAccess(actorUserId: string): CollaborationAccess {
   };
 }
 
+type FolderPathRow = {
+  resource_id: string;
+  id: string;
+  user_id: string;
+  parent_folder_id: string | null;
+  deleted_at: number | null;
+  is_private: number;
+};
+
+async function loadFolderPaths(
+  resources: ReadonlyArray<{ id: string; folderId: string; userId: string }>
+): Promise<Map<string, FolderPathRow[]>> {
+  if (resources.length === 0) return new Map();
+  const values = resources.map(() => '(?, ?, ?)').join(', ');
+  const result = await libsql.execute({
+    sql: `WITH RECURSIVE requested(resource_id, folder_id, user_id) AS (VALUES ${values}),
+      folder_path(resource_id, id, user_id, parent_folder_id, deleted_at, is_private) AS (
+        SELECT requested.resource_id, target.id, target.user_id, target.parent_folder_id, target.deleted_at, target.is_private
+        FROM requested
+        INNER JOIN folders AS target ON target.id = requested.folder_id AND target.user_id = requested.user_id
+        UNION
+        SELECT child.resource_id, parent.id, parent.user_id, parent.parent_folder_id, parent.deleted_at, parent.is_private
+        FROM folder_path AS child
+        INNER JOIN folders AS parent ON parent.id = child.parent_folder_id AND parent.user_id = child.user_id
+      )
+      SELECT resource_id, id, user_id, parent_folder_id, deleted_at, is_private FROM folder_path`,
+    args: resources.flatMap((resource) => [resource.id, resource.folderId, resource.userId]),
+  });
+  const rows = result.rows as unknown as FolderPathRow[];
+  const rowsByResourceId = new Map<string, FolderPathRow[]>();
+  for (const row of rows)
+    rowsByResourceId.set(row.resource_id, [...(rowsByResourceId.get(row.resource_id) ?? []), row]);
+  return new Map(
+    [...rowsByResourceId].filter(
+      ([, path]) =>
+        path.every((folder) => folder.deleted_at === null) && path.some((folder) => folder.parent_folder_id === null)
+    )
+  );
+}
+
 export async function resolveFolderCollaborationAccess(input: {
   actorUserId: string;
   folderId: string;
@@ -379,26 +439,95 @@ export async function resolveFolderCollaborationAccess(input: {
   return accessFromGrants({ actorUserId: input.actorUserId, resourceOwnerUserId: folder.userId, grants });
 }
 
+export async function resolveFolderNavigationAccess(input: { actorUserId: string; folderId: string }) {
+  const pathResult = await libsql.execute({
+    sql: `WITH RECURSIVE folder_path(id, parent_folder_id, deleted_at, user_id) AS (
+      SELECT id, parent_folder_id, deleted_at, user_id FROM folders WHERE id = ?
+      UNION
+      SELECT parent.id, parent.parent_folder_id, parent.deleted_at, parent.user_id
+      FROM folders AS parent
+      INNER JOIN folder_path AS child ON parent.id = child.parent_folder_id AND parent.user_id = child.user_id
+    )
+    SELECT id, parent_folder_id, deleted_at, user_id FROM folder_path`,
+    args: [input.folderId],
+  });
+  const pathRows = pathResult.rows as unknown as Array<{
+    id: string;
+    parent_folder_id: string | null;
+    deleted_at: number | null;
+    user_id: string;
+  }>;
+  const target = pathRows.find((folder) => folder.id === input.folderId);
+  if (!target || pathRows.some((folder) => folder.deleted_at !== null)) return null;
+  const root = pathRows.find((folder) => folder.parent_folder_id === null);
+  if (!root) return null;
+  const resourceOwnerUserId = target.user_id;
+  if (resourceOwnerUserId === input.actorUserId) return { resourceOwnerUserId, role: 'owner' as const };
+
+  const grants = await db
+    .select({ role: collaborationGrants.role })
+    .from(collaborationGrants)
+    .where(
+      and(
+        eq(collaborationGrants.granteeUserId, input.actorUserId),
+        eq(collaborationGrants.ownerUserId, resourceOwnerUserId),
+        inArray(
+          collaborationGrants.folderId,
+          pathRows.map((folder) => folder.id)
+        )
+      )
+    );
+  const role = highestCollaborationRole(grants.map((grant) => grant.role));
+  return role ? { resourceOwnerUserId, role } : null;
+}
+
 export class InvalidDirectCollaborationCursorError extends Error {}
 
-function decodeDirectCollaborationCursor(value: string) {
+type DirectCollaborationCursor = { resourceId: string; updatedAt: number };
+
+function decodeDirectCollaborationCursor(value: string): DirectCollaborationCursor {
   try {
     const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
-      grantId?: unknown;
+      resourceId?: unknown;
       updatedAt?: unknown;
     };
     if (
-      typeof decoded.grantId !== 'string' ||
+      typeof decoded.resourceId !== 'string' ||
       typeof decoded.updatedAt !== 'number' ||
       !Number.isFinite(decoded.updatedAt)
     )
       throw new InvalidDirectCollaborationCursorError();
-    return { grantId: decoded.grantId, updatedAt: decoded.updatedAt };
+    return { resourceId: decoded.resourceId, updatedAt: decoded.updatedAt };
   } catch (error) {
     if (error instanceof InvalidDirectCollaborationCursorError) throw error;
     throw new InvalidDirectCollaborationCursorError();
   }
 }
+
+function encodeDirectCollaborationCursor(cursor: DirectCollaborationCursor) {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+type DirectCollaborationPageItem =
+  | {
+      type: 'note';
+      grantId: string;
+      role: EffectiveCollaborationRole;
+      owner: CollaborationIdentity;
+      note: {
+        id: string;
+        title: string;
+        documentType: 'markdown' | 'canvas.default' | 'canvas.mindmap';
+        updatedAt: Date;
+      };
+    }
+  | {
+      type: 'folder';
+      grantId: string;
+      role: EffectiveCollaborationRole;
+      owner: CollaborationIdentity;
+      folder: { id: string; title: string; updatedAt: Date };
+    };
 
 export async function listDirectCollaborationsPage(input: {
   actorUserId: string;
@@ -407,41 +536,230 @@ export async function listDirectCollaborationsPage(input: {
   limit?: number;
 }) {
   const limit = Math.min(50, Math.max(1, input.limit ?? 25));
-  const collaborations = (await listDirectCollaborations(input.actorUserId))
-    .filter((item) => item.type === input.type)
-    .sort((left, right) => {
-      const leftUpdatedAt = (left.type === 'note' ? left.note.updatedAt : left.folder.updatedAt).getTime();
-      const rightUpdatedAt = (right.type === 'note' ? right.note.updatedAt : right.folder.updatedAt).getTime();
-      return rightUpdatedAt - leftUpdatedAt || left.grantId.localeCompare(right.grantId);
-    });
-  let start = 0;
-  if (input.cursor) {
-    const decoded = decodeDirectCollaborationCursor(input.cursor);
-    const cursorGrantId = decoded.grantId;
-    const cursorUpdatedAt = decoded.updatedAt;
-    const nextIndex = collaborations.findIndex((item) => {
-      const updatedAt = (item.type === 'note' ? item.note.updatedAt : item.folder.updatedAt).getTime();
-      return updatedAt < cursorUpdatedAt || (updatedAt === cursorUpdatedAt && item.grantId > cursorGrantId);
-    });
-    start = nextIndex < 0 ? collaborations.length : nextIndex;
+  let scanCursor = input.cursor ? decodeDirectCollaborationCursor(input.cursor) : undefined;
+  const candidates: Array<{ item: DirectCollaborationPageItem; cursor: DirectCollaborationCursor }> = [];
+  let exhausted = false;
+
+  while (candidates.length <= limit && !exhausted) {
+    const batchSize = Math.max(25, limit + 1 - candidates.length);
+    if (input.type === 'note') {
+      const afterCursor = scanCursor
+        ? or(
+            lt(notes.updatedAt, new Date(scanCursor.updatedAt)),
+            and(eq(notes.updatedAt, new Date(scanCursor.updatedAt)), gt(notes.id, scanCursor.resourceId))
+          )
+        : undefined;
+      const rows = await db
+        .select({
+          grantId: collaborationGrants.id,
+          owner: { id: user.id, name: user.name, email: user.email },
+          note: {
+            id: notes.id,
+            folderId: notes.folderId,
+            title: notes.title,
+            documentType: notes.documentType,
+            updatedAt: notes.updatedAt,
+          },
+        })
+        .from(collaborationGrants)
+        .innerJoin(user, eq(collaborationGrants.ownerUserId, user.id))
+        .innerJoin(
+          notes,
+          and(
+            eq(collaborationGrants.noteId, notes.id),
+            eq(collaborationGrants.ownerUserId, notes.userId),
+            isNull(notes.deletedAt),
+            activeFolderPathWhere(sql.raw('"notes"."folder_id"'), sql.raw('"notes"."user_id"'))
+          )
+        )
+        .where(
+          and(
+            eq(collaborationGrants.granteeUserId, input.actorUserId),
+            isNotNull(collaborationGrants.noteId),
+            afterCursor
+          )
+        )
+        .orderBy(desc(notes.updatedAt), asc(notes.id))
+        .limit(batchSize);
+      const accessByNoteId = await resolveNoteCollaborationAccessBatch({
+        actorUserId: input.actorUserId,
+        resources: rows.map((row) => ({ id: row.note.id, folderId: row.note.folderId, userId: row.owner.id })),
+      });
+      for (const row of rows) {
+        const access = accessByNoteId.get(row.note.id);
+        if (!access) continue;
+        candidates.push({
+          cursor: { resourceId: row.note.id, updatedAt: row.note.updatedAt.getTime() },
+          item: {
+            type: 'note',
+            grantId: publicCollaborationAccessKey(row.grantId),
+            role: access.role,
+            owner: serializeCollaborationUserIdentity({ ...row.owner, currentUserId: input.actorUserId }),
+            note: {
+              id: row.note.id,
+              title: row.note.title,
+              documentType: row.note.documentType,
+              updatedAt: row.note.updatedAt,
+            },
+          },
+        });
+      }
+      const lastScanned = rows.at(-1);
+      if (lastScanned)
+        scanCursor = { resourceId: lastScanned.note.id, updatedAt: lastScanned.note.updatedAt.getTime() };
+      exhausted = rows.length < batchSize;
+    } else {
+      const afterCursor = scanCursor
+        ? or(
+            lt(folders.updatedAt, new Date(scanCursor.updatedAt)),
+            and(eq(folders.updatedAt, new Date(scanCursor.updatedAt)), gt(folders.id, scanCursor.resourceId))
+          )
+        : undefined;
+      const rows = await db
+        .select({
+          grantId: collaborationGrants.id,
+          owner: { id: user.id, name: user.name, email: user.email },
+          folder: { id: folders.id, title: folders.title, updatedAt: folders.updatedAt },
+        })
+        .from(collaborationGrants)
+        .innerJoin(user, eq(collaborationGrants.ownerUserId, user.id))
+        .innerJoin(
+          folders,
+          and(
+            eq(collaborationGrants.folderId, folders.id),
+            eq(collaborationGrants.ownerUserId, folders.userId),
+            isNull(folders.deletedAt),
+            activeFolderPathWhere(sql.raw('"folders"."id"'), sql.raw('"folders"."user_id"'))
+          )
+        )
+        .where(
+          and(
+            eq(collaborationGrants.granteeUserId, input.actorUserId),
+            isNotNull(collaborationGrants.folderId),
+            afterCursor
+          )
+        )
+        .orderBy(desc(folders.updatedAt), asc(folders.id))
+        .limit(batchSize);
+      const accessByFolderId = await resolveFolderCollaborationAccessBatch({
+        actorUserId: input.actorUserId,
+        resources: rows.map((row) => ({ id: row.folder.id, userId: row.owner.id })),
+      });
+      for (const row of rows) {
+        const access = accessByFolderId.get(row.folder.id);
+        if (!access) continue;
+        candidates.push({
+          cursor: { resourceId: row.folder.id, updatedAt: row.folder.updatedAt.getTime() },
+          item: {
+            type: 'folder',
+            grantId: publicCollaborationAccessKey(row.grantId),
+            role: access.role,
+            owner: serializeCollaborationUserIdentity({ ...row.owner, currentUserId: input.actorUserId }),
+            folder: { id: row.folder.id, title: row.folder.title, updatedAt: row.folder.updatedAt },
+          },
+        });
+      }
+      const lastScanned = rows.at(-1);
+      if (lastScanned)
+        scanCursor = { resourceId: lastScanned.folder.id, updatedAt: lastScanned.folder.updatedAt.getTime() };
+      exhausted = rows.length < batchSize;
+    }
   }
-  const items = collaborations.slice(start, start + limit);
-  const hasMore = start + items.length < collaborations.length;
-  const last = items.at(-1);
-  const lastUpdatedAt = last ? (last.type === 'note' ? last.note.updatedAt : last.folder.updatedAt).getTime() : null;
+
+  const hasMore = candidates.length > limit;
+  const page = candidates.slice(0, limit);
+  const last = page.at(-1);
   return {
-    items,
+    items: page.map(({ item }) => item),
     pageInfo: {
       hasMore,
-      nextCursor:
-        hasMore && last && lastUpdatedAt !== null
-          ? Buffer.from(JSON.stringify({ grantId: last.grantId, updatedAt: lastUpdatedAt })).toString('base64url')
-          : null,
+      nextCursor: hasMore && last ? encodeDirectCollaborationCursor(last.cursor) : null,
     },
   };
 }
 
-export async function listDirectCollaborations(actorUserId: string) {
+const childFolders = alias(folders, 'child');
+
+export async function listSharedFolderRoots(input: { actorUserId: string; limit?: number }) {
+  const limit = Math.min(100, Math.max(1, input.limit ?? 50));
+  const rows = await db
+    .select({
+      grantId: collaborationGrants.id,
+      folder: { id: folders.id, userId: folders.userId, title: folders.title, updatedAt: folders.updatedAt },
+      hasChildren: exists(
+        db
+          .select({ one: sql`1` })
+          .from(childFolders)
+          .where(
+            and(
+              eq(childFolders.userId, folders.userId),
+              eq(childFolders.parentFolderId, folders.id),
+              isNull(childFolders.deletedAt)
+            )
+          )
+      ),
+    })
+    .from(collaborationGrants)
+    .innerJoin(
+      folders,
+      and(
+        eq(collaborationGrants.folderId, folders.id),
+        eq(collaborationGrants.ownerUserId, folders.userId),
+        isNull(folders.deletedAt),
+        activeFolderPathWhere(sql.raw('"folders"."id"'), sql.raw('"folders"."user_id"'))
+      )
+    )
+    .where(
+      and(
+        eq(collaborationGrants.granteeUserId, input.actorUserId),
+        isNotNull(collaborationGrants.folderId),
+        sql`not exists (
+          with recursive folder_ancestors(id, parent_folder_id) as (
+            select parent.id, parent.parent_folder_id
+            from ${folders} as parent
+            where parent.id = ${sql.raw('"folders"."parent_folder_id"')}
+              and parent.user_id = ${sql.raw('"folders"."user_id"')}
+            union
+            select parent.id, parent.parent_folder_id
+            from ${folders} as parent
+            inner join folder_ancestors as child on parent.id = child.parent_folder_id
+            where parent.user_id = ${sql.raw('"folders"."user_id"')}
+          )
+          select 1
+          from folder_ancestors as ancestor
+          inner join ${collaborationGrants} as ancestor_grant on ancestor_grant.folder_id = ancestor.id
+          where ancestor_grant.owner_user_id = ${sql.raw('"collaboration_grants"."owner_user_id"')}
+            and ancestor_grant.grantee_user_id = ${input.actorUserId}
+        )`
+      )
+    )
+    .orderBy(asc(folders.title), asc(folders.id))
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const accessByFolderId = await resolveFolderCollaborationAccessBatch({
+    actorUserId: input.actorUserId,
+    resources: page.map((row) => ({ id: row.folder.id, userId: row.folder.userId })),
+  });
+  return {
+    folders: page.flatMap((row) => {
+      const access = accessByFolderId.get(row.folder.id);
+      if (!access || access.applicableGrantIds.some((grantId) => grantId !== row.grantId)) return [];
+      return [
+        {
+          id: row.folder.id,
+          title: row.folder.title,
+          updatedAt: row.folder.updatedAt,
+          role: access.role,
+          hasChildren: Boolean(row.hasChildren),
+        },
+      ];
+    }),
+    pageInfo: { hasMore },
+  };
+}
+
+export async function listDirectCollaborations(actorUserId: string): Promise<DirectCollaborationPageItem[]> {
   const rows = await db
     .select({
       grant: collaborationGrants,
@@ -463,72 +781,55 @@ export async function listDirectCollaborations(actorUserId: string) {
     .where(eq(collaborationGrants.granteeUserId, actorUserId))
     .orderBy(user.name, folders.title, notes.title);
 
-  const grantsByOwner = new Map<string, (typeof rows)[number]['grant'][]>();
-  for (const row of rows) grantsByOwner.set(row.owner.id, [...(grantsByOwner.get(row.owner.id) ?? []), row.grant]);
-  const folderTrees = new Map<string, ReturnType<typeof loadFolderAccessTree>>();
-  const folderTreeForOwner = (ownerUserId: string) => {
-    const cached = folderTrees.get(ownerUserId);
-    if (cached) return cached;
-    const tree = loadFolderAccessTree(ownerUserId);
-    folderTrees.set(ownerUserId, tree);
-    return tree;
-  };
-
-  const resolved = await Promise.all(
-    rows.map(async (row) => {
-      const tree = await folderTreeForOwner(row.owner.id);
-      const ownerIdentity = serializeCollaborationUserIdentity({ ...row.owner, currentUserId: actorUserId });
-      const ownerGrants = grantsByOwner.get(row.owner.id) ?? [];
-      const targetNote = row.note;
-      if (row.grant.noteId && targetNote && !targetNote.deletedAt && tree.byId.has(targetNote.folderId)) {
-        const applicableGrants = ownerGrants.filter(
-          (grant) =>
-            grant.noteId === targetNote.id ||
-            (grant.folderId !== null && isDescendantOrSelf(targetNote.folderId, grant.folderId, tree.byId))
-        );
-        const access = accessFromGrants({
-          actorUserId,
-          resourceOwnerUserId: row.owner.id,
-          grants: applicableGrants,
-        });
-        if (!access) return null;
-        return {
-          type: 'note' as const,
-          grantId: publicCollaborationAccessKey(row.grant.id),
-          role: access.role,
-          owner: ownerIdentity,
-          note: {
-            id: targetNote.id,
-            title: targetNote.title,
-            documentType: targetNote.documentType,
-            updatedAt: targetNote.updatedAt,
-          },
-        };
-      }
-      const targetFolder = row.folder;
-      if (row.grant.folderId && targetFolder && !targetFolder.deletedAt && tree.byId.has(targetFolder.id)) {
-        const applicableGrants = ownerGrants.filter(
-          (grant) => grant.folderId !== null && isDescendantOrSelf(targetFolder.id, grant.folderId, tree.byId)
-        );
-        const access = accessFromGrants({
-          actorUserId,
-          resourceOwnerUserId: row.owner.id,
-          grants: applicableGrants,
-        });
-        if (!access) return null;
-        return {
-          type: 'folder' as const,
-          grantId: publicCollaborationAccessKey(row.grant.id),
-          role: access.role,
-          owner: ownerIdentity,
-          folder: { id: targetFolder.id, title: targetFolder.title, updatedAt: targetFolder.updatedAt },
-        };
-      }
-      return null;
-    })
+  const noteResources = rows.flatMap((row) =>
+    row.grant.noteId && row.note && !row.note.deletedAt
+      ? [{ id: row.note.id, folderId: row.note.folderId, userId: row.owner.id }]
+      : []
   );
+  const folderResources = rows.flatMap((row) =>
+    row.grant.folderId && row.folder && !row.folder.deletedAt ? [{ id: row.folder.id, userId: row.owner.id }] : []
+  );
+  const [noteAccessById, folderAccessById] = await Promise.all([
+    resolveNoteCollaborationAccessBatch({ actorUserId, resources: noteResources }),
+    resolveFolderCollaborationAccessBatch({ actorUserId, resources: folderResources }),
+  ]);
 
-  return resolved.filter((item): item is NonNullable<typeof item> => item !== null);
+  const resolved: DirectCollaborationPageItem[] = [];
+  for (const row of rows) {
+    const ownerIdentity = serializeCollaborationUserIdentity({ ...row.owner, currentUserId: actorUserId });
+    const targetNote = row.note;
+    if (row.grant.noteId && targetNote && !targetNote.deletedAt) {
+      const access = noteAccessById.get(targetNote.id);
+      if (!access) continue;
+      resolved.push({
+        type: 'note',
+        grantId: publicCollaborationAccessKey(row.grant.id),
+        role: access.role,
+        owner: ownerIdentity,
+        note: {
+          id: targetNote.id,
+          title: targetNote.title,
+          documentType: targetNote.documentType,
+          updatedAt: targetNote.updatedAt,
+        },
+      });
+      continue;
+    }
+    const targetFolder = row.folder;
+    if (row.grant.folderId && targetFolder && !targetFolder.deletedAt) {
+      const access = folderAccessById.get(targetFolder.id);
+      if (!access) continue;
+      resolved.push({
+        type: 'folder',
+        grantId: publicCollaborationAccessKey(row.grant.id),
+        role: access.role,
+        owner: ownerIdentity,
+        folder: { id: targetFolder.id, title: targetFolder.title, updatedAt: targetFolder.updatedAt },
+      });
+    }
+  }
+
+  return resolved;
 }
 
 async function selectedIntegrationGrantIds(input: { authorizationId: string; actorUserId: string }) {
@@ -622,44 +923,73 @@ export async function resolveFolderCollaborationAccessBatch(input: {
   if (sharedResources.length === 0) return accessByFolderId;
 
   const ownerIds = [...new Set(sharedResources.map((resource) => resource.userId))];
-  const [activeFolderRows, grantRows] = await Promise.all([
-    db
+  const ancestorIdsByFolderId = new Map<string, string[]>();
+  if (sharedResources.length <= 100) {
+    const paths = await loadFolderPaths(
+      sharedResources.map((resource) => ({ id: resource.id, folderId: resource.id, userId: resource.userId }))
+    );
+    for (const resource of sharedResources) {
+      const path = paths.get(resource.id);
+      if (path)
+        ancestorIdsByFolderId.set(
+          resource.id,
+          path.map((folder) => folder.id)
+        );
+    }
+  } else {
+    const activeFolderRows = await db
       .select({ id: folders.id, userId: folders.userId, parentFolderId: folders.parentFolderId })
       .from(folders)
-      .where(and(inArray(folders.userId, ownerIds), isNull(folders.deletedAt))),
-    db
-      .select({
-        id: collaborationGrants.id,
-        ownerUserId: collaborationGrants.ownerUserId,
-        folderId: collaborationGrants.folderId,
-        noteId: collaborationGrants.noteId,
-        role: collaborationGrants.role,
-      })
-      .from(collaborationGrants)
-      .where(
-        and(
-          eq(collaborationGrants.granteeUserId, input.actorUserId),
-          inArray(collaborationGrants.ownerUserId, ownerIds)
-        )
-      ),
-  ]);
-  const activeFoldersByOwner = new Map<string, typeof activeFolderRows>();
-  for (const folder of activeFolderRows)
-    activeFoldersByOwner.set(folder.userId, [...(activeFoldersByOwner.get(folder.userId) ?? []), folder]);
-  const grantsByOwner = new Map<string, typeof grantRows>();
-  for (const grant of grantRows)
-    grantsByOwner.set(grant.ownerUserId, [...(grantsByOwner.get(grant.ownerUserId) ?? []), grant]);
+      .where(and(inArray(folders.userId, ownerIds), isNull(folders.deletedAt)));
+    const folderMapsByOwner = new Map<string, Map<string, (typeof activeFolderRows)[number]>>();
+    for (const ownerId of ownerIds) {
+      const activeFolders = filterActiveFolderHierarchy(activeFolderRows.filter((folder) => folder.userId === ownerId));
+      folderMapsByOwner.set(ownerId, new Map(activeFolders.map((folder) => [folder.id, folder])));
+    }
+    for (const resource of sharedResources) {
+      const byId = folderMapsByOwner.get(resource.userId);
+      let current = byId?.get(resource.id);
+      if (!byId || !current) continue;
+      const ancestorIds: string[] = [];
+      while (current) {
+        ancestorIds.push(current.id);
+        if (!current.parentFolderId) break;
+        current = byId.get(current.parentFolderId);
+        if (!current) break;
+      }
+      ancestorIdsByFolderId.set(resource.id, ancestorIds);
+    }
+  }
+  const relevantFolderIds = new Set([...ancestorIdsByFolderId.values()].flat());
+
+  const grantRows =
+    relevantFolderIds.size > 0
+      ? await db
+          .select({
+            id: collaborationGrants.id,
+            ownerUserId: collaborationGrants.ownerUserId,
+            folderId: collaborationGrants.folderId,
+            noteId: collaborationGrants.noteId,
+            role: collaborationGrants.role,
+          })
+          .from(collaborationGrants)
+          .where(
+            and(
+              eq(collaborationGrants.granteeUserId, input.actorUserId),
+              inArray(collaborationGrants.ownerUserId, ownerIds),
+              inArray(collaborationGrants.folderId, [...relevantFolderIds])
+            )
+          )
+      : [];
+  const grantsByFolderId = new Map<string, typeof grantRows>();
+  for (const grant of grantRows) {
+    if (grant.folderId) grantsByFolderId.set(grant.folderId, [...(grantsByFolderId.get(grant.folderId) ?? []), grant]);
+  }
 
   for (const resource of sharedResources) {
-    const ownerFolders = filterActiveFolderHierarchy(activeFoldersByOwner.get(resource.userId) ?? []);
-    const byId = new Map(ownerFolders.map((folder) => [folder.id, folder]));
-    if (!byId.has(resource.id)) continue;
-    const ancestorIds = new Set(
-      ownerFolders.filter((folder) => isDescendantOrSelf(resource.id, folder.id, byId)).map((folder) => folder.id)
-    );
-    const grants = (grantsByOwner.get(resource.userId) ?? []).filter(
-      (grant) => grant.folderId !== null && ancestorIds.has(grant.folderId)
-    );
+    const ancestorIds = ancestorIdsByFolderId.get(resource.id);
+    if (!ancestorIds) continue;
+    const grants = ancestorIds.flatMap((id) => grantsByFolderId.get(id) ?? []);
     const access = accessFromGrants({
       actorUserId: input.actorUserId,
       resourceOwnerUserId: resource.userId,
@@ -689,8 +1019,27 @@ export async function resolveNoteCollaborationAccessBatch(input: {
     return accessByNoteId;
   }
 
-  const [activeFolderRows, grantRows] = await Promise.all([
-    db
+  const ancestorIdsByNoteId = new Map<string, string[]>();
+  const relevantFolderIds = new Set<string>();
+  const relevantNoteIds = new Set<string>();
+  if (resourcesRequiringFolders.length <= 100) {
+    const paths = await loadFolderPaths(
+      resourcesRequiringFolders.map((resource) => ({
+        id: resource.id,
+        folderId: resource.folderId,
+        userId: resource.userId,
+      }))
+    );
+    for (const resource of resourcesRequiringFolders) {
+      const path = paths.get(resource.id);
+      if (!path || (input.excludePrivateFolders && path.some((folder) => folder.is_private !== 0))) continue;
+      const ancestorIds = path.map((folder) => folder.id);
+      ancestorIdsByNoteId.set(resource.id, ancestorIds);
+      if (resource.userId !== input.actorUserId) relevantNoteIds.add(resource.id);
+      for (const id of ancestorIds) relevantFolderIds.add(id);
+    }
+  } else {
+    const activeFolderRows = await db
       .select({
         id: folders.id,
         userId: folders.userId,
@@ -698,57 +1047,82 @@ export async function resolveNoteCollaborationAccessBatch(input: {
         isPrivate: folders.isPrivate,
       })
       .from(folders)
-      .where(and(inArray(folders.userId, ownerIds), isNull(folders.deletedAt))),
-    db
-      .select({
-        id: collaborationGrants.id,
-        ownerUserId: collaborationGrants.ownerUserId,
-        role: collaborationGrants.role,
-        noteId: collaborationGrants.noteId,
-        folderId: collaborationGrants.folderId,
-      })
-      .from(collaborationGrants)
-      .where(
-        and(
-          eq(collaborationGrants.granteeUserId, input.actorUserId),
-          inArray(collaborationGrants.ownerUserId, ownerIds),
-          input.allowedGrantIds
-            ? input.allowedGrantIds.length > 0
-              ? inArray(collaborationGrants.id, [...input.allowedGrantIds])
-              : sql`0`
-            : undefined
-        )
-      ),
-  ]);
-  const foldersByOwner = new Map<string, typeof activeFolderRows>();
-  for (const ownerId of ownerIds) {
-    foldersByOwner.set(
-      ownerId,
-      filterActiveFolderHierarchy(activeFolderRows.filter((folder) => folder.userId === ownerId))
-    );
+      .where(and(inArray(folders.userId, ownerIds), isNull(folders.deletedAt)));
+    const folderMapsByOwner = new Map<string, Map<string, (typeof activeFolderRows)[number]>>();
+    for (const ownerId of ownerIds) {
+      const activeFolders = filterActiveFolderHierarchy(activeFolderRows.filter((folder) => folder.userId === ownerId));
+      folderMapsByOwner.set(ownerId, new Map(activeFolders.map((folder) => [folder.id, folder])));
+    }
+    for (const resource of resourcesRequiringFolders) {
+      const byId = folderMapsByOwner.get(resource.userId);
+      let current = byId?.get(resource.folderId);
+      if (!byId || !current) continue;
+      const ancestorIds: string[] = [];
+      let effectivelyPrivate = false;
+      while (current) {
+        ancestorIds.push(current.id);
+        if (current.isPrivate) effectivelyPrivate = true;
+        if (!current.parentFolderId) break;
+        current = byId.get(current.parentFolderId);
+        if (!current) break;
+      }
+      if (input.excludePrivateFolders && effectivelyPrivate) continue;
+      ancestorIdsByNoteId.set(resource.id, ancestorIds);
+      if (resource.userId !== input.actorUserId) relevantNoteIds.add(resource.id);
+      for (const id of ancestorIds) relevantFolderIds.add(id);
+    }
   }
-  const grantsByOwner = new Map<string, typeof grantRows>();
-  for (const grant of grantRows)
-    grantsByOwner.set(grant.ownerUserId, [...(grantsByOwner.get(grant.ownerUserId) ?? []), grant]);
+
+  const targetConditions = [
+    relevantFolderIds.size > 0 ? inArray(collaborationGrants.folderId, [...relevantFolderIds]) : undefined,
+    relevantNoteIds.size > 0 ? inArray(collaborationGrants.noteId, [...relevantNoteIds]) : undefined,
+  ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
+  const grantRows =
+    targetConditions.length > 0
+      ? await db
+          .select({
+            id: collaborationGrants.id,
+            ownerUserId: collaborationGrants.ownerUserId,
+            role: collaborationGrants.role,
+            noteId: collaborationGrants.noteId,
+            folderId: collaborationGrants.folderId,
+          })
+          .from(collaborationGrants)
+          .where(
+            and(
+              eq(collaborationGrants.granteeUserId, input.actorUserId),
+              inArray(collaborationGrants.ownerUserId, ownerIds),
+              or(...targetConditions),
+              input.allowedGrantIds
+                ? input.allowedGrantIds.length > 0
+                  ? inArray(collaborationGrants.id, [...input.allowedGrantIds])
+                  : sql`0`
+                : undefined
+            )
+          )
+      : [];
+  const grantsByFolderId = new Map<string, typeof grantRows>();
+  const grantsByNoteId = new Map<string, typeof grantRows>();
+  for (const grant of grantRows) {
+    if (grant.folderId) grantsByFolderId.set(grant.folderId, [...(grantsByFolderId.get(grant.folderId) ?? []), grant]);
+    if (grant.noteId) grantsByNoteId.set(grant.noteId, [...(grantsByNoteId.get(grant.noteId) ?? []), grant]);
+  }
 
   for (const resource of input.resources) {
     if (resource.userId === input.actorUserId && !input.excludePrivateFolders) {
       accessByNoteId.set(resource.id, ownerAccess(input.actorUserId));
       continue;
     }
-    const ownerFolders = foldersByOwner.get(resource.userId) ?? [];
-    const byId = new Map(ownerFolders.map((folder) => [folder.id, folder]));
-    if (!byId.has(resource.folderId)) continue;
-    const ancestorFolders = ownerFolders.filter((folder) => isDescendantOrSelf(resource.folderId, folder.id, byId));
-    if (input.excludePrivateFolders && ancestorFolders.some((folder) => folder.isPrivate)) continue;
+    const ancestorIds = ancestorIdsByNoteId.get(resource.id);
+    if (!ancestorIds) continue;
     if (resource.userId === input.actorUserId) {
       accessByNoteId.set(resource.id, ownerAccess(input.actorUserId));
       continue;
     }
-    const ancestorIds = new Set(ancestorFolders.map((folder) => folder.id));
-    const grants = (grantsByOwner.get(resource.userId) ?? []).filter(
-      (grant) => grant.noteId === resource.id || (grant.folderId !== null && ancestorIds.has(grant.folderId))
-    );
+    const grants = [
+      ...(grantsByNoteId.get(resource.id) ?? []),
+      ...ancestorIds.flatMap((id) => grantsByFolderId.get(id) ?? []),
+    ];
     const access = accessFromGrants({
       actorUserId: input.actorUserId,
       resourceOwnerUserId: resource.userId,

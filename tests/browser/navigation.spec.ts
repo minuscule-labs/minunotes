@@ -1,5 +1,57 @@
-import { expect, test } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 import { browserFixture, mockBrowserApi } from './fixtures';
+
+function sharedFolderDetail(id: string, title: string, parentFolderId: string | null) {
+  return {
+    id,
+    parentFolderId,
+    title,
+    isPrivate: false,
+    isAgentReadOnly: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+async function mockActiveSharedFolderRoute(
+  page: Page,
+  folder: ReturnType<typeof sharedFolderDetail>,
+  ancestors: ReturnType<typeof sharedFolderDetail>[]
+) {
+  await page.route(`**/internal/folders/${folder.id}/detail`, (route) =>
+    route.fulfill({
+      json: {
+        folder,
+        ancestors,
+        childFolders: [],
+        access: { role: 'viewer', source: 'folder_grant' },
+        sharedBy: {
+          key: 'user_shared_owner',
+          type: 'user',
+          displayName: 'Shared Owner',
+          maskedEmail: 's•••@example.com',
+          label: 'Shared Owner',
+          isCurrentUser: false,
+        },
+      },
+    })
+  );
+  await page.route(`**/internal/folders/${folder.id}/notes*`, (route) =>
+    route.fulfill({ json: { notes: [], access: { role: 'viewer', source: 'folder_grant' } } })
+  );
+}
+
+function sharedNavigationChildren(parentFolderId: string, count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `folder_shared_nav_page_${String(index + 1).padStart(3, '0')}`,
+    title: `Shared sibling ${String(index + 1).padStart(3, '0')}`,
+    parentFolderId,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    isPrivate: false,
+    isAgentReadOnly: false,
+    hasChildren: false,
+  }));
+}
 
 test('preserves nested folder context while navigating between folders and notes', async ({ page }) => {
   await mockBrowserApi(page);
@@ -152,6 +204,223 @@ test('uses nested folder lists with accessible expansion and quiet inactive acti
   await rootLink.click();
   await expect(page).toHaveURL(`/folders/${browserFixture.folder.id}`);
   await expect.poll(() => inactiveActions.evaluate((element) => getComputedStyle(element).opacity)).toBe('1');
+});
+
+test('hides shared-folder navigation when no folders are shared', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  await page.goto('/');
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(1);
+  await expect(primary.getByRole('button', { name: 'Shared with me', exact: true })).toHaveCount(0);
+});
+
+test('loads shared folder roots lazily and keeps Home focused on recent notes', async ({ page }) => {
+  const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  await page.goto('/');
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  const sharedRoot = primary.getByRole('link', { name: /Shared project/ });
+  await expect(sharedRoot).toBeVisible();
+  await expect(primary.getByText('Shared with me', { exact: true })).toHaveCSS('text-transform', 'none');
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(1);
+  expect(api.sharedFolderNavigationRequests[0]).toBe('/collaborations/shared-folder-roots');
+
+  const expand = primary.getByRole('button', { name: 'Expand Shared project' });
+  await expand.click();
+  await expect(primary.getByRole('link', { name: 'Shared subfolder', exact: true })).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(2);
+  expect(api.sharedFolderNavigationRequests[1]).toBe('/folders/folder_shared_nav/children');
+  await primary.getByRole('button', { name: 'Expand Shared subfolder' }).click();
+  await expect(primary.getByRole('link', { name: 'Shared nested folder', exact: true })).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(3);
+  expect(api.sharedFolderNavigationRequests[2]).toBe('/folders/folder_shared_nav_child/children');
+  await primary.getByRole('button', { name: 'Collapse Shared project' }).click();
+  await primary.getByRole('button', { name: 'Expand Shared project' }).click();
+  await expect(primary.getByRole('button', { name: 'Collapse Shared subfolder' })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(3);
+  await primary.getByRole('link', { name: 'Shared', exact: true }).click();
+  await expect(page).toHaveURL('/shared');
+  await primary.getByRole('link', { name: 'Home', exact: true }).click();
+  await expect(page).toHaveURL('/');
+  expect(api.sharedFolderNavigationRequests).toHaveLength(3);
+
+  const home = page.getByRole('main');
+  await expect(home.getByRole('heading', { name: 'Folders' })).toHaveCount(0);
+  await expect(home.getByRole('heading', { name: 'Recent notes' })).toBeVisible();
+
+  await page.reload();
+  const reloadedPrimary = page.getByRole('navigation', { name: 'Primary' });
+  await expect(reloadedPrimary.getByRole('button', { name: 'Collapse Shared project' })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+  await expect(reloadedPrimary.getByRole('link', { name: 'Shared subfolder', exact: true })).toBeVisible();
+  await expect(reloadedPrimary.getByRole('link', { name: 'Shared nested folder', exact: true })).toBeVisible();
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/collaborations/shared-folder-roots')
+  ).toHaveLength(2);
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/folders/folder_shared_nav/children')
+  ).toHaveLength(2);
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/folders/folder_shared_nav_child/children')
+  ).toHaveLength(2);
+});
+
+test('auto-expands shared ancestors for the active shared folder', async ({ page }) => {
+  const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  await page.goto('/folders/folder_shared_nav_child');
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  await expect(primary.getByRole('button', { name: 'Collapse Shared project' })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+  await expect(primary.getByRole('link', { name: 'Shared subfolder', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page'
+  );
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(2);
+  expect(api.sharedFolderNavigationRequests[0]).toBe('/collaborations/shared-folder-roots');
+  expect(api.sharedFolderNavigationRequests[1]).toBe('/folders/folder_shared_nav/children');
+});
+
+test('shows an active shared folder even when it falls beyond the first child page', async ({ page }) => {
+  await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  const root = sharedFolderDetail('folder_shared_nav', 'Shared project', null);
+  const activeFolder = sharedFolderDetail('folder_shared_nav_page_two', 'Page two active folder', root.id);
+  await mockActiveSharedFolderRoute(page, activeFolder, [root]);
+
+  const childPageRequests: string[] = [];
+  await page.route('**/internal/folders/folder_shared_nav/children*', async (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    childPageRequests.push(cursor ?? 'first');
+    await route.fulfill({
+      json: cursor
+        ? {
+            folders: [
+              {
+                id: activeFolder.id,
+                title: activeFolder.title,
+                parentFolderId: root.id,
+                updatedAt: activeFolder.updatedAt,
+                isPrivate: false,
+                isAgentReadOnly: false,
+                hasChildren: false,
+              },
+            ],
+            pageInfo: { hasMore: false, nextCursor: null },
+          }
+        : {
+            folders: sharedNavigationChildren(root.id, 100),
+            pageInfo: { hasMore: true, nextCursor: 'cursor-page-two' },
+          },
+    });
+  });
+
+  await page.goto(`/folders/${activeFolder.id}`);
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  await expect(primary.getByRole('link', { name: activeFolder.title, exact: true })).toHaveAttribute(
+    'aria-current',
+    'page'
+  );
+  await expect(primary.getByRole('button', { name: 'Load more folders' })).toBeVisible();
+  expect(childPageRequests).toEqual(['first']);
+
+  await primary.getByRole('button', { name: 'Load more folders' }).click();
+  await expect.poll(() => childPageRequests.length).toBe(2);
+  await expect(primary.getByRole('link', { name: activeFolder.title, exact: true })).toHaveCount(1);
+  expect(childPageRequests).toEqual(['first', 'cursor-page-two']);
+});
+
+test('renders and expands an active ancestor that falls beyond the first child page', async ({ page }) => {
+  await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  const root = sharedFolderDetail('folder_shared_nav', 'Shared project', null);
+  const intermediate = sharedFolderDetail('folder_shared_nav_intermediate', 'Page two shared ancestor', root.id);
+  const activeFolder = sharedFolderDetail('folder_shared_nav_active_leaf', 'Active shared leaf', intermediate.id);
+  await mockActiveSharedFolderRoute(page, activeFolder, [root, intermediate]);
+
+  const childPageRequests: string[] = [];
+  await page.route('**/internal/folders/folder_shared_nav/children*', async (route) => {
+    childPageRequests.push('root');
+    await route.fulfill({
+      json: {
+        folders: sharedNavigationChildren(root.id, 100),
+        pageInfo: { hasMore: true, nextCursor: 'cursor-page-two' },
+      },
+    });
+  });
+  await page.route('**/internal/folders/folder_shared_nav_intermediate/children*', async (route) => {
+    childPageRequests.push('intermediate');
+    await route.fulfill({
+      json: {
+        folders: [
+          {
+            id: activeFolder.id,
+            title: activeFolder.title,
+            parentFolderId: intermediate.id,
+            updatedAt: activeFolder.updatedAt,
+            isPrivate: false,
+            isAgentReadOnly: false,
+            hasChildren: false,
+          },
+        ],
+        pageInfo: { hasMore: false, nextCursor: null },
+      },
+    });
+  });
+
+  await page.goto(`/folders/${activeFolder.id}`);
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  await expect(primary.getByRole('button', { name: `Collapse ${intermediate.title}` })).toHaveAttribute(
+    'aria-expanded',
+    'true'
+  );
+  await expect(primary.getByRole('link', { name: activeFolder.title, exact: true })).toHaveAttribute(
+    'aria-current',
+    'page'
+  );
+  await expect.poll(() => childPageRequests.length).toBe(2);
+  expect([...childPageRequests].sort()).toEqual(['intermediate', 'root']);
+});
+
+test('includes an active shared root outside the bounded root summary', async ({ page }) => {
+  await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  const activeFolder = sharedFolderDetail('folder_shared_nav_root_outside_page', 'Active shared root', null);
+  await mockActiveSharedFolderRoute(page, activeFolder, []);
+
+  let rootRequests = 0;
+  await page.route('**/internal/collaborations/shared-folder-roots*', async (route) => {
+    rootRequests += 1;
+    await route.fulfill({
+      json: {
+        folders: Array.from({ length: 50 }, (_, index) => ({
+          id: `folder_shared_root_${index + 1}`,
+          title: `Shared root ${index + 1}`,
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          role: 'viewer',
+          hasChildren: false,
+        })),
+        pageInfo: { hasMore: true },
+      },
+    });
+  });
+
+  await page.goto(`/folders/${activeFolder.id}`);
+
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  const rootList = primary.locator('#sidebar-shared-folder-roots ul');
+  const activeRootLink = rootList.getByRole('link', { name: activeFolder.title, exact: true });
+  await expect(activeRootLink).not.toContainText('Shared Owner');
+  await expect(activeRootLink).toHaveAttribute('aria-current', 'page');
+  await expect(rootList.getByRole('link')).toHaveCount(51);
+  expect(rootRequests).toBe(1);
 });
 
 test('keeps the narrow sidebar scrollbar unobtrusive without disabling scroll', async ({ page }) => {
@@ -321,7 +590,7 @@ test('renders existing templates without waiting for the shared folder list', as
 
 test('shows route-aware mobile navigation and active folder context', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await mockBrowserApi(page);
+  const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true });
   await page.goto(`/notes/${browserFixture.child.id}`);
 
   await expect(page.getByRole('heading', { name: browserFixture.child.title, exact: true })).toBeVisible();
@@ -331,6 +600,11 @@ test('shows route-aware mobile navigation and active folder context', async ({ p
     'aria-current',
     'location'
   );
+  const expandShared = primary.getByRole('button', { name: 'Expand Shared project' });
+  await expandShared.focus();
+  await page.keyboard.press('Enter');
+  await expect(primary.getByRole('link', { name: 'Shared subfolder', exact: true })).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(2);
   await page.getByRole('button', { name: 'Close menu' }).click();
 
   await page.getByRole('link', { name: `Go to ${browserFixture.childFolder.title}` }).click();
@@ -678,13 +952,11 @@ test('searches before showing API key folders and scopes Comment globally or ind
 
   const search = dialog.getByPlaceholder('Search folders...');
   await search.fill(browserFixture.folder.title);
-  await dialog
-    .getByRole('button', { name: `${browserFixture.folder.title} ${browserFixture.folder.title}`, exact: true })
-    .click();
+  await dialog.getByRole('button', { name: `Add ${browserFixture.folder.title}`, exact: true }).click();
   await search.fill(browserFixture.childFolder.title);
   await dialog
     .getByRole('button', {
-      name: `${browserFixture.childFolder.title} ${browserFixture.folder.title} / ${browserFixture.childFolder.title}`,
+      name: `Add ${browserFixture.childFolder.title}`,
       exact: true,
     })
     .click();

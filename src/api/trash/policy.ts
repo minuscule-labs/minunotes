@@ -17,7 +17,8 @@ export function filterActiveFolderHierarchy<T extends { id: string; parentFolder
   });
 }
 
-function activeFolderPathWhere(folderId: SQLWrapper, userId: string) {
+/** Outer-column wrappers must retain explicit table qualifiers inside the recursive SQL fragment. */
+export function activeFolderPathWhere(folderId: SQLWrapper, userId: string | SQLWrapper) {
   return sql`exists (
     with recursive folder_path(id, parent_folder_id, deleted_at) as (
       select path_folder.id, path_folder.parent_folder_id, path_folder.deleted_at
@@ -39,7 +40,7 @@ export function activeFolderWhere(userId: string, ...conditions: Array<SQL | und
   return and(
     eq(folders.userId, userId),
     isNull(folders.deletedAt),
-    activeFolderPathWhere(folders.id, userId),
+    activeFolderPathWhere(sql.raw('"folders"."id"'), userId),
     ...conditions
   );
 }
@@ -48,7 +49,7 @@ export function activeNoteWhere(userId: string, ...conditions: Array<SQL | undef
   return and(
     eq(notes.userId, userId),
     isNull(notes.deletedAt),
-    activeFolderPathWhere(notes.folderId, userId),
+    activeFolderPathWhere(sql.raw('"notes"."folder_id"'), userId),
     ...conditions
   );
 }

@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Navigate, Outlet, useRouterState } from '@tanstack/react-router';
 import { PanelLeftOpen } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api } from '../lib/api';
+import { ApiError, api, type SharedFolderNavigationChild } from '../lib/api';
 import { authClient } from '../lib/auth-client';
 import { buildAppNavigationModel, folderIdFromNavigationPath, noteIdFromNavigationPath } from '../lib/navigation';
 import { getStoredSidebarCollapsed, storeSidebarCollapsed } from '../lib/navigation-preferences';
@@ -27,6 +27,7 @@ function AuthenticatedAppShell() {
   const isInvitationRoute = pathname.startsWith('/invite/');
   const isPublicShareRoute = pathname.startsWith('/share/');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapseToRootsToggle, setCollapseToRootsToggle] = useState(false);
   const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(getStoredSidebarCollapsed);
   const contentScrollRef = useRef<HTMLElement>(null);
   const navigationNoteId = noteIdFromNavigationPath(pathname);
@@ -65,6 +66,21 @@ function AuthenticatedAppShell() {
       }),
     [pathname, folders.data?.folders, navigationNote.data, navigationFolder.data]
   );
+  const activeSharedFolderPath = useMemo<SharedFolderNavigationChild[]>(() => {
+    const folderDetail = navigationFolder.data;
+    if (navigation.section !== 'shared-with-me' || folderDetail?.access.source !== 'folder_grant') return [];
+
+    const path = [...folderDetail.ancestors, folderDetail.folder];
+    return path.map((folder, index) => ({
+      id: folder.id,
+      title: folder.title,
+      parentFolderId: index === 0 ? null : folder.parentFolderId,
+      updatedAt: folder.updatedAt,
+      isPrivate: folder.isPrivate,
+      isAgentReadOnly: folder.isAgentReadOnly,
+      hasChildren: index < path.length - 1 || folderDetail.childFolders.length > 0,
+    }));
+  }, [navigation.section, navigationFolder.data]);
 
   useEffect(() => {
     applyNoteTheme(getStoredTheme());
@@ -112,6 +128,9 @@ function AuthenticatedAppShell() {
           <FolderSidebar
             userEmail={session.data.user.email}
             navigation={navigation}
+            activeSharedFolderPath={activeSharedFolderPath}
+            collapseToRootsToggle={collapseToRootsToggle}
+            onCollapseAllFolderTrees={() => setCollapseToRootsToggle((toggle) => !toggle)}
             onCollapse={() => setDesktopSidebarCollapsed(true)}
           />
         </div>
@@ -129,6 +148,9 @@ function AuthenticatedAppShell() {
             <FolderSidebar
               userEmail={session.data.user.email}
               navigation={navigation}
+              activeSharedFolderPath={activeSharedFolderPath}
+              collapseToRootsToggle={collapseToRootsToggle}
+              onCollapseAllFolderTrees={() => setCollapseToRootsToggle((toggle) => !toggle)}
               onNavigate={() => setSidebarOpen(false)}
               onClose={() => setSidebarOpen(false)}
             />
