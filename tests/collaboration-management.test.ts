@@ -9,7 +9,7 @@ import { expectPrivacySafeCollaborationDto } from './helpers/collaboration-priva
 const tempDirs: string[] = [];
 
 async function runMigrations(libsql: { executeMultiple: (sql: string) => Promise<unknown> }) {
-  for (let index = 0; index <= 39; index += 1) {
+  for (let index = 0; index <= 40; index += 1) {
     const [file] = await Array.fromAsync(
       (await import('node:fs/promises')).glob(`drizzle/${String(index).padStart(4, '0')}_*.sql`)
     );
@@ -586,6 +586,7 @@ describe('collaborator management', () => {
       folder: { id: 'folder', parentFolderId: null },
       childFolders: [],
       access: { role: 'viewer', source: 'folder_grant' },
+      sharedBy: { type: 'user', label: 'Owner', isCurrentUser: false },
     });
     expect(detailBody).toMatchObject({ ancestors: [] });
     expect(detailBody.folder).not.toHaveProperty('userId');
@@ -740,20 +741,270 @@ describe('collaborator management', () => {
     expect(firstPageBody.pageInfo).toMatchObject({ hasMore: true, nextCursor: expect.any(String) });
     const decodedCursor = Buffer.from(firstPageBody.pageInfo.nextCursor ?? '', 'base64url').toString('utf8');
     for (const storedGrantId of storedGrantIds) expect(decodedCursor).not.toContain(storedGrantId);
+    const insertedAt = new Date(Date.now() + 60_000);
+    await db.insert(schema.notes).values({
+      id: 'note_newer_than_cursor',
+      folderId: 'folder',
+      userId: 'owner',
+      title: 'Newest note',
+      content: '',
+      createdAt: insertedAt,
+      updatedAt: insertedAt,
+    });
+    const newerGrant = await app.request('/notes/note_newer_than_cursor/collaborators', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: collaborator.email, role: 'viewer' }),
+    });
+    expect(newerGrant.status).toBe(201);
+
     const secondPage = await app.request(
       `/collaborations/shared-with-me?type=note&limit=1&cursor=${encodeURIComponent(firstPageBody.pageInfo.nextCursor ?? '')}`,
       { headers: { 'x-test-user': collaborator.id } }
     );
     expect(secondPage.status).toBe(200);
-    const secondPageBody = (await secondPage.json()) as typeof firstPageBody;
+    const secondPageBody = (await secondPage.json()) as {
+      collaborations: Array<{ grantId: string; note?: { id: string } }>;
+      pageInfo: { hasMore: boolean; nextCursor: string | null };
+    };
     expect(secondPageBody.collaborations).toHaveLength(1);
     expect(secondPageBody.collaborations[0]?.grantId).not.toBe(firstPageBody.collaborations[0]?.grantId);
+    expect(secondPageBody.collaborations[0]?.note?.id).not.toBe('note_newer_than_cursor');
     expect(secondPageBody.pageInfo).toEqual({ hasMore: false, nextCursor: null });
     const invalidCursor = await app.request('/collaborations/shared-with-me?type=note&cursor=invalid', {
       headers: { 'x-test-user': collaborator.id },
     });
     expect(invalidCursor.status).toBe(400);
     await expect(invalidCursor.json()).resolves.toEqual({ error: 'Invalid collaboration cursor' });
+    libsql.close();
+  });
+
+  it('returns bounded shared-folder roots without nested duplicates or inactive paths', async () => {
+    const { app, db, libsql, schema, owner, collaborator } = await setup();
+    const now = new Date();
+    await db.insert(schema.folders).values([
+      {
+        id: 'folder_shared_nested',
+        userId: owner.id,
+        parentFolderId: 'folder',
+        title: 'Nested shared folder',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_shared_other_root',
+        userId: owner.id,
+        parentFolderId: null,
+        title: 'Other shared root',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_shared_deleted_root',
+        userId: owner.id,
+        parentFolderId: null,
+        title: 'Deleted root',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_shared_under_deleted',
+        userId: owner.id,
+        parentFolderId: 'folder_shared_deleted_root',
+        title: 'Under deleted root',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    for (const [folderId, role] of [
+      ['folder', 'viewer'],
+      ['folder_shared_nested', 'editor'],
+      ['folder_shared_other_root', 'commenter'],
+    ] as const) {
+      const response = await app.request(`/folders/${folderId}/collaborators`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: collaborator.email, role }),
+      });
+      expect(response.status).toBe(201);
+    }
+    await db.insert(schema.collaborationGrants).values({
+      id: 'grant_under_deleted_parent',
+      ownerUserId: owner.id,
+      granteeUserId: collaborator.id,
+      noteId: null,
+      folderId: 'folder_shared_under_deleted',
+      role: 'editor',
+      createdByUserId: owner.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const noteGrant = await app.request('/notes/note/collaborators', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: collaborator.email, role: 'editor' }),
+    });
+    expect(noteGrant.status).toBe(201);
+
+    const response = await app.request('/collaborations/shared-folder-roots?limit=10', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      folders: Array<{ id: string; title: string; role: string; hasChildren: boolean }>;
+      pageInfo: { hasMore: boolean };
+    };
+    expect(body.folders.map((folder) => folder.id).sort()).toEqual(['folder', 'folder_shared_other_root']);
+    expect(body.folders.find((folder) => folder.id === 'folder')).toMatchObject({ role: 'viewer', hasChildren: true });
+    expect(body.pageInfo).toEqual({ hasMore: false });
+    expect(JSON.stringify(body)).not.toContain('folder_shared_nested');
+    expect(JSON.stringify(body)).not.toContain('folder_shared_under_deleted');
+    expect(JSON.stringify(body)).not.toContain(owner.email);
+    expect(JSON.stringify(body)).not.toContain(owner.name);
+    expect(JSON.stringify(body)).not.toContain(owner.id);
+    libsql.close();
+  });
+
+  it('loads shared-folder children lazily with bounded pages and authorization checks', async () => {
+    const { app, db, libsql, schema, owner, collaborator, otherOwner } = await setup();
+    const now = new Date();
+    await db.insert(schema.folders).values([
+      ...['Alpha child', 'Beta child', 'Deleted child'].map((title, index) => ({
+        id: `folder_child_${index}`,
+        userId: owner.id,
+        parentFolderId: 'folder',
+        title,
+        createdByUserId: owner.id,
+        isPrivate: title === 'Alpha child',
+        isAgentReadOnly: false,
+        deletedAt: title === 'Deleted child' ? now : null,
+        createdAt: now,
+        updatedAt: now,
+      })),
+      {
+        id: 'folder_inherited_leaf',
+        userId: owner.id,
+        parentFolderId: 'folder_child_0',
+        title: 'Inherited leaf',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_deleted_parent',
+        userId: owner.id,
+        parentFolderId: null,
+        title: 'Deleted parent',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'folder_under_deleted_parent',
+        userId: owner.id,
+        parentFolderId: 'folder_deleted_parent',
+        title: 'Under deleted parent',
+        createdByUserId: owner.id,
+        isPrivate: false,
+        isAgentReadOnly: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(schema.collaborationGrants).values([
+      {
+        id: 'grant_deleted_parent_child',
+        ownerUserId: owner.id,
+        granteeUserId: collaborator.id,
+        noteId: null,
+        folderId: 'folder_under_deleted_parent',
+        role: 'viewer',
+        createdByUserId: owner.id,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    const grant = await app.request('/folders/folder/collaborators', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: collaborator.email, role: 'viewer' }),
+    });
+    expect(grant.status).toBe(201);
+
+    const firstPage = await app.request('/folders/folder/children?limit=1', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(firstPage.status).toBe(200);
+    const firstBody = (await firstPage.json()) as {
+      folders: Array<{ id: string; title: string; hasChildren: boolean; canTrash?: boolean }>;
+      pageInfo: { hasMore: boolean; nextCursor: string | null };
+    };
+    expect(firstBody.folders).toHaveLength(1);
+    expect(firstBody.folders[0]).toMatchObject({
+      id: 'folder_child_0',
+      title: 'Alpha child',
+      isPrivate: true,
+      hasChildren: true,
+    });
+    expect(firstBody.folders[0]).not.toHaveProperty('canTrash');
+    expect(firstBody.pageInfo).toMatchObject({ hasMore: true, nextCursor: expect.any(String) });
+
+    const secondPage = await app.request(
+      `/folders/folder/children?limit=1&cursor=${encodeURIComponent(firstBody.pageInfo.nextCursor ?? '')}`,
+      { headers: { 'x-test-user': collaborator.id } }
+    );
+    expect(secondPage.status).toBe(200);
+    await expect(secondPage.json()).resolves.toMatchObject({
+      folders: [{ id: 'folder_child_1', title: 'Beta child' }],
+      pageInfo: { hasMore: false, nextCursor: null },
+    });
+
+    const ownerAccess = await app.request('/folders/folder/children', {
+      headers: { 'x-test-user': owner.id },
+    });
+    expect(ownerAccess.status).toBe(200);
+    const inheritedAccess = await app.request('/folders/folder_child_0/children', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(inheritedAccess.status).toBe(200);
+    await expect(inheritedAccess.json()).resolves.toMatchObject({
+      folders: [{ id: 'folder_inherited_leaf', title: 'Inherited leaf' }],
+    });
+    const deletedAncestorAccess = await app.request('/folders/folder_under_deleted_parent/children', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(deletedAncestorAccess.status).toBe(404);
+    const missingFolderAccess = await app.request('/folders/folder_no_longer_exists/children', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(missingFolderAccess.status).toBe(404);
+
+    const denied = await app.request('/folders/folder/children', {
+      headers: { 'x-test-user': otherOwner.id },
+    });
+    expect(denied.status).toBe(404);
+    const invalidCursor = await app.request('/folders/folder/children?cursor=invalid', {
+      headers: { 'x-test-user': collaborator.id },
+    });
+    expect(invalidCursor.status).toBe(400);
     libsql.close();
   });
 

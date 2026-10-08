@@ -464,7 +464,12 @@ function FolderView() {
   return (
     <section className="mx-auto w-full max-w-5xl">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="font-semibold text-xl">{folder?.title ?? 'Folder notes'}</h2>
+        <div className="min-w-0">
+          <h2 className="font-semibold text-xl">{folder?.title ?? 'Folder notes'}</h2>
+          {folderDetail?.access.source === 'folder_grant' && folderDetail.sharedBy ? (
+            <p className="mt-1 text-[var(--notes-muted)] text-sm">Shared by {folderDetail.sharedBy.label}</p>
+          ) : null}
+        </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           {canCreate ? (
             <div className="inline-flex overflow-hidden rounded-md border border-[var(--notes-button-secondary-border)]">

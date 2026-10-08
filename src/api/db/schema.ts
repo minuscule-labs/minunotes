@@ -137,6 +137,9 @@ export const folders = sqliteTable(
     index('folders_user_id_idx').on(table.userId),
     uniqueIndex('folders_id_user_id_idx').on(table.id, table.userId),
     index('folders_parent_folder_id_idx').on(table.parentFolderId),
+    index('folders_active_children_idx')
+      .on(table.userId, table.parentFolderId, table.title, table.id)
+      .where(sql`${table.deletedAt} is null`),
     index('folders_created_by_user_id_idx').on(table.createdByUserId),
     index('folders_user_deleted_at_idx').on(table.userId, table.deletedAt),
     index('folders_trash_batch_id_idx').on(table.trashBatchId),

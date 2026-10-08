@@ -7,7 +7,7 @@ test('enables and copies a read-only folder share link', async ({ context, page 
   await page.goto(`/folders/${browserFixture.folder.id}`);
 
   await page.getByRole('main').getByLabel(`Actions for ${browserFixture.folder.title}`).click();
-  await page.getByRole('button', { name: 'Share' }).click();
+  await page.getByRole('button', { name: 'Share', exact: true }).click();
   const shareDialog = page.getByRole('heading', { name: 'Share folder' }).locator('..').locator('..');
   await expect(shareDialog).toBeVisible();
   await expect(shareDialog.getByRole('button', { name: 'Invite', exact: true })).toBeVisible();
@@ -38,6 +38,55 @@ test('enables and copies a read-only folder share link', async ({ context, page 
 
   await publicLinkSection.getByRole('button', { name: 'Copy public link' }).click();
   await expect(publicLinkSection.getByRole('button', { name: 'Copied' })).toBeVisible();
+});
+
+test('refreshes shared navigation after folder access changes', async ({ page }) => {
+  const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true });
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(1);
+  await page.getByRole('main').getByLabel(`Actions for ${browserFixture.folder.title}`).click();
+  await page.getByRole('button', { name: 'Share', exact: true }).click();
+  const dialog = page.getByRole('heading', { name: 'Share folder' }).locator('..').locator('..');
+  await dialog.getByLabel('Collaborator email').fill('new-person@example.com');
+  await dialog.getByRole('button', { name: 'Invite', exact: true }).click();
+  await expect(dialog.getByText('Access was granted. Email delivery is unavailable.')).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(2);
+});
+
+test('refreshes expanded shared navigation after a collaborator creates a subfolder', async ({ page }) => {
+  const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true, folderAccessRole: 'editor' });
+  await page.goto('/folders/folder_shared_nav_child');
+
+  await expect(page.getByText('Shared by Shared Owner', { exact: true })).toBeVisible();
+  const primary = page.getByRole('navigation', { name: 'Primary' });
+  await expect(primary.getByRole('link', { name: 'Shared subfolder', exact: true })).toBeVisible();
+  await primary.getByRole('button', { name: 'Expand Shared subfolder' }).click();
+  await expect(primary.getByRole('link', { name: 'Shared nested folder', exact: true })).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(3);
+
+  await page.getByRole('main').getByRole('button', { name: 'Actions for Shared subfolder' }).click();
+  await page.getByRole('button', { name: 'Add subfolder' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create subfolder' });
+  await dialog.getByLabel('Folder name').fill('Created in shared folder');
+  await dialog.getByRole('button', { name: 'Create folder' }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(
+    primary
+      .getByLabel('Subfolders of Shared subfolder')
+      .getByRole('link', { name: 'Created in shared folder', exact: true })
+  ).toBeVisible();
+  await expect.poll(() => api.sharedFolderNavigationRequests.length).toBe(6);
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/collaborations/shared-folder-roots')
+  ).toHaveLength(2);
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/folders/folder_shared_nav/children')
+  ).toHaveLength(2);
+  expect(
+    api.sharedFolderNavigationRequests.filter((path) => path === '/folders/folder_shared_nav_child/children')
+  ).toHaveLength(2);
 });
 
 test('moves selected notes from a folder list', async ({ page }) => {

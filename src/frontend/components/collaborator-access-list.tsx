@@ -28,7 +28,16 @@ export function CollaboratorAccessList({
     queryKey,
     queryFn: () => api.resourceCollaborators(resourceType, resourceId),
   });
-  const refresh = () => queryClient.invalidateQueries({ queryKey });
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey }),
+      ...(resourceType === 'folder'
+        ? [
+            queryClient.invalidateQueries({ queryKey: ['shared-folder-navigation-roots'] }),
+            queryClient.invalidateQueries({ queryKey: ['shared-folder-navigation-children'] }),
+          ]
+        : []),
+    ]);
   const add = useMutation({
     mutationFn: () => api.addResourceCollaborator(resourceType, resourceId, { email: email.trim(), role }),
     onSuccess: (result) => {

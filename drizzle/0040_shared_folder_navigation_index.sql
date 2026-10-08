@@ -1,0 +1,1 @@
+CREATE INDEX `folders_active_children_idx` ON `folders` (`user_id`,`parent_folder_id`,`title`,`id`) WHERE "folders"."deleted_at" is null;

@@ -22,7 +22,7 @@ it('returns the current account profile with an opaque collaboration identity', 
     import('../src/api/db/schema'),
     import('../src/api/routes/account'),
   ]);
-  for (let index = 0; index <= 39; index += 1) {
+  for (let index = 0; index <= 40; index += 1) {
     const [file] = await Array.fromAsync(
       (await import('node:fs/promises')).glob(`drizzle/${String(index).padStart(4, '0')}_*.sql`)
     );

@@ -1,14 +1,17 @@
-import { and, eq, gt, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, isNull, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 import { type Context, Hono } from 'hono';
 import { db } from '../db/client';
-import { folderShareLinks, folders, notes, templateFolderAssignments } from '../db/schema';
+import { folderShareLinks, folders, notes, templateFolderAssignments, user as users } from '../db/schema';
 import { createDocument, listDocuments, listFolders } from '../harness/commands';
 import type { auth } from '../lib/auth';
 import {
   collaborationRoleAllows,
   resolveFolderCollaborationAccess,
+  resolveFolderNavigationAccess,
   serializeCollaborationAccess,
 } from '../lib/collaboration-access';
+import { serializeCollaborationUserIdentity } from '../lib/collaboration-identity';
 import { omitCollaborationInternalFields, omitResourceCreator } from '../lib/collaboration-serialization';
 import {
   listTrashableFolderIds,
@@ -30,6 +33,29 @@ type Variables = {
 };
 
 export const folderRoutes = new Hono<{ Variables: Variables }>();
+
+const childFolders = alias(folders, 'child');
+
+class InvalidFolderChildrenCursorError extends Error {}
+
+function decodeFolderChildrenCursor(value: string) {
+  try {
+    const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
+      title?: unknown;
+      id?: unknown;
+    };
+    if (typeof decoded.title !== 'string' || typeof decoded.id !== 'string')
+      throw new InvalidFolderChildrenCursorError();
+    return { title: decoded.title, id: decoded.id };
+  } catch (error) {
+    if (error instanceof InvalidFolderChildrenCursorError) throw error;
+    throw new InvalidFolderChildrenCursorError();
+  }
+}
+
+function encodeFolderChildrenCursor(folder: { title: string; id: string }) {
+  return Buffer.from(JSON.stringify(folder)).toString('base64url');
+}
 
 function getUser(c: Context<{ Variables: Variables }>) {
   const user = c.get('user');
@@ -242,18 +268,91 @@ folderRoutes.delete('/:folderId/share-link', async (c) => {
   return c.json({ ok: true });
 });
 
+folderRoutes.get('/:folderId/children', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const folderId = c.req.param('folderId');
+  const requestedLimit = Number(c.req.query('limit') ?? 100);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100)
+    return c.json({ error: 'Limit must be between 1 and 100' }, 400);
+
+  let cursor: { title: string; id: string } | undefined;
+  try {
+    const cursorValue = c.req.query('cursor');
+    cursor = cursorValue ? decodeFolderChildrenCursor(cursorValue) : undefined;
+  } catch (error) {
+    if (error instanceof InvalidFolderChildrenCursorError) return c.json({ error: 'Invalid folder cursor' }, 400);
+    throw error;
+  }
+
+  const access = await resolveFolderNavigationAccess({ actorUserId: user.id, folderId });
+  if (!access) return c.json({ error: 'Folder not found' }, 404);
+  const rows = await db
+    .select({
+      id: folders.id,
+      title: folders.title,
+      parentFolderId: folders.parentFolderId,
+      updatedAt: folders.updatedAt,
+      isPrivate: folders.isPrivate,
+      isAgentReadOnly: folders.isAgentReadOnly,
+      hasChildren: exists(
+        db
+          .select({ one: sql`1` })
+          .from(childFolders)
+          .where(
+            and(
+              eq(childFolders.userId, folders.userId),
+              eq(childFolders.parentFolderId, folders.id),
+              isNull(childFolders.deletedAt)
+            )
+          )
+      ),
+    })
+    .from(folders)
+    .where(
+      and(
+        eq(folders.userId, access.resourceOwnerUserId),
+        eq(folders.parentFolderId, folderId),
+        isNull(folders.deletedAt),
+        cursor
+          ? or(gt(folders.title, cursor.title), and(eq(folders.title, cursor.title), gt(folders.id, cursor.id)))
+          : undefined
+      )
+    )
+    .orderBy(asc(folders.title), asc(folders.id))
+    .limit(requestedLimit + 1);
+  const hasMore = rows.length > requestedLimit;
+  const items = rows.slice(0, requestedLimit).map((folder) => ({
+    ...folder,
+    hasChildren: Boolean(folder.hasChildren),
+  }));
+  const last = items.at(-1);
+  return c.json({
+    folders: items,
+    pageInfo: {
+      hasMore,
+      nextCursor: hasMore && last ? encodeFolderChildrenCursor(last) : null,
+    },
+  });
+});
+
 folderRoutes.get('/:folderId/detail', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
   const folderId = c.req.param('folderId');
   const access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
   if (!access) return c.json({ error: 'Folder not found' }, 404);
-  const [folder] = await db
-    .select()
+  const [folderRow] = await db
+    .select({
+      folder: folders,
+      owner: { id: users.id, name: users.name, email: users.email },
+    })
     .from(folders)
+    .innerJoin(users, eq(users.id, folders.userId))
     .where(activeFolderWhere(access.resourceOwnerUserId, eq(folders.id, folderId)))
     .limit(1);
-  if (!folder) return c.json({ error: 'Folder not found' }, 404);
+  if (!folderRow) return c.json({ error: 'Folder not found' }, 404);
+  const { folder, owner } = folderRow;
   const ancestors: Array<typeof folders.$inferSelect> = [];
   const seenAncestorIds = new Set<string>();
   let parentFolderId = folder.parentFolderId;
@@ -290,6 +389,10 @@ folderRoutes.get('/:folderId/detail', async (c) => {
     ancestors: ancestors.map((ancestor) => ({ ...omitCollaborationInternalFields(ancestor), canTrash: false })),
     childFolders: childFolders.map(serializeFolder),
     access: serializeCollaborationAccess(access),
+    sharedBy:
+      access.source === 'folder_grant'
+        ? serializeCollaborationUserIdentity({ ...owner, currentUserId: user.id })
+        : null,
   });
 });
 

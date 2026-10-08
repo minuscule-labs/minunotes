@@ -8,7 +8,7 @@ import { publicCollaborationAccessKey } from '../src/api/lib/collaboration-ident
 const tempDirs: string[] = [];
 
 async function runMigrations(libsql: { executeMultiple: (sql: string) => Promise<unknown> }) {
-  for (let index = 0; index <= 39; index += 1) {
+  for (let index = 0; index <= 40; index += 1) {
     const [file] = await Array.fromAsync(
       (await import('node:fs/promises')).glob(`drizzle/${String(index).padStart(4, '0')}_*.sql`)
     );

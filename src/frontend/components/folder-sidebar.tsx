@@ -3,8 +3,10 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import {
   ChevronDown,
   ChevronRight,
+  Folder as FolderIcon,
   House,
   LayoutTemplate,
+  ListChevronsDownUp,
   Lock,
   MoreHorizontal,
   PanelLeftClose,
@@ -15,8 +17,8 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { api, type Folder } from '../lib/api';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { api, type Folder, type SharedFolderNavigationChild } from '../lib/api';
 import { authClient } from '../lib/auth-client';
 import type { AppNavigationModel } from '../lib/navigation';
 import { getStoredExpandedFolderIds, storeExpandedFolderIds } from '../lib/navigation-preferences';
@@ -24,6 +26,7 @@ import { AccountProfileDialog } from './account-profile-dialog';
 import { CreateFolderDialog } from './create-folder-dialog';
 import { FolderActionsPopover } from './folder-actions-popover';
 import { openSearchDialog, searchShortcutLabel } from './search-dialog';
+import { SharedFolderNavigation } from './shared-folder-navigation';
 import { ThemeDialog } from './theme-dialog';
 import { ActionMenuButton, ActionMenuIconButton } from './ui/action-menu';
 import { Avatar } from './ui/avatar';
@@ -119,12 +122,18 @@ function SidebarNavLink({
 export function FolderSidebar({
   userEmail,
   navigation,
+  activeSharedFolderPath,
+  collapseToRootsToggle,
+  onCollapseAllFolderTrees,
   onNavigate,
   onCollapse,
   onClose,
 }: {
   userEmail?: string | null;
   navigation: AppNavigationModel;
+  activeSharedFolderPath: SharedFolderNavigationChild[];
+  collapseToRootsToggle: boolean;
+  onCollapseAllFolderTrees: () => void;
   onNavigate?: () => void;
   onCollapse?: () => void;
   onClose?: () => void;
@@ -136,9 +145,22 @@ export function FolderSidebar({
   const accountProfile = useQuery({ queryKey: ['account-profile'], queryFn: api.accountProfile });
   const nav = useNavigate();
   const currentFolderId = navigation.activeFolderId;
+  const sharedFolderIds = useMemo(
+    () =>
+      navigation.section === 'shared-with-me'
+        ? navigation.breadcrumbs.flatMap((item) =>
+            item.destination.kind === 'folder' ? [item.destination.folderId] : []
+          )
+        : [],
+    [navigation.section, navigation.breadcrumbs]
+  );
+  const activeSharedFolderId = sharedFolderIds.at(-1) ?? null;
+  const activeSharedAncestorFolderIds = useMemo(() => sharedFolderIds.slice(0, -1), [sharedFolderIds]);
   const folders = data?.folders ?? [];
   const folderTree = useMemo(() => buildFolderTree(folders), [folders]);
   const [expandedFolderIds, setExpandedFolderIds] = useState(getStoredExpandedFolderIds);
+  const previousCollapseToRootsToggle = useRef(collapseToRootsToggle);
+  const [foldersSectionExpanded, setFoldersSectionExpanded] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
 
@@ -147,6 +169,12 @@ export function FolderSidebar({
     if (!ancestorIds.length) return;
     setExpandedFolderIds((current) => new Set([...current, ...ancestorIds]));
   }, [currentFolderId, folders]);
+
+  useEffect(() => {
+    if (previousCollapseToRootsToggle.current === collapseToRootsToggle) return;
+    previousCollapseToRootsToggle.current = collapseToRootsToggle;
+    setExpandedFolderIds(new Set());
+  }, [collapseToRootsToggle]);
 
   useEffect(() => {
     storeExpandedFolderIds(expandedFolderIds);
@@ -266,7 +294,7 @@ export function FolderSidebar({
         </div>
       </div>
       <nav className="flex min-h-0 flex-1 flex-col" aria-label="Primary">
-        <div className="mb-4 shrink-0 space-y-1">
+        <div className="mb-2 shrink-0 space-y-1 border-[var(--notes-border)] border-b pb-2">
           <SidebarNavLink
             to="/"
             label="Home"
@@ -355,8 +383,22 @@ export function FolderSidebar({
         {isLoading ? <p className="text-slate-500 text-sm">Loading...</p> : null}
         {error ? <p className="text-red-600 text-xs">API unavailable. Check VITE_API_URL.</p> : null}
         <div className="notes-sidebar-scroll -mr-4 min-h-0 flex-1 space-y-1 overflow-y-auto pr-4 pb-4">
-          <div className="flex items-center justify-between px-2 pb-1">
-            <p className="font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">Folders</p>
+          <div className="flex items-center justify-between gap-1 pl-2 pb-1">
+            <button
+              type="button"
+              className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md text-left text-[var(--notes-muted)] hover:text-[var(--notes-text)]"
+              aria-expanded={foldersSectionExpanded}
+              aria-controls="sidebar-owned-folder-tree"
+              onClick={() => setFoldersSectionExpanded((value) => !value)}
+            >
+              {foldersSectionExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              )}
+              <FolderIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="font-medium text-xs tracking-wide">Folders</span>
+            </button>
             <CreateFolderDialog
               trigger={
                 <button
@@ -372,11 +414,31 @@ export function FolderSidebar({
                 onNavigate?.();
               }}
             />
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
+              aria-label="Collapse all folders to roots"
+              title="Collapse all folders to roots"
+              onClick={onCollapseAllFolderTrees}
+            >
+              <ListChevronsDownUp className="h-4 w-4" aria-hidden="true" />
+            </button>
           </div>
-          {!isLoading && folderTree.length === 0 ? (
-            <p className="px-2 py-3 text-[var(--notes-muted)] text-xs">No folders yet. Use + to create one.</p>
+          {foldersSectionExpanded ? (
+            <div id="sidebar-owned-folder-tree">
+              {!isLoading && folderTree.length === 0 ? (
+                <p className="px-2 py-3 text-[var(--notes-muted)] text-xs">No folders yet. Use + to create one.</p>
+              ) : null}
+              {renderFolderList(folderTree)}
+            </div>
           ) : null}
-          {renderFolderList(folderTree)}
+          <SharedFolderNavigation
+            activeFolderId={activeSharedFolderId}
+            activeAncestorFolderIds={activeSharedAncestorFolderIds}
+            activeFolderPath={activeSharedFolderPath}
+            collapseToRootsToggle={collapseToRootsToggle}
+            onNavigate={onNavigate}
+          />
         </div>
       </nav>
       <div className="shrink-0 border-[var(--notes-border)] border-t pt-4 pb-[env(safe-area-inset-bottom,0px)]">

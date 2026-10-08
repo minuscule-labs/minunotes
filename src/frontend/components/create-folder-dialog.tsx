@@ -32,7 +32,13 @@ export function CreateFolderDialog({
       const result = await mutation.mutateAsync(title);
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['folders'] }),
-        ...(parentFolder ? [qc.invalidateQueries({ queryKey: ['folder-detail', parentFolder.id] })] : []),
+        ...(parentFolder
+          ? [
+              qc.invalidateQueries({ queryKey: ['folder-detail', parentFolder.id] }),
+              qc.invalidateQueries({ queryKey: ['shared-folder-navigation-roots'] }),
+              qc.invalidateQueries({ queryKey: ['shared-folder-navigation-children'] }),
+            ]
+          : []),
       ]);
       form.reset();
       setOpen(false);
