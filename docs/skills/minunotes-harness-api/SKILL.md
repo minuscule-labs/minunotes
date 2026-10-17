@@ -5,7 +5,7 @@ description: Curl/API-only MinuNotes harness skill for agents without registered
 
 # MinuNotes Harness API Skill
 
-Use this skill when the user wants an agent to read, search, create, or edit notes in MinuNotes through the harness API and registered MinuNotes tools are not available.
+Use this skill when registered MinuNotes tools are unavailable and direct API access is authorized. Prefer registered Pi/MCP tools when available. Missing tools, source support or an installed skill do not prove deployed support or authorize another credential/transport, live probes, or a reload.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Use JSON for request/response bodies.
 
 The API key's global capabilities are a maximum ceiling. Folder-specific rules may reduce those capabilities but never increase them. For keys with `all` access, an unconfigured folder inherits the global ceiling. For `top_level` and `specific` keys, a matching folder rule is required. Rules can apply to an exact folder or a subtree; the nearest applicable rule wins.
 
-Private and trashed folders are unavailable regardless of the key. Agent-read-only folders deny writes even when the key and folder rule otherwise allow editing.
+Private and trashed folders are unavailable regardless of the key. Agent-read-only folders normally deny writes. The existing exception is `specific` access with an applicable `exact` folder rule, after all other capability and policy checks pass. It never expands the global ceiling or permits changing safety settings.
 
 Authenticated collaboration uses a separate `sharedAccessMode`: `none` (the default), `specific` selected active grants, or `all` current and future grants after an explicit user warning. Shared access never exceeds the collaborator's current Viewer/Commenter/Editor role and still intersects API-key capabilities, owner folder safety, and note API-editability. Revocation and downgrade apply immediately.
 
@@ -60,7 +60,9 @@ Read properties first, then use the returned identity/revisions and actual prope
 
 The read returns `schema.schemaId`, `schema.revision` and note-properties `revision`. Missing state is revision 0; missing schema has identity null. Values are optional Text (up to 1,000 characters), Select (one option ID) or real date-only YYYY-MM-DD. `null` clears; empty Text clears. Unknown/foreign/archived IDs cannot be newly assigned. Untouched retained values are preserved. Changed writes emit `properties_update`; no-op writes emit no event. Body bytes/hash/tags/versions stay independent.
 
-Preserve the draft on `409`; read current properties and explicitly review before retrying. Stop on permission denial. Folder schema mutations require ownership plus current agent edit scope and folder policy. Note-only grants do not authorize folder schema reads or enumeration. Public shares omit metadata. UI-configured Select-backed boards regroup after property edits and refresh; tag-backed cards still depend only on tags. New unsaved board settings prefer Select; saved modes stay unchanged. An owner-selected optional Type badge uses stable IDs, survives field renames and disappears for archived/unset values on refresh. It adds no archive guard. Card tag chips are hidden, but tags remain stored. No frontmatter or tag synchronization. Disable or switch an enabled board before archiving its grouping property; there are no board configuration Harness endpoints or tools. Retained template defaults guard property/option archive even when the template is in Trash.
+Preserve the draft on `409`; read current properties and explicitly review before retrying. Stop on permission denial. Folder schema mutations require ownership plus current agent edit scope and folder policy. Note-only grants do not authorize folder schema reads or enumeration. Public shares omit metadata. Property-only Boards group by the owner's selected Select property on refresh; tags never determine placement. Board v4 displays up to 12 existing Card properties as stacked values-only rows (Select pills, plain Text/Date), not a special Type badge. Display choices add no archive guard. Retired tag configurations need explicit owner recovery in the web UI; reads never migrate settings. Tags remain stored with no frontmatter or tag synchronization. Disable or switch an enabled board before archiving its grouping property. Retained template defaults guard property/option archive even when the template is in Trash.
+
+Board configuration, personal folder filters/sorting, folder duplication, owner template-default administration and destructive Delete option have no Harness/MCP/Pi operations. Do not emulate these web-only actions with tag/body edits. Schema `archive_option` is non-destructive. Existing comments, authorized Trash and ordinary tag operations remain independent.
 
 ## Reviewed template creation
 
@@ -87,7 +89,7 @@ Use actual preview schema identity/revision, including null/0 only when absent. 
 
 Both stored connection and credential ceiling must allow destination create/read. Editor folder collaboration may create, viewer/commenter and note-only grants may not. Assigned preview grants no private-library enumeration or source editing; an effectively agent-private source folder is forbidden. A non-API-editable source may be copied. The destination owns the note; authenticated creator/actor provenance is retained. Defaults are owner-managed separately through the web UI.
 
-Success is 201 (new) or 200 (replayed), with privacy-safe note ID/title/folder, contentHash and replayed flag. Retry uncertain/network/busy results with the SAME request ID and exact frozen payload, never a fresh clock. A changed payload using that actor/destination/key returns 409. Definitive stale snapshot/schema conflicts preserve the draft for explicit review before a new ID. A completed receipt does not require today's defaults, but current access is checked; unavailable/trashed/deleted notes never recreate. One create event/version and all body/tags/properties/reference/receipt writes commit together or roll back. Existing instances and blank creation remain unchanged. On refresh, boards use the owner's explicit tag or Select grouping; creation never synchronizes those values.
+Success is 201 (new) or 200 (replayed), with privacy-safe note ID/title/folder, contentHash and replayed flag. Retry uncertain/network/busy results with the SAME request ID and exact frozen payload, never a fresh clock. A changed payload using that actor/destination/key returns 409. Definitive stale snapshot/schema conflicts preserve the draft for explicit review before a new ID. A completed receipt does not require today's defaults, but current access is checked; unavailable/trashed/deleted notes never recreate. One create event/version and all body/tags/properties/reference/receipt writes commit together or roll back. Existing instances and blank creation remain unchanged. On refresh, boards use the owner's selected Select property, never tags. Do not automatically retry, refresh a preview, regenerate IDs/clocks or rewrite a frozen request.
 
 The generated Postman Templates group captures preview tokens/defaults/frozen variables and a new request ID. Review/edit its final payload deliberately; do not re-run preview to retry an uncertain create, because that would replace its frozen request.
 
@@ -116,7 +118,7 @@ The generated Postman Templates group captures preview tokens/defaults/frozen va
 - Check `documentType` before editing. Markdown patch edits only work for `markdown` notes.
 - For generated `canvas.default` and `canvas.mindmap` documents, default to Minu diagram syntax instead of manually positioning JSON Canvas nodes. Use JSON Canvas only for exact imports or deterministic preservation of IDs, coordinates, links, and metadata.
 - For app-owned images, preserve normal URL markdown such as `/internal/attachments/.../content`.
-- Report the folder ID, note ID, and final changed markdown or section summary after edits.
+- Report the note ID, authorized folder ID if returned, and a concise changed-section summary. Never reconstruct a hidden containing folder.
 - Use note moves to organize agent-created notes only within folders the API key can edit/create in.
 - If an API key lacks permission or a shared grant was revoked/downgraded, report the issue instead of retrying unrelated actions or probing hidden context.
 
@@ -162,10 +164,11 @@ curl -s "${AUTH[@]}" "$API/v1/harness/folders?limit=25"
 Folder, tag, note-search, orphan, and cross-note line-search responses include `pageInfo`. When `hasMore` is true, pass the opaque `nextCursor` to the same endpoint with the same query and filters:
 
 ```bash
-curl -s "${AUTH[@]}" "$API/v1/harness/folders?limit=25&cursor=$NEXT_CURSOR"
+curl -s --get "${AUTH[@]}" "$API/v1/harness/folders" \
+  --data-urlencode 'limit=25' --data-urlencode "cursor=$NEXT_CURSOR"
 ```
 
-Do not inspect or modify cursors, reuse them across endpoints, or continue every page unless the task requires broader coverage.
+Discovery page limits are 1–100 (default 25). Do not inspect or modify cursors, reuse them across endpoints/changed queries, or continue every page unless the task requires broader coverage. Cross-note line-search cursors cannot be used with single-note search. Request pages explicitly; never read bodies to compensate for incomplete folder discovery.
 
 Create a folder or subfolder:
 
@@ -180,7 +183,8 @@ Search notes by title/content/folder/tag text:
 ```bash
 curl -s "${AUTH[@]}" "$API/v1/harness/notes/search?q=project&limit=25"
 curl -s "${AUTH[@]}" "$API/v1/harness/notes/search?q=project&tag=release-notes&limit=25"
-curl -s "${AUTH[@]}" "$API/v1/harness/notes/search?q=project&limit=25&cursor=$NEXT_CURSOR"
+curl -s --get "${AUTH[@]}" "$API/v1/harness/notes/search" \
+  --data-urlencode 'q=project' --data-urlencode 'limit=25' --data-urlencode "cursor=$NEXT_CURSOR"
 ```
 
 Search results are compact metadata only: they include identity, folder, title, document type, type, and timestamps, but never full `content`, `userId`, or database folder-owner fields. Orphan results follow the same contract. After choosing a result, expand only what you need:
@@ -375,6 +379,13 @@ curl -s "${AUTH[@]}" "$API/v1/harness/notes/orphans"
 - `GET /v1/harness/folders?limit=25&cursor=...`
 - `POST /v1/harness/folders`
 - `POST /v1/harness/folders/:folderId/trash` (destructive; requires explicit user intent)
+- `GET /v1/harness/folders/:folderId/properties`
+- `PATCH /v1/harness/folders/:folderId/properties`
+- `GET /v1/harness/notes/:noteId/properties`
+- `PATCH /v1/harness/notes/:noteId/properties`
+- `GET /v1/harness/folders/:folderId/templates`
+- `GET /v1/harness/folders/:folderId/templates/:templateId/preview`
+- `POST /v1/harness/notes/from-template`
 - `GET /v1/harness/tags?limit=25&cursor=...`
 - `GET /v1/harness/notes/search?q=...&tag=...&limit=25&cursor=...`
 - `GET /v1/harness/notes/search-lines?q=...&folderId=...&context=2&limit=25&caseSensitive=false&cursor=...`
@@ -427,5 +438,6 @@ For canvases, default to Minu diagram syntax for generated diagrams and mind map
 - `401`: missing/invalid API key.
 - `403`: API key lacks folder permission.
 - `404`: note/folder/section not found.
-- `409`: stale note edit or comment-anchor hash; reread the note and retry only after recomputing the edit or anchor.
-- `500`: server error; report endpoint and response body.
+- `409`: stale body/anchor hash, metadata revisions, template review or request-intent conflict. Preserve the draft and distinguish a definitive uncommitted stale review from an unknown create outcome; never blindly replay/rebase.
+- Transport, busy or server uncertainty after template creation: report it and retain the same request ID and exact frozen payload for an explicitly authorized retry. Never generate a new ID before resolution.
+- Other server errors: report endpoint and response body without automatic retries.

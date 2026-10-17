@@ -58,6 +58,20 @@ Folders and notes:
 - `notes_trash_note` (destructive; requires `confirm: true`)
 - `notes_move_notes`
 
+Properties and reviewed templates:
+
+- `notes_read_folder_properties`
+- `notes_mutate_folder_properties` (owner-only controlled add/rename/reorder/archive)
+- `notes_read_note_properties`
+- `notes_patch_note_properties`
+- `notes_list_assigned_templates`
+- `notes_preview_assigned_template`
+- `notes_create_from_template`
+
+Read properties first and use stable property/option IDs plus independent schema/value revisions, never a body hash. Ask when definitions are missing; do not invent fields or mirror Status/Type into tags. Archive is non-destructive, not option deletion. Preserve drafts on conflicts and explicitly review before retrying. Direct-note grants do not permit folder-schema enumeration.
+
+For templates, list destination assignments → preview the selected assignment → review body/defaults/schema → create with the snapshot, complete final tags/values, request ID and frozen date/time literals. Empty final tags/values clears defaults; retain reviewed defaults unless deliberately cleared. No replacement body or private-library access. Destination read/create capability is required. Retry uncertain results only with the same ID and exact frozen payload; no automatic retry or preview refresh. See [Harness API](/resources/harness-api) for the complete request and recovery contract.
+
 Structured reads:
 
 - `notes_search_lines`
@@ -82,7 +96,15 @@ Tags:
 - `notes_read_note_tags`
 - `notes_replace_note_tags`
 
-Tool discovery is handled by the MCP protocol. Clients call `tools/list`; MinuNotes registers tool names, descriptions, schemas, annotations, and handlers.
+Review comments are also available through `notes_list_comments`, `notes_create_comment`, `notes_reply_to_comment`, `notes_update_comment_anchor`, `notes_set_comment_status`, `notes_edit_comment_message`, `notes_toggle_comment_reaction`, `notes_delete_comment_message` and `notes_delete_comment_thread`. They require explicit Comment plus read access; Markdown-only anchors use the current document hash, bodies are plain text, and message edits/deletes are author-only.
+
+Tool discovery is handled by the MCP protocol. Clients call `tools/list`; MinuNotes registers tool names, descriptions, schemas, annotations, and handlers. Check the actual connected inventory: source support, installed local files, current-session registration and deployed API support are different. Installation does not reload a running client.
+
+## Pagination and Pi aliases
+
+Folder, note-search and tag tools accept optional `limit` (1–100, default 25) and `cursor`. If `pageInfo.hasMore` is true and another metadata page is needed, explicitly pass `pageInfo.nextCursor` to the same tool with unchanged query/filters. Cross-note `notes_search_lines` supports continuation; single-note `notes_search_note_lines` does not. Never aggregate all pages or expand every note automatically.
+
+The local Pi adapter uses `minunotes_*`, including the same seven property/template suffixes above; search/read are `minunotes_search_notes` / `minunotes_read_note`. Its combined `minunotes_search_lines` rejects cursor with `noteId`. Pi and Harness expose outgoing-link/backlink/orphan operations intentionally absent from MCP. Missing tools do not authorize another transport or permission escalation; reloads/live checks are separate authorized actions.
 
 ## Shared content
 
@@ -114,6 +136,10 @@ The syntax tools also auto-detect Mermaid `flowchart`/`graph` input and compile 
 Canvas replacement and node-link mutations require a current `baseHash`. Setting a node link creates or changes its internal target; removing it only removes the internal target. Both operations preserve the node’s external `url` and unrelated metadata.
 
 ## Current MCP boundary
+
+Boards are property-only: owner-selected Select columns and up to 12 stacked values-only Card properties (Select pills, plain Text/Date), with no special Type badge or tag-driven placement. Retired tag configurations require explicit owner recovery in the web UI; reads never migrate them.
+
+Board configuration, personal folder filtering/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on agent surfaces. Existing non-destructive schema archive, ordinary tags, comments and authorized MCP Trash are separate capabilities.
 
 Hosted and local MCP expose active content only. Trashed notes, templates, and folder subtrees disappear from list, search, read, metadata, and attachment operations. MCP provides explicitly confirmed destructive tools to move eligible creator-owned notes and folders to the owner’s Trash. MCP cannot list Trash, restore, or permanently delete content; those owner-only actions remain in the authenticated MinuNotes web interface.
 

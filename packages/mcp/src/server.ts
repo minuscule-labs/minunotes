@@ -819,7 +819,7 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     {
       title: 'Patch note properties',
       description:
-        'Patch supplied active property IDs; null clears. Requires current schemaId, schemaRevision and expectedRevision from a properties read. A conflict preserves stored state. Does not change body/hash/tags or tag-backed classification. UI-configured Select boards regroup on refresh; no board writes or tag synchronization. Select values are stable option IDs from the schema, not labels. Prefer defined properties; do not mirror Status/Type into tags unless requested.',
+        'Patch supplied active property IDs; null clears. Requires current schemaId, schemaRevision and expectedRevision from a properties read. A conflict preserves stored state. Does not change body/hash/tags. Property-only UI-configured Select boards regroup on refresh; no board writes or tag synchronization. Select values are stable option IDs from the schema, not labels. Prefer defined properties; do not mirror Status/Type into tags unless requested.',
       inputSchema: {
         noteId: z.string(),
         schemaId: z.string().nullable(),

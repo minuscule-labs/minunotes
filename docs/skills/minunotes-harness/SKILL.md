@@ -1,11 +1,11 @@
 ---
 name: minunotes-harness
-description: Tool-first MinuNotes skill for agents with registered minunotes_* tools. Use to read, search, create, edit, review, tag, inspect links, and work with canvas notes through MinuNotes tools.
+description: Tool-first MinuNotes skill for registered Pi or MCP tools. Use for notes, properties, reviewed templates, comments, tags and canvases.
 ---
 
 # MinuNotes Harness Tool Skill
 
-Use this skill when registered MinuNotes tools are available. Prefer tools over shell commands.
+Use this skill when registered MinuNotes tools are available. Prefer tools over shell commands. Pi uses `minunotes_*`; hosted/stdio MCP uses `notes_*`. Use the aliases actually registered (MCP search/read are `notes_search` / `notes_get_note`). Missing tools do not authorize a shell/API fallback: use the API-only skill only with permission. Source support, installed files, current-session registration and deployed support are different; never reload or probe another surface automatically.
 
 ## Organization defaults
 
@@ -13,7 +13,7 @@ Prefer defined folder properties for structured labels such as Status and Type. 
 
 ## Permission boundary
 
-Global integration capabilities are a maximum ceiling. Folder rules may restrict them but cannot grant more access. For all-folder access, folders without a rule inherit the ceiling; restricted access modes require a matching rule. The nearest exact or subtree rule wins. Private and trashed folders remain unavailable, and agent-read-only folders deny writes.
+Global integration capabilities are a maximum ceiling. Folder rules may restrict them but cannot grant more access. For all-folder access, folders without a rule inherit the ceiling; restricted access modes require a matching rule. The nearest exact or subtree rule wins. Private and trashed folders remain unavailable. Agent-read-only folders normally deny writes; an existing exception permits a write for `specific` access with an applicable `exact` folder rule, only after all capability and policy checks pass. This does not bypass the capability ceiling or authorize changing permissions.
 
 Authenticated collaboration is a separate scope. Existing and new connections default to `sharedAccessMode: none`; the user must explicitly select active grants with `specific` or accept the current-and-future warning for `all`. Effective shared access is the intersection of the human Viewer/Commenter/Editor role, connection capabilities, selected shared mode, owner safety policy, and note API-editability. Revocation or downgrade applies immediately.
 
@@ -24,6 +24,7 @@ A full note read may include privacy-safe role/source context, but never read a 
 - Find/create location: `minunotes_list_folders` → `minunotes_create_folder` if needed.
 - Discovery first: `minunotes_search_notes` and `minunotes_orphans` return compact metadata only; use `minunotes_read_note`, `minunotes_read_lines`, or outline/section tools to expand a selected note.
 - Safe note edit: search or `minunotes_read_note` → capture `contentHash` → `minunotes_edit_note` with `baseHash`.
+- Organize/move notes only when a registered move tool exists or direct Harness use is authorized; verify the target is inside granted scope. Pi has no move wrapper.
 
 ## Net-new note fast path
 
@@ -44,7 +45,7 @@ Use the smallest tool result that supports the next decision:
 3. **Expand selectively** with `minunotes_read_note` for the complete source, or `minunotes_read_outline` followed by `minunotes_read_section` for one heading. Use `minunotes_read_lines` for a bounded range.
 4. **Edit only after reading** the current note and copying its `contentHash` into the edit request.
 
-Discovery tools are cursor-paginated when their registered input exposes `cursor`. When a response has `pageInfo.hasMore: true`, pass `pageInfo.nextCursor` back to the same tool with the same query and filters. If that tool does not accept a cursor, report the discovery limitation rather than inspecting unrelated note bodies. Do not reuse a cursor with another tool or changed search, and do not fetch every page unless the task requires broader coverage.
+Folder, note-search, tag and orphan discovery accepts optional `limit` (1–100, server default 25) and `cursor` where the registered tool exposes them. When `pageInfo.hasMore: true` and more metadata is needed, explicitly call the same tool with `pageInfo.nextCursor` and unchanged query/filters. Cross-note line search also accepts a cursor; single-note (`noteId`) line search does not. Never combine them. If a registered tool lacks continuation, report the limitation or ask for a precise folder URL/ID, not unrelated note bodies. Never edit/reuse a cursor across queries or aggregate every page automatically.
 
 Do not read every search result automatically. Rank candidates by title, folder, document type, and matched context, then expand only the notes needed to answer the task.
 - Section edit: `minunotes_read_outline` → `minunotes_read_section` → targeted `replace_text` or `replace_range`.
@@ -66,21 +67,35 @@ Do not read every search result automatically. Rank candidates by title, folder,
 
 ## Properties
 
-When the installed MCP server exposes them, use `notes_read_folder_properties`, `notes_mutate_folder_properties`, `notes_read_note_properties` and `notes_patch_note_properties`. If unavailable, do not substitute body/frontmatter edits; use the explicit Harness properties endpoints with authorization or report the missing tool.
+Use the registered aliases:
+
+| Operation | Pi | Hosted/stdio MCP |
+| --- | --- | --- |
+| Read folder schema | `minunotes_read_folder_properties` | `notes_read_folder_properties` |
+| Mutate owned definitions | `minunotes_mutate_folder_properties` | `notes_mutate_folder_properties` |
+| Read note values/schema | `minunotes_read_note_properties` | `notes_read_note_properties` |
+| Patch note values | `minunotes_patch_note_properties` | `notes_patch_note_properties` |
+| List destination assignments | `minunotes_list_assigned_templates` | `notes_list_assigned_templates` |
+| Review assigned template | `minunotes_preview_assigned_template` | `notes_preview_assigned_template` |
+| Create reviewed instance | `minunotes_create_from_template` | `notes_create_from_template` |
+
+If unavailable, report the missing capability; do not substitute frontmatter/body edits or silently switch transports. Authorized direct API use is documented in `minunotes-harness-api`.
 
 Read note properties before patching and pass its `schema.schemaId`, `schema.revision` as `schemaRevision`, and independent `revision` as `expectedRevision`. Patch only intended active property IDs; `null` clears, and empty Text clears. Select values are stable option IDs, not labels. Preserve drafts on `409`, reload and review before retrying; stop on `403`/`404`. The body `contentHash` is unrelated.
 
 Folder schema mutations are owner-only controlled add/rename/reorder/archive operations with `expectedRevision`; IDs are generated by the server and types are immutable. Existing agent scopes, private/read-only-folder policy and note API-editability apply. A direct-note grant never permits reading or reconstructing the folder schema endpoint. Note properties reads project applicable fields/values without owner/folder identities.
 
-Normal Markdown/canvas/mind-map notes support optional Text/Select/Date values. Owners may explicitly choose a Select-backed read-only board in the UI; property edits can regroup its cards on refresh. New unsaved board settings prefer Select; existing saved modes remain unchanged. Owners can select one optional Type badge by stable ID; renamed fields continue working, and archived/unset Type hides the badge on refresh without guarding archive. Board cards hide tag chips, not stored tags. Tag synchronization and frontmatter are not supported. Disable or switch an enabled board before archiving its grouping field; no board configuration tools are provided. Public shares omit properties. Retained template defaults block archiving referenced fields/choices until explicitly cleared or their assignment removed.
+Normal Markdown/canvas/mind-map notes support optional Text/Select/Date values. Boards group only by the owner's selected Select property. Version 4 Card properties display up to 12 existing fields as stacked values-only rows (Select pills, plain Text/Date), not a special Type badge. Empty/unavailable values are hidden; displayed fields add no archive guard. Property writes can regroup cards on refresh. Tags never determine Board placement or synchronize with properties. Retired tag grouping/constraints require explicit owner recovery in the web UI; reads never migrate or widen settings. Disable or switch an enabled board before archiving its grouping field. Public shares omit properties; retained template defaults guard referenced fields/options until explicitly cleared or unassigned.
+
+Board configuration, personal List/Board filters/sorting, folder duplication, template-default administration and destructive Delete option remain web-only on these agent surfaces. Archive is non-destructive, not Delete option. Do not emulate them with note/tag writes. Existing comments, authorized MCP Trash and ordinary tag operations remain available; Pi does not provide move/Trash tools. MCP intentionally omits outgoing-link/backlink/orphan tools; use only registered tools, not assumed aliases.
 
 ## Reviewed template creation
 
-When installed, use `notes_list_assigned_templates` with the destination folder, then `notes_preview_assigned_template`, then `notes_create_from_template`. These require destination create plus read capability, including credential scope ceilings; they never grant template-library access. Agents cannot use an effectively private source template folder. Source API-editability does not need to permit edits to copy an assigned template; destination creation does not edit the source. Direct-note grants do not enable discovery or creation. Owner defaults management remains web-only for agents.
+Use the registered list → preview → create aliases above with the destination folder. These require destination create plus read capability, including credential scope ceilings; they never grant template-library access. Agents cannot use an effectively private source template folder. Source API-editability does not need to permit edits to copy an assigned template; destination creation does not edit the source. Direct-note grants do not enable discovery or creation. Owner defaults management remains web-only for agents.
 
 Review the returned body/defaults/schema and submit destination/template IDs, `snapshot`, `schemaId`, `schemaRevision`, final title, **complete final** tags/values, `requestId` and frozen literal `variables: {date,time,datetime}`. Empty tags/values explicitly clear defaults; retain reviewed template tags unless the user deliberately clears them. Only the original four substitutions (including title) are supported; never send a replacement body. The atomic result is an ordinary destination-owned note with authenticated provenance and one create event.
 
-On uncertain/network/busy results retry the **same request ID and exact frozen payload**. Do not switch inputs or expand the clock before resolution. Same key with different payload returns 409. Definitive stale-review conflicts preserve the draft for explicit review and then a new request ID. A completed retry ignores newer defaults but checks current access; an inaccessible, trashed or deleted note is unavailable and is never recreated. Defaults and snapshot tokens never grant permission. Board classification follows the owner's explicit tag or Select grouping on refresh; tags are never synchronized with properties.
+On uncertain/network/busy results retry the **same request ID and exact frozen payload**. Do not switch inputs or expand the clock before resolution. Same key with different payload returns 409. Definitive stale-review conflicts preserve the draft for explicit review and then a new request ID. A completed retry ignores newer defaults but checks current access; an inaccessible, trashed or deleted note is unavailable and is never recreated. Defaults and snapshot tokens never grant permission. Board classification follows the owner's selected Select property on refresh, never tags. Transport adapters do not automatically retry, refresh previews, generate IDs/clocks or rewrite payloads; an explicitly authorized caller must retain the frozen intent.
 
 ## Shared-note editing protocol
 
@@ -105,10 +120,19 @@ Treat canonical edits and Review comments as different collaboration modes:
 
 Review tools require explicit Comment permission plus read scope for every operation. Note edit permission and API editability are not required. Comments are unavailable on canvases, templates, Trash, and public shares.
 
-## Available tools
+## Available Pi tools
+
+The updated installed adapter registers these 39 tools when loaded. This inventory is not proof that the current session or deployed API already supports them.
 
 - `minunotes_list_folders`
 - `minunotes_create_folder`
+- `minunotes_read_folder_properties`
+- `minunotes_mutate_folder_properties`
+- `minunotes_read_note_properties`
+- `minunotes_patch_note_properties`
+- `minunotes_list_assigned_templates`
+- `minunotes_preview_assigned_template`
+- `minunotes_create_from_template`
 - `minunotes_search_notes`
 - `minunotes_search_lines`
 - `minunotes_read_note`
@@ -168,10 +192,10 @@ Review tools require explicit Comment permission plus read scope for every opera
 - Internal canvas note links and external URLs are independent. Link/unlink operations must preserve `node.url` and unrelated node metadata.
 - Preserve markdown structure, wikilinks, tags, and app-owned image URLs such as `/internal/attachments/.../content`.
 - If permission is denied or shared access disappears, report it; do not retry unrelated actions, probe for hidden ancestry, or attempt to expand the connection's scope.
-- After edits, report folder ID, note ID, and a concise summary of changes.
+- After edits, report the note ID, authorized folder ID if returned, and a concise summary. Never reconstruct a hidden containing folder for reporting.
 
 ## Route note
 
-The deployed harness route base is `/v1/harness`. Legacy `/api/harness` has been removed from production.
+The Harness route base is `/v1/harness`. Legacy `/api/harness` has been removed from production.
 
-If tools are unavailable, use the separate `minunotes-harness-api` skill for direct curl/API usage.
+If tools are unavailable and direct API use is authorized, use the separate `minunotes-harness-api` skill. Otherwise report the missing capability.

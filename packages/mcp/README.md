@@ -75,7 +75,7 @@ Prefer defined folder properties for structured Status/Type labels. Read the aut
 
 Read properties first. Pass `schema.schemaId` as `schemaId`, `schema.revision` as `schemaRevision`, and independent note-properties `revision` as `expectedRevision`. Patch supplied active IDs only; `null` clears and empty Text clears. Select values are option IDs, Date values are real YYYY-MM-DD dates. On conflict preserve the draft, reload and review; do not blindly replay.
 
-Properties use existing note read/edit scopes, folder privacy/read-only policy and API-editability. Note-only grants cannot enumerate folder schemas. Public shares omit metadata. Body/hash/tags and body-only restores stay independent. New unsaved board settings prefer Select; saved modes remain unchanged. One owner-selected optional Type badge uses stable IDs and current labels; archived/unset values hide it on refresh without an archive guard. UI-configured Select-backed boards regroup on refresh; property changes never affect tag-backed classification or synchronize tags. Disable or switch an enabled board before archiving its grouping field. No board configuration tools are provided. Retained template-default references block archiving their fields/choices until explicitly cleared or their assignment removed.
+Properties use existing note read/edit scopes, folder privacy/read-only policy and API-editability. Note-only grants cannot enumerate folder schemas. Public shares omit metadata. Body/hash/tags and body-only restores stay independent. Property-only Boards regroup by the owner's selected Select field on refresh. Board v4 has up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge; display choices add no archive guard. Tags never determine placement or synchronize with properties. Retired tag configurations require explicit owner recovery in the web UI; reads never migrate or widen settings. Disable or switch an enabled board before archiving its grouping field. Retained template-default references block archiving their fields/choices until explicitly cleared or their assignment removed.
 
 Reviewed templates:
 
@@ -85,7 +85,7 @@ Reviewed templates:
 
 Use only destination-assigned previews, not unrelated template/library reads. Both create/read capability and the credential ceiling apply; note-only grants cannot discover/create. Agents cannot copy an effectively private source folder, but source API-editability need not allow edits. Owner defaults management is not exposed as an agent tool. Tags/defaults are independent of body saves and existing instances; properties use destination stable IDs. Empty final tags/values explicitly clear defaults; retain reviewed template tags unless deliberately cleared. No replacement body or new variables; preserve only the original four substitutions with review-time date/time literals.
 
-Creation is one atomic ordinary note, initial version and create event with tags/properties/references/receipt. Retry uncertain/network/busy responses using the SAME request ID and exact frozen payload. Never replace it with a fresh clock or another ID before resolution. Different payload with the same actor/destination/key conflicts. Stale review requires explicit re-review; completed receipts ignore newer defaults but check current access. Inaccessible, trashed or deleted notes are unavailable, never recreated. Snapshots/defaults are not access grants. Boards use their owner's explicit tag or Select grouping on refresh; tags and properties remain independent.
+Creation is one atomic ordinary note, initial version and create event with tags/properties/references/receipt. Retry uncertain/network/busy responses using the SAME request ID and exact frozen payload. Never replace it with a fresh clock or another ID before resolution. Different payload with the same actor/destination/key conflicts. Stale review requires explicit re-review; completed receipts ignore newer defaults but check current access. Inaccessible, trashed or deleted notes are unavailable, never recreated. Snapshots/defaults are not access grants. Boards use their owner's selected Select property on refresh, never tags. Adapters do not automatically retry, generate request IDs/clocks, refresh a preview or rewrite the frozen payload.
 
 Review comments:
 
@@ -122,6 +122,14 @@ Tags:
 - `notes_list_tags`
 - `notes_read_note_tags`
 - `notes_replace_note_tags`
+
+## Discovery and adapter parity
+
+`notes_list_folders`, `notes_search` and `notes_list_tags` accept `limit` (1–100, default 25) and opaque `cursor`. `notes_search_lines` supports cross-note continuation with the same query/filters; `notes_search_note_lines` does not accept a cursor. Follow `pageInfo.nextCursor` only when `hasMore` is true and more metadata is needed. Never aggregate pages or expand every note automatically.
+
+The local Pi adapter uses `minunotes_*` aliases, including all four property and three reviewed-template operations above. Pi search/read aliases are `minunotes_search_notes` / `minunotes_read_note`; its cross-note and single-note line search share `minunotes_search_lines`. Pi and Harness additionally expose outgoing links, backlinks and orphans; their deliberate omission from MCP is not a missing registration to work around.
+
+Canonical guidance is in `docs/skills/`; install/synchronize it deliberately. An installed adapter file does not update tools in an already-running session, and source support does not establish deployed support. Reloads and live checks are separate actions, not automatic fallbacks after a missing tool or denial.
 
 ## Canvas JSON, Minu syntax, and Mermaid flowcharts
 
@@ -164,6 +172,8 @@ Syntax creation and replacement compile the source into JSON Canvas. Syntax repl
 Canvas replacement and node-link mutations require a current `baseHash`. Setting a node note link creates or changes the target while preserving `node.url` and unrelated metadata. Removing the internal link also preserves the external URL.
 
 ## Tool boundaries
+
+Board configuration, personal folder filters/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive and does not delete option values. Existing comments, tags and authorized MCP Trash remain available.
 
 MCP tools expose owned content plus authenticated collaboration explicitly enabled by the connection owner. Shared access defaults to `none`; `specific` selects active grants and `all` includes current and future grants after an explicit warning. Effective permissions also intersect the collaborator's current role, credential capabilities, OAuth scope, owner safety policy, and note API-editability.
 
