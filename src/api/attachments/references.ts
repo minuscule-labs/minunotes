@@ -4,12 +4,13 @@ import { attachments } from '../db/schema';
 import type { MetadataExecutor } from '../notes/metadata-transaction';
 
 const APP_ATTACHMENT_URL_PATTERN =
-  /(?:!\[[^\]]*\]|\[[^\]]*\])\(\s*(?:https?:\/\/[^\s)]+)?\/internal\/attachments\/(att_[a-zA-Z0-9_-]+)\/content(?:[?#][^\s)]*)?\s*(?:"[^"]*"|'[^']*')?\s*\)/g;
+  /(?:!\[[^\]]*\]|\[[^\]]*\])\(\s*(?:<(?:https?:\/\/[^\s<>]+?)?\/internal\/attachments\/(att_[a-zA-Z0-9_-]+)\/content(?:[?#][^\s<>]*)?>|(?:https?:\/\/[^\s)]+?)?\/internal\/attachments\/(att_[a-zA-Z0-9_-]+)\/content(?:[?#][^\s)]*)?)\s*(?:"[^"]*"|'[^']*')?\s*\)/g;
 
 export function extractAppAttachmentIds(markdown: string) {
   const ids = new Set<string>();
   for (const match of markdown.matchAll(APP_ATTACHMENT_URL_PATTERN)) {
-    ids.add(match[1]);
+    // Separate branches require balanced angle delimiters and retain the existing bare-URL grammar.
+    ids.add(match[1] ?? match[2]);
   }
   return [...ids];
 }

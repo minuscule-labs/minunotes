@@ -155,6 +155,33 @@ export const folders = sqliteTable(
   ]
 );
 
+// No source/root FK: keep the receipt after deletion so a retry cannot recreate a copy.
+export const folderDuplicationRequests = sqliteTable(
+  'folder_duplication_requests',
+  {
+    id: text('id').primaryKey(),
+    actorUserId: text('actor_user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    requestId: text('request_id').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    sourceFolderId: text('source_folder_id').notNull(),
+    parentFolderId: text('parent_folder_id'),
+    title: text('title').notNull(),
+    rootFolderId: text('root_folder_id').notNull(),
+    counts: text('counts').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('folder_duplication_actor_request_idx').on(table.actorUserId, table.requestId),
+    check('folder_duplication_request_id_check', sql`length(${table.requestId}) between 16 and 128`),
+    check(
+      'folder_duplication_counts_check',
+      sql`json_valid(${table.counts}) and json_type(${table.counts}) = 'object' and length(cast(${table.counts} as blob)) <= 1024`
+    ),
+  ]
+);
+
 export const folderBoardViews = sqliteTable(
   'folder_board_views',
   {

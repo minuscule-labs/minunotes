@@ -1,11 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { FolderPlus } from 'lucide-react';
-import { type Ref, useState } from 'react';
+import { type Ref, useRef, useState } from 'react';
 import type { Folder } from '../lib/api';
 import { api } from '../lib/api';
 import { CreateFolderDialog } from './create-folder-dialog';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
+import { DuplicateFolderDialog } from './duplicate-folder-dialog';
 import { FolderShareDialog } from './folder-share-dialog';
 import { MoveFolderDialog } from './move-folder-dialog';
 import { RenameFolderDialog } from './rename-folder-dialog';
@@ -39,6 +40,9 @@ export function FolderActionsPopover({
   const [renameOpen, setRenameOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [duplicateMounted, setDuplicateMounted] = useState(false);
+  const actionRef = useRef<HTMLButtonElement>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -69,6 +73,7 @@ export function FolderActionsPopover({
         <PopoverTrigger
           asChild
           ref={(node) => {
+            actionRef.current = node;
             if (typeof viewTriggerRef === 'function') viewTriggerRef(node);
             else if (viewTriggerRef) viewTriggerRef.current = node;
           }}
@@ -126,6 +131,15 @@ export function FolderActionsPopover({
               >
                 Move
               </ActionMenuButton>
+              <ActionMenuButton
+                onClick={() => {
+                  setOpen(false);
+                  setDuplicateMounted(true);
+                  setDuplicateOpen(true);
+                }}
+              >
+                Duplicate
+              </ActionMenuButton>
             </>
           ) : null}
           {view && onViewChange ? (
@@ -162,6 +176,14 @@ export function FolderActionsPopover({
       </Popover>
       <CreateFolderDialog parentFolder={folder} open={createOpen} onOpenChange={setCreateOpen} />
       <MoveFolderDialog folder={folder} open={moveOpen} onOpenChange={setMoveOpen} />
+      {ownerControls && duplicateMounted ? (
+        <DuplicateFolderDialog
+          folder={folder}
+          open={duplicateOpen}
+          onOpenChange={setDuplicateOpen}
+          triggerRef={actionRef}
+        />
+      ) : null}
       <FolderShareDialog folder={folder} open={shareOpen} onOpenChange={setShareOpen} />
       <RenameFolderDialog folder={folder} open={renameOpen} onOpenChange={setRenameOpen} />
     </>

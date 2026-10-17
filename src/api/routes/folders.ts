@@ -3,12 +3,14 @@ import { alias } from 'drizzle-orm/sqlite-core';
 import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { BoardValidationError } from '../../shared/board';
+import { FolderDuplicationError } from '../../shared/folder-duplication';
 import { hasNoteQuery, NoteQueryError } from '../../shared/note-filters';
 import { DEFAULT_NOTE_SORT } from '../../shared/note-sort';
 import { PropertyError } from '../../shared/properties';
 import { templateObject } from '../../shared/templates';
 import { db } from '../db/client';
 import { folderShareLinks, folders, user as users } from '../db/schema';
+import { duplicateFolder, previewFolderDuplication } from '../folders/duplicate';
 import { createDocument, listDocuments, listFolders } from '../harness/commands';
 import type { auth } from '../lib/auth';
 import {
@@ -229,6 +231,36 @@ folderRoutes.post('/', async (c) => {
     },
     201
   );
+});
+
+folderRoutes.get('/:folderId/duplicate-preview', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const queries = c.req.queries();
+  if (Object.keys(queries).some((key) => key !== 'parentFolderId') || (queries.parentFolderId?.length ?? 0) > 1)
+    return c.json({ error: 'Invalid preview destination' }, 400);
+  try {
+    return c.json(
+      await previewFolderDuplication(user.id, c.req.param('folderId'), c.req.query('parentFolderId') ?? null)
+    );
+  } catch (error) {
+    if (error instanceof FolderDuplicationError) return c.json({ error: error.message }, error.status);
+    return c.json({ error: 'Copy summary could not be loaded. Refresh the summary.' }, 503);
+  }
+});
+folderRoutes.use('/:folderId/duplicate', createRequestSizeLimitMiddleware({ maxBytes: 4096 }));
+folderRoutes.post('/:folderId/duplicate', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const result = await duplicateFolder(user.id, c.req.param('folderId'), await c.req.json().catch(() => null));
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    if (error instanceof FolderDuplicationError)
+      return c.json({ error: error.message, uncertain: error.uncertain }, error.status);
+    // In particular, never return provider keys, source metadata or database details.
+    return c.json({ error: 'Duplication could not be confirmed. Retry the unchanged request.', uncertain: true }, 503);
+  }
 });
 
 folderRoutes.patch('/:folderId', async (c) => {

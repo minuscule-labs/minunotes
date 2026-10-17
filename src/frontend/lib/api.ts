@@ -1,3 +1,8 @@
+import type {
+  FolderDuplicationPreview,
+  FolderDuplicationRequest,
+  FolderDuplicationResult,
+} from '../../shared/folder-duplication';
 import { hasNoteQuery, noteQueryIdentity } from '../../shared/note-filters';
 import { DEFAULT_NOTE_SORT, isPropertySort, type NoteSort, noteSortIdentity } from '../../shared/note-sort';
 import type {
@@ -826,6 +831,16 @@ export const api = {
     request<{ ok: true }>(`/folders/${folderId}/share-link`, { method: 'DELETE' }),
   createFolder: (title: string, parentFolderId?: string | null) =>
     request<{ folder: Folder }>('/folders', { method: 'POST', body: JSON.stringify({ title, parentFolderId }) }),
+  previewFolderDuplication: (folderId: string, parentFolderId: string | null, signal?: AbortSignal) =>
+    request<FolderDuplicationPreview>(
+      `/folders/${encodeURIComponent(folderId)}/duplicate-preview${parentFolderId === null ? '' : `?parentFolderId=${encodeURIComponent(parentFolderId)}`}`,
+      { signal }
+    ),
+  duplicateFolder: (folderId: string, input: FolderDuplicationRequest) =>
+    request<FolderDuplicationResult>(`/folders/${encodeURIComponent(folderId)}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   renameFolder: (folderId: string, title: string) =>
     request<{ folder: Folder }>(`/folders/${folderId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   updateFolder: (
