@@ -1,8 +1,14 @@
 import { and, asc, eq, exists, gt, isNull, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import { type Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { BoardValidationError } from '../../shared/board';
+import { hasNoteQuery, NoteQueryError } from '../../shared/note-filters';
+import { DEFAULT_NOTE_SORT } from '../../shared/note-sort';
+import { PropertyError } from '../../shared/properties';
+import { templateObject } from '../../shared/templates';
 import { db } from '../db/client';
-import { folderShareLinks, folders, notes, templateFolderAssignments, user as users } from '../db/schema';
+import { folderShareLinks, folders, user as users } from '../db/schema';
 import { createDocument, listDocuments, listFolders } from '../harness/commands';
 import type { auth } from '../lib/auth';
 import {
@@ -23,9 +29,18 @@ import { loadFolderAccessTree, validateFolderMove, validateFolderParent } from '
 import { createId } from '../lib/id';
 import { parsePageRequest } from '../lib/pagination';
 import { buildFolderShareUrl, generateShareToken, hashShareToken } from '../lib/share-tokens';
-import { compactNoteSelection } from '../notes/listing';
+import { createRequestSizeLimitMiddleware } from '../middleware/request-limits';
+import { readAuthorizedBoard, readAuthorizedBoardLane, saveBoardConfig } from '../notes/boards';
+import { parseFolderQueryRequest, readFilteredFolderNotes } from '../notes/folder-query';
+import {
+  deletePropertyOption,
+  mutateFolderProperties,
+  previewOptionDeletion,
+  readFolderProperties,
+} from '../notes/properties';
+import { createFromTemplate, listAssignedTemplates, previewAssignedTemplate } from '../notes/templates';
 import { trashFolder } from '../trash/operations';
-import { activeFolderWhere, activeNoteWhere } from '../trash/policy';
+import { activeFolderWhere } from '../trash/policy';
 
 type Variables = {
   user: typeof auth.$Infer.Session.user | null;
@@ -33,6 +48,82 @@ type Variables = {
 };
 
 export const folderRoutes = new Hono<{ Variables: Variables }>();
+
+folderRoutes.use('/:folderId/properties', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+folderRoutes.get('/:folderId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readFolderProperties({ actorUserId: user.id }, c.req.param('folderId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+folderRoutes.patch('/:folderId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await mutateFolderProperties(
+        { actorUserId: user.id },
+        c.req.param('folderId'),
+        await c.req.json().catch(() => null)
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
+// The shared limiter handles POST/PUT/PATCH only; this flow also sends a DELETE body.
+folderRoutes.use(
+  '/:folderId/properties/*',
+  bodyLimit({
+    maxSize: 4096,
+    onError: (c) => c.json({ error: 'Request body too large' }, 413),
+  })
+);
+folderRoutes.get('/:folderId/properties/:propertyId/options/:optionId/deletion-preview', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await previewOptionDeletion(
+        { actorUserId: user.id },
+        c.req.param('folderId'),
+        c.req.param('propertyId'),
+        c.req.param('optionId')
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+folderRoutes.delete('/:folderId/properties/:propertyId/options/:optionId', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  // Also enforce actual bytes when a supplied Content-Length understates the body.
+  if ((await c.req.raw.clone().arrayBuffer()).byteLength > 4096)
+    return c.json({ error: 'Request body too large' }, 413);
+  try {
+    return c.json(
+      await deletePropertyOption(
+        { actorUserId: user.id },
+        c.req.param('folderId'),
+        c.req.param('propertyId'),
+        c.req.param('optionId'),
+        await c.req.json().catch(() => null)
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
 
 const childFolders = alias(folders, 'child');
 
@@ -396,9 +487,144 @@ folderRoutes.get('/:folderId/detail', async (c) => {
   });
 });
 
+folderRoutes.use('/:folderId/board/config', createRequestSizeLimitMiddleware({ maxBytes: 16384 }));
+
+folderRoutes.get('/:folderId/board/config', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const folderId = c.req.param('folderId');
+  const access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
+  if (!access) return c.json({ error: 'Folder not found' }, 404);
+  try {
+    return c.json({
+      board: await readAuthorizedBoard(user.id, access.resourceOwnerUserId, folderId),
+      access: serializeCollaborationAccess(access),
+    });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
+folderRoutes.put('/:folderId/board/config', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const folderId = c.req.param('folderId');
+  const access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
+  if (!access) return c.json({ error: 'Folder not found' }, 404);
+  if (access.role !== 'owner') return c.json({ error: 'Only the folder owner can configure the board' }, 403);
+  const text = await c.req.text();
+  if (new TextEncoder().encode(text).length > 16384) return c.json({ error: 'Payload exceeds 16 KiB' }, 413);
+  let body: { config?: unknown; expectedVersion?: number; schemaId?: string; schemaRevision?: number };
+  try {
+    body = JSON.parse(text);
+    if (
+      !body ||
+      !Number.isSafeInteger(body.expectedVersion) ||
+      (body.expectedVersion ?? -1) < 0 ||
+      (body.expectedVersion ?? 0) >= Number.MAX_SAFE_INTEGER
+    )
+      throw new BoardValidationError('A nonnegative expectedVersion is required');
+    if (
+      (body.schemaId !== undefined || body.schemaRevision !== undefined) &&
+      (typeof body.schemaId !== 'string' ||
+        !/^[a-zA-Z0-9_-]{1,100}$/.test(body.schemaId) ||
+        !Number.isSafeInteger(body.schemaRevision) ||
+        (body.schemaRevision ?? -1) < 1 ||
+        (body.schemaRevision ?? 0) >= Number.MAX_SAFE_INTEGER)
+    )
+      throw new BoardValidationError('Invalid reviewed schema token');
+    const board = await saveBoardConfig(
+      access.resourceOwnerUserId,
+      folderId,
+      body.config,
+      body.expectedVersion as number,
+      body.schemaId !== undefined
+        ? { schemaId: body.schemaId, schemaRevision: body.schemaRevision as number }
+        : undefined
+    );
+    if (!board) return c.json({ error: 'Board configuration changed. Reload settings before saving.' }, 409);
+    return c.json({ board });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    if (error instanceof SyntaxError || error instanceof BoardValidationError)
+      return c.json({ error: error instanceof Error ? error.message : 'Invalid configuration' }, 400);
+    throw error;
+  }
+});
+
+folderRoutes.get('/:folderId/board', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  let readQuery: ReturnType<typeof parseFolderQueryRequest>;
+  try {
+    readQuery = parseFolderQueryRequest(new URL(c.req.url).searchParams);
+  } catch (error) {
+    if (error instanceof NoteQueryError) return c.json({ error: error.message }, 400);
+    throw error;
+  }
+  const folderId = c.req.param('folderId');
+  const access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
+  if (!access) return c.json({ error: 'Folder not found' }, 404);
+  for (const key of ['version', 'lane', 'page', 'limit', 'schemaId', 'schemaRevision']) {
+    if ((c.req.queries(key)?.length ?? 0) > 1) return c.json({ error: `Repeated ${key} parameter` }, 400);
+  }
+  const version = c.req.query('version');
+  if (version !== undefined && (!/^[1-9]\d*$/.test(version) || !Number.isSafeInteger(Number(version))))
+    return c.json({ error: 'Invalid configuration version' }, 400);
+  const lane = c.req.query('lane') ?? '';
+  const schemaId = c.req.query('schemaId');
+  const schemaRevision = c.req.query('schemaRevision');
+  if (schemaId !== undefined && !/^[a-zA-Z0-9_-]{1,100}$/.test(schemaId))
+    return c.json({ error: 'Invalid schema identity' }, 400);
+  if (
+    schemaRevision !== undefined &&
+    (!/^[1-9]\d*$/.test(schemaRevision) ||
+      !Number.isSafeInteger(Number(schemaRevision)) ||
+      Number(schemaRevision) >= Number.MAX_SAFE_INTEGER)
+  )
+    return c.json({ error: 'Invalid schema revision' }, 400);
+  if (['tag', 'boardTags', 'includeTags', 'excludeTags'].some((key) => c.req.queries(key) !== undefined))
+    return c.json({ error: 'Board tag filters are no longer supported. Refresh the property-only board.' }, 400);
+  const page = parsePageRequest(c.req.query('page'), c.req.query('limit'), { defaultLimit: 25 });
+  if (!Number.isSafeInteger(page.offset) || page.offset > 1000000)
+    return c.json({ error: 'Page is out of range' }, 400);
+  try {
+    return c.json({
+      ...(await readAuthorizedBoardLane({
+        actorUserId: user.id,
+        userId: access.resourceOwnerUserId,
+        folderId,
+        lane,
+        page,
+        query: readQuery.query,
+        sort: readQuery.sort,
+        version: version === undefined ? undefined : Number(version),
+        schemaId,
+        schemaRevision: schemaRevision === undefined ? undefined : Number(schemaRevision),
+      })),
+      access: serializeCollaborationAccess(access),
+    });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    if (error instanceof BoardValidationError) return c.json({ error: error.message }, 400);
+    throw error;
+  }
+});
+
 folderRoutes.get('/:folderId/notes', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const type = c.req.query('type') === 'template' ? 'template' : 'note';
+  let readQuery: ReturnType<typeof parseFolderQueryRequest> | undefined;
+  if (type === 'note') {
+    try {
+      readQuery = parseFolderQueryRequest(new URL(c.req.url).searchParams);
+    } catch (error) {
+      if (error instanceof NoteQueryError) return c.json({ error: error.message }, 400);
+      throw error;
+    }
+  }
 
   const folderId = c.req.param('folderId');
   let access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
@@ -417,16 +643,34 @@ folderRoutes.get('/:folderId/notes', async (c) => {
       applicableGrantIds: [],
     };
   }
-  const type = c.req.query('type') === 'template' ? 'template' : 'note';
   if (type === 'template' && access.role !== 'owner') return c.json({ error: 'Folder not found' }, 404);
   const page = parsePageRequest(c.req.query('page'), c.req.query('limit'));
-  const result = await listDocuments({
-    userId: access.resourceOwnerUserId,
-    folderId,
-    type,
-    offset: page.offset,
-    limit: page.limit,
-  });
+  let filtered: Awaited<ReturnType<typeof readFilteredFolderNotes>> | undefined;
+  if (readQuery && (hasNoteQuery(readQuery.query) || readQuery.sort !== DEFAULT_NOTE_SORT)) {
+    if (!Number.isSafeInteger(page.offset) || page.offset > 1000000)
+      return c.json({ error: 'Page is out of range' }, 400);
+    try {
+      filtered = await readFilteredFolderNotes({
+        ...readQuery,
+        actorUserId: user.id,
+        ownerId: access.resourceOwnerUserId,
+        folderId,
+        page,
+      });
+    } catch (error) {
+      if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  }
+  const result = filtered
+    ? { ok: true, value: filtered }
+    : await listDocuments({
+        userId: access.resourceOwnerUserId,
+        folderId,
+        type,
+        offset: page.offset,
+        limit: page.limit,
+      });
   const trashableNoteIds = await listTrashableNoteIds({
     actorUserId: user.id,
     noteIds: result.value.documents.map((note) => note.id),
@@ -441,6 +685,13 @@ folderRoutes.get('/:folderId/notes', async (c) => {
   });
   return c.json({
     notes: serializedNotes,
+    ...(filtered
+      ? {
+          queryIdentity: filtered.queryIdentity,
+          ...(filtered.querySchema ? { querySchema: filtered.querySchema } : {}),
+          ...(filtered.sortIdentity ? { sortIdentity: filtered.sortIdentity } : {}),
+        }
+      : {}),
     access: serializeCollaborationAccess(access),
     page: page.page,
     limit: page.limit,
@@ -451,21 +702,39 @@ folderRoutes.get('/:folderId/notes', async (c) => {
 folderRoutes.get('/:folderId/templates', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
-
-  const rows = await db
-    .select({ template: compactNoteSelection })
-    .from(templateFolderAssignments)
-    .innerJoin(notes, eq(templateFolderAssignments.templateId, notes.id))
-    .innerJoin(folders, eq(templateFolderAssignments.folderId, folders.id))
-    .where(
-      and(
-        eq(templateFolderAssignments.userId, user.id),
-        activeFolderWhere(user.id, eq(folders.id, c.req.param('folderId'))),
-        activeNoteWhere(user.id, eq(notes.type, 'template'))
-      )
-    )
-    .orderBy(notes.title, notes.id);
-  return c.json({ templates: rows.map((row) => row.template) });
+  try {
+    return c.json({ templates: await listAssignedTemplates({ actorUserId: user.id }, c.req.param('folderId')) });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+folderRoutes.get('/:folderId/templates/:templateId/preview', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await previewAssignedTemplate({ actorUserId: user.id }, c.req.param('folderId'), c.req.param('templateId'))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+folderRoutes.use('/:folderId/notes/from-template', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+folderRoutes.post('/:folderId/notes/from-template', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const body = templateObject(await c.req.json().catch(() => null));
+    if (Object.hasOwn(body, 'folderId') && body.folderId !== c.req.param('folderId'))
+      throw new PropertyError('Destination mismatch');
+    const result = await createFromTemplate({ actorUserId: user.id }, { ...body, folderId: c.req.param('folderId') });
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
 });
 
 folderRoutes.post('/:folderId/notes', async (c) => {

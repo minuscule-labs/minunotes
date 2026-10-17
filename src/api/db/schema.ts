@@ -155,6 +155,52 @@ export const folders = sqliteTable(
   ]
 );
 
+export const folderBoardViews = sqliteTable(
+  'folder_board_views',
+  {
+    folderId: text('folder_id').primaryKey(),
+    userId: text('user_id').notNull(),
+    config: text('config').notNull(),
+    version: integer('version').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.folderId, table.userId],
+      foreignColumns: [folders.id, folders.userId],
+      name: 'folder_board_views_folder_owner_fk',
+    }).onDelete('cascade'),
+    check('folder_board_views_version_check', sql`${table.version} > 0`),
+    check('folder_board_views_config_size_check', sql`length(cast(${table.config} as blob)) <= 16384`),
+  ]
+);
+
+export const folderPropertySchemas = sqliteTable(
+  'folder_property_schemas',
+  {
+    folderId: text('folder_id').primaryKey(),
+    userId: text('user_id').notNull(),
+    schemaId: text('schema_id').notNull().unique(),
+    revision: integer('revision').notNull(),
+    definitions: text('definitions').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.folderId, table.userId],
+      foreignColumns: [folders.id, folders.userId],
+      name: 'folder_property_schemas_owner_fk',
+    }).onDelete('cascade'),
+    check('folder_property_schemas_revision_check', sql`${table.revision} > 0`),
+    check(
+      'folder_property_schemas_json_check',
+      sql`json_valid(${table.definitions}) and json_type(${table.definitions}) = 'array' and length(cast(${table.definitions} as blob)) <= 65536`
+    ),
+  ]
+);
+
 export const integrationAuthorizations = sqliteTable(
   'integration_authorizations',
   {
@@ -567,8 +613,17 @@ export const templateFolderAssignments = sqliteTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    defaultsRevision: integer('defaults_revision').notNull().default(0),
+    schemaId: text('schema_id'),
+    propertyDefaults: text('property_defaults').notNull().default('{}'),
   },
   (table) => [
+    uniqueIndex('template_folder_assignments_destination_unique').on(table.userId, table.templateId, table.folderId),
+    check('template_folder_assignments_revision_check', sql`${table.defaultsRevision} >= 0`),
+    check(
+      'template_folder_assignments_defaults_check',
+      sql`json_valid(${table.propertyDefaults}) and json_type(${table.propertyDefaults}) = 'object' and length(cast(${table.propertyDefaults} as blob)) <= 262144`
+    ),
     index('template_folder_assignments_template_id_idx').on(table.templateId),
     index('template_folder_assignments_folder_id_idx').on(table.folderId),
     index('template_folder_assignments_user_id_idx').on(table.userId),
@@ -582,6 +637,86 @@ export const templateFolderAssignments = sqliteTable(
       foreignColumns: [folders.id, folders.userId],
       name: 'template_folder_assignments_folder_owner_fk',
     }).onDelete('cascade'),
+  ]
+);
+
+export const templateDefaultState = sqliteTable(
+  'template_default_state',
+  {
+    templateId: text('template_id').primaryKey(),
+    userId: text('user_id').notNull(),
+    revision: integer('revision').notNull(),
+    tags: text('tags').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.templateId, table.userId],
+      foreignColumns: [notes.id, notes.userId],
+      name: 'template_default_state_owner_fk',
+    }).onDelete('cascade'),
+    check('template_default_state_revision_check', sql`${table.revision} > 0`),
+    check(
+      'template_default_state_tags_check',
+      sql`json_valid(${table.tags}) and json_type(${table.tags}) = 'array' and length(cast(${table.tags} as blob)) <= 8192`
+    ),
+  ]
+);
+
+// Deliberately no note FK: deletion keeps a tombstone, so a retry never recreates a note.
+export const noteCreationRequests = sqliteTable(
+  'note_creation_requests',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull(),
+    folderId: text('folder_id').notNull(),
+    actorUserId: text('actor_user_id').notNull(),
+    actorType: text('actor_type').notNull(),
+    actorId: text('actor_id').notNull(),
+    requestId: text('request_id').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    noteId: text('note_id').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.folderId, table.userId],
+      foreignColumns: [folders.id, folders.userId],
+      name: 'note_creation_requests_destination_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('note_creation_requests_actor_destination_unique').on(
+      table.actorUserId,
+      table.actorType,
+      table.actorId,
+      table.folderId,
+      table.requestId
+    ),
+    check('note_creation_requests_request_check', sql`length(${table.requestId}) between 1 and 128`),
+  ]
+);
+
+export const notePropertyState = sqliteTable(
+  'note_property_state',
+  {
+    noteId: text('note_id').primaryKey(),
+    userId: text('user_id').notNull(),
+    revision: integer('revision').notNull(),
+    values: text('values').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.noteId, table.userId],
+      foreignColumns: [notes.id, notes.userId],
+      name: 'note_property_state_owner_fk',
+    }).onDelete('cascade'),
+    check('note_property_state_revision_check', sql`${table.revision} > 0`),
+    check(
+      'note_property_state_json_check',
+      sql`json_valid(${table.values}) and json_type(${table.values}) = 'object' and length(cast(${table.values} as blob)) <= 262144`
+    ),
   ]
 );
 

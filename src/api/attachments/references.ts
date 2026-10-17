@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '../db/client';
+import { db as defaultDb } from '../db/client';
 import { attachments } from '../db/schema';
+import type { MetadataExecutor } from '../notes/metadata-transaction';
 
 const APP_ATTACHMENT_URL_PATTERN =
   /(?:!\[[^\]]*\]|\[[^\]]*\])\(\s*(?:https?:\/\/[^\s)]+)?\/internal\/attachments\/(att_[a-zA-Z0-9_-]+)\/content(?:[?#][^\s)]*)?\s*(?:"[^"]*"|'[^']*')?\s*\)/g;
@@ -13,7 +14,11 @@ export function extractAppAttachmentIds(markdown: string) {
   return [...ids];
 }
 
-export async function syncNoteAttachmentReferences(input: { noteId: string; userId: string; markdown: string }) {
+export async function syncNoteAttachmentReferences(
+  input: { noteId: string; userId: string; markdown: string },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const referencedIds = new Set(extractAppAttachmentIds(input.markdown));
   const now = new Date();
   const rows = await db

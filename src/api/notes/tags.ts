@@ -1,5 +1,10 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../db/client';
+import { normalizeTagInput, normalizeTagName } from '../../shared/tags';
+import { db as defaultDb } from '../db/client';
+import type { MetadataExecutor } from './metadata-transaction';
+
+const db = defaultDb;
+
 import { notes, noteTags, tags } from '../db/schema';
 import {
   collaborationAccessibleNoteWhere,
@@ -11,33 +16,7 @@ import { activeNoteWhere } from '../trash/policy';
 
 export type SerializedTag = { id: string; name: string; normalizedName: string; noteCount?: number };
 
-export function normalizeTagName(name: string) {
-  return name
-    .trim()
-    .replace(/^#+/, '')
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-export function cleanTagName(name: string) {
-  return normalizeTagName(name);
-}
-
-export function normalizeTagInput(input: string[]) {
-  const seen = new Set<string>();
-  const values: Array<{ name: string; normalizedName: string }> = [];
-  for (const raw of input) {
-    const name = cleanTagName(raw);
-    const normalizedName = normalizeTagName(raw);
-    if (!name || !normalizedName || seen.has(normalizedName)) continue;
-    seen.add(normalizedName);
-    values.push({ name, normalizedName });
-  }
-  return values.slice(0, 50);
-}
+export { cleanTagName, normalizeTagInput, normalizeTagName } from '../../shared/tags';
 
 export async function listUserTags(input: { userId: string; noteIds?: string[]; folderIds?: string[] }) {
   if (input.noteIds?.length === 0 || input.folderIds?.length === 0) return [];
@@ -111,7 +90,8 @@ export async function listAccessibleTags(actorUserId: string) {
     .orderBy(asc(tags.name), asc(tags.id));
 }
 
-export async function listNoteTags(input: { userId: string; noteId: string }) {
+export async function listNoteTags(input: { userId: string; noteId: string }, executor: MetadataExecutor = defaultDb) {
+  const db = executor;
   return db
     .select({ id: tags.id, name: tags.name, normalizedName: tags.normalizedName })
     .from(noteTags)
@@ -121,7 +101,11 @@ export async function listNoteTags(input: { userId: string; noteId: string }) {
     .orderBy(asc(tags.name));
 }
 
-async function ensureTags(input: { userId: string; tags: Array<{ name: string; normalizedName: string }> }) {
+async function ensureTags(
+  input: { userId: string; tags: Array<{ name: string; normalizedName: string }> },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   if (input.tags.length === 0) return [];
 
   const normalizedNames = input.tags.map((tag) => tag.normalizedName);
@@ -152,11 +136,15 @@ async function ensureTags(input: { userId: string; tags: Array<{ name: string; n
     .where(and(eq(tags.userId, input.userId), inArray(tags.normalizedName, normalizedNames)));
 }
 
-export async function setNoteTags(input: { userId: string; noteId: string; tags: string[] }) {
+export async function setNoteTags(
+  input: { userId: string; noteId: string; tags: string[] },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const cleaned = normalizeTagInput(input.tags);
-  const tagRows = await ensureTags({ userId: input.userId, tags: cleaned });
+  const tagRows = await ensureTags({ userId: input.userId, tags: cleaned }, executor);
 
-  const previous = await listNoteTags(input);
+  const previous = await listNoteTags(input, executor);
   await db.delete(noteTags).where(and(eq(noteTags.userId, input.userId), eq(noteTags.noteId, input.noteId)));
 
   if (tagRows.length > 0) {
@@ -172,7 +160,7 @@ export async function setNoteTags(input: { userId: string; noteId: string; tags:
     );
   }
 
-  const current = await listNoteTags(input);
+  const current = await listNoteTags(input, executor);
   const currentIds = new Set(current.map((tag) => tag.id));
   const removedIds = previous.map((tag) => tag.id).filter((id) => !currentIds.has(id));
   if (removedIds.length > 0) {

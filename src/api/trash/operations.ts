@@ -6,6 +6,7 @@ import {
   folders,
   noteCommentThreads,
   noteEvents,
+  notePropertyState,
   noteShareLinks,
   notes,
   noteTags,
@@ -636,6 +637,12 @@ export async function trashNotes(input: {
                   eq(notes.documentType, 'markdown'),
                   eq(notes.title, 'Untitled note'),
                   eq(notes.content, ''),
+                  notExists(
+                    tx
+                      .select({ noteId: notePropertyState.noteId })
+                      .from(notePropertyState)
+                      .where(and(eq(notePropertyState.noteId, notes.id), eq(notePropertyState.userId, notes.userId)))
+                  ),
                   notExists(
                     db
                       .select({ id: noteCommentThreads.id })
