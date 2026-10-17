@@ -64,6 +64,29 @@ Folders and notes:
 - `notes_trash_note` (destructive; requires `confirm: true`)
 - `notes_move_notes` (all-or-nothing, up to 100 notes)
 
+Properties:
+
+- `notes_read_folder_properties`
+- `notes_mutate_folder_properties` (owner-only add/rename/reorder/archive; server-generated IDs, immutable types)
+- `notes_read_note_properties`
+- `notes_patch_note_properties`
+
+Prefer defined folder properties for structured Status/Type labels. Read the authorized schema and use stable property/option IDs, not labels. Ask if a suitable definition is missing; do not invent fields, options or tags, or mirror Status/Type into tags unless requested. Honor explicit tag requests and reviewed template tags; preserve stored tags even when card chips are hidden. This is guidance, not a tag-tool or permission ban.
+
+Read properties first. Pass `schema.schemaId` as `schemaId`, `schema.revision` as `schemaRevision`, and independent note-properties `revision` as `expectedRevision`. Patch supplied active IDs only; `null` clears and empty Text clears. Select values are option IDs, Date values are real YYYY-MM-DD dates. On conflict preserve the draft, reload and review; do not blindly replay.
+
+Properties use existing note read/edit scopes, folder privacy/read-only policy and API-editability. Note-only grants cannot enumerate folder schemas. Public shares omit metadata. Body/hash/tags and body-only restores stay independent. New unsaved board settings prefer Select; saved modes remain unchanged. One owner-selected optional Type badge uses stable IDs and current labels; archived/unset values hide it on refresh without an archive guard. UI-configured Select-backed boards regroup on refresh; property changes never affect tag-backed classification or synchronize tags. Disable or switch an enabled board before archiving its grouping field. No board configuration tools are provided. Retained template-default references block archiving their fields/choices until explicitly cleared or their assignment removed.
+
+Reviewed templates:
+
+- `notes_list_assigned_templates` (`folderId`)
+- `notes_preview_assigned_template` (`folderId`, `templateId`)
+- `notes_create_from_template` (destination/template IDs, preview `snapshot`, `schemaId`, `schemaRevision`, final title, complete final tags/values, `requestId`, frozen `variables: {date,time,datetime}`)
+
+Use only destination-assigned previews, not unrelated template/library reads. Both create/read capability and the credential ceiling apply; note-only grants cannot discover/create. Agents cannot copy an effectively private source folder, but source API-editability need not allow edits. Owner defaults management is not exposed as an agent tool. Tags/defaults are independent of body saves and existing instances; properties use destination stable IDs. Empty final tags/values explicitly clear defaults; retain reviewed template tags unless deliberately cleared. No replacement body or new variables; preserve only the original four substitutions with review-time date/time literals.
+
+Creation is one atomic ordinary note, initial version and create event with tags/properties/references/receipt. Retry uncertain/network/busy responses using the SAME request ID and exact frozen payload. Never replace it with a fresh clock or another ID before resolution. Different payload with the same actor/destination/key conflicts. Stale review requires explicit re-review; completed receipts ignore newer defaults but check current access. Inaccessible, trashed or deleted notes are unavailable, never recreated. Snapshots/defaults are not access grants. Boards use their owner's explicit tag or Select grouping on refresh; tags and properties remain independent.
+
 Review comments:
 
 - `notes_list_comments`

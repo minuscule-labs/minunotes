@@ -36,6 +36,61 @@ Authenticated collaboration uses a separate `sharedAccessMode`: `none` (the defa
 
 A full note read may include privacy-safe role/source context, but never read a note solely to inspect permissions. Direct-note grants return `folderId: null`; never infer or probe for the hidden containing folder. Resources created in a shared folder belong to its owner and are attributed to the authorizing user. Agents cannot move shared resources, reshare, administer public links, restore, permanently delete, or generally manage Trash. An edit-capable agent may move only eligible resources created by its authorizing user to the owner’s Trash. Treat `403` and `404` as intentional boundaries and do not retry against unrelated folders, infer resource existence, or attempt permission escalation.
 
+## Properties
+
+Prefer defined folder properties for structured labels such as Status and Type. For requested classification, read the authorized schema and use stable property/option IDs, not labels. Ask if no suitable definition exists; do not invent fields, options or tags. Do not mirror Status/Type into tags unless requested. Honor explicit tag requests and reviewed template tags; preserve stored tags even though board cards hide them. This guidance does not remove tag endpoints or change permissions.
+
+Use separate metadata operations; do not edit frontmatter or use a body hash for properties:
+
+- `GET /v1/harness/folders/:folderId/properties`: authorized folder schema read.
+- `PATCH /v1/harness/folders/:folderId/properties`: owner-only controlled schema mutation with `expectedRevision` and `mutation` (`add`, `rename`, `reorder`, `archive`, `add_option`, `rename_option`, `archive_option`, `reorder_options`). Types are immutable and IDs server-generated; reorder includes all historical IDs.
+- `GET /v1/harness/notes/:noteId/properties`: applicable schema/values and independent revisions, with no hidden owner/folder identities.
+- `PATCH /v1/harness/notes/:noteId/properties`: edit permission and applicable API-editability required.
+
+Read properties first, then use the returned identity/revisions and actual property/option IDs:
+
+```json
+{
+  "schemaId": "property_schema_from_read",
+  "schemaRevision": 1,
+  "expectedRevision": 0,
+  "values": { "text_property_from_read": "Text value", "select_property_from_read": "option_id_from_read" }
+}
+```
+
+The read returns `schema.schemaId`, `schema.revision` and note-properties `revision`. Missing state is revision 0; missing schema has identity null. Values are optional Text (up to 1,000 characters), Select (one option ID) or real date-only YYYY-MM-DD. `null` clears; empty Text clears. Unknown/foreign/archived IDs cannot be newly assigned. Untouched retained values are preserved. Changed writes emit `properties_update`; no-op writes emit no event. Body bytes/hash/tags/versions stay independent.
+
+Preserve the draft on `409`; read current properties and explicitly review before retrying. Stop on permission denial. Folder schema mutations require ownership plus current agent edit scope and folder policy. Note-only grants do not authorize folder schema reads or enumeration. Public shares omit metadata. UI-configured Select-backed boards regroup after property edits and refresh; tag-backed cards still depend only on tags. New unsaved board settings prefer Select; saved modes stay unchanged. An owner-selected optional Type badge uses stable IDs, survives field renames and disappears for archived/unset values on refresh. It adds no archive guard. Card tag chips are hidden, but tags remain stored. No frontmatter or tag synchronization. Disable or switch an enabled board before archiving its grouping property; there are no board configuration Harness endpoints or tools. Retained template defaults guard property/option archive even when the template is in Trash.
+
+## Reviewed template creation
+
+1. `GET /v1/harness/folders/:folderId/templates` lists assigned ID/title summaries for an eligible creator.
+2. `GET /v1/harness/folders/:folderId/templates/:templateId/preview` returns only that assigned Markdown body, tag defaults, destination property defaults/schema and opaque `snapshot`.
+3. `POST /v1/harness/notes/from-template` creates the reviewed ordinary note atomically (256 KiB body limit):
+
+```json
+{
+  "folderId": "destination_from_list",
+  "templateId": "assigned_template_id",
+  "snapshot": "snapshot_from_preview",
+  "schemaId": null,
+  "schemaRevision": 0,
+  "title": "Reviewed instance",
+  "tags": [],
+  "values": {},
+  "requestId": "one_unique_frozen_request_id",
+  "variables": { "date": "reviewed date", "time": "reviewed time", "datetime": "reviewed datetime" }
+}
+```
+
+Use actual preview schema identity/revision, including null/0 only when absent. Tags/values are **complete final** payloads; empty explicitly clears defaults. The empty example applies only when reviewed defaults are absent or deliberately cleared; otherwise retain the reviewed template tags/values. Stable destination IDs only; unknown/archived IDs, bad dates and empty/duplicate normalized tags are rejected. Tags: at most 50 entries, 80 raw characters each. Title: 1–1,000 characters. Request ID: 1–128. Each variable literal: at most 80. Only the original title/date/time/datetime substitutions are preserved; no replacement body, script or new variables.
+
+Both stored connection and credential ceiling must allow destination create/read. Editor folder collaboration may create, viewer/commenter and note-only grants may not. Assigned preview grants no private-library enumeration or source editing; an effectively agent-private source folder is forbidden. A non-API-editable source may be copied. The destination owns the note; authenticated creator/actor provenance is retained. Defaults are owner-managed separately through the web UI.
+
+Success is 201 (new) or 200 (replayed), with privacy-safe note ID/title/folder, contentHash and replayed flag. Retry uncertain/network/busy results with the SAME request ID and exact frozen payload, never a fresh clock. A changed payload using that actor/destination/key returns 409. Definitive stale snapshot/schema conflicts preserve the draft for explicit review before a new ID. A completed receipt does not require today's defaults, but current access is checked; unavailable/trashed/deleted notes never recreate. One create event/version and all body/tags/properties/reference/receipt writes commit together or roll back. Existing instances and blank creation remain unchanged. On refresh, boards use the owner's explicit tag or Select grouping; creation never synchronizes those values.
+
+The generated Postman Templates group captures preview tokens/defaults/frozen variables and a new request ID. Review/edit its final payload deliberately; do not re-run preview to retry an uncertain create, because that would replace its frozen request.
+
 ## Rich Markdown
 
 - GitHub-style callouts use `> [!NOTE]`, `TIP`, `IMPORTANT`, `WARNING`, or `CAUTION`.
@@ -299,6 +354,7 @@ Internal links are stored as `node.minunotes.link = { "type": "note", "id": "not
 Tags:
 
 ```bash
+# Optional legacy tags: use only explicitly requested labels, not inferred Status/Type mirrors.
 curl -s "${AUTH[@]}" "$API/v1/harness/tags"
 curl -s "${AUTH[@]}" "$API/v1/harness/notes/note_xxx/tags"
 curl -s "${AUTH[@]}" \
