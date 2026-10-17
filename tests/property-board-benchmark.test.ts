@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { type ExecFileException, execFile } from 'node:child_process';
 import { readFile, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -6,6 +6,18 @@ import { describe, expect, it } from 'vitest';
 import { benchmarkCandidates, runPropertyBoardBenchmark } from '../scripts/lib/property-board-benchmark';
 
 const exec = promisify(execFile);
+
+async function execNode(args: string[], env = process.env) {
+  try {
+    return await exec(process.execPath, args, { env, maxBuffer: 5_000_000 });
+  } catch (cause) {
+    const error = cause as ExecFileException & { stdout?: string; stderr?: string };
+    throw new Error(
+      `Node subprocess failed (exit code: ${error.code ?? 'none'}, signal: ${error.signal ?? 'none'}, killed: ${error.killed ?? false})\n${error.message}\nstdout:\n${error.stdout ?? ''}\nstderr:\n${error.stderr ?? ''}`,
+      { cause }
+    );
+  }
+}
 
 describe('owned local property board benchmark', () => {
   it('has exactly 1000 deterministic mostly-Done candidates and nonempty canvas representatives', () => {
@@ -26,9 +38,10 @@ describe('owned local property board benchmark', () => {
     await expect(stat(root)).rejects.toHaveProperty('code', 'ENOENT');
   });
   it('runs real SQL with JSON capability, bounded exact pages, actual plans/counts/payload and no ambient remote target', async () => {
-    const { stdout } = await exec(process.execPath, ['--import', 'tsx', 'scripts/benchmark-property-board.ts'], {
-      env: { ...process.env, TURSO_DB_URL: 'libsql://must-not-use.invalid', TURSO_AUTH_TOKEN: '' },
-      maxBuffer: 5_000_000,
+    const { stdout } = await execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts'], {
+      ...process.env,
+      TURSO_DB_URL: 'libsql://must-not-use.invalid',
+      TURSO_AUTH_TOKEN: '',
     });
     const summary = JSON.parse(stdout);
     const report = JSON.parse(await readFile(summary.output, 'utf8'));
@@ -96,9 +109,19 @@ describe('owned local property board benchmark', () => {
       await rm(path.dirname(summary.output), { recursive: true });
     }
   }, 60000);
+  it('reports subprocess exit codes and captured output', async () => {
+    await expect(
+      execNode(['-e', 'console.log("diagnostic stdout"); console.error("diagnostic stderr"); process.exit(17)'])
+    ).rejects.toThrow(/exit code: 17, signal: none[\s\S]*diagnostic stdout[\s\S]*diagnostic stderr/);
+  });
+  it.skipIf(process.platform === 'win32')('reports subprocess signals even without stderr', async () => {
+    await expect(execNode(['-e', 'process.kill(process.pid, "SIGTERM")'])).rejects.toThrow(
+      /exit code: none, signal: SIGTERM/
+    );
+  });
   it('refuses target arguments before sandbox allocation', async () => {
     await expect(
-      exec(process.execPath, ['--import', 'tsx', 'scripts/benchmark-property-board.ts', 'libsql://forbidden.invalid'])
+      execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts', 'libsql://forbidden.invalid'])
     ).rejects.toThrow('No arguments or database targets');
   });
 });
