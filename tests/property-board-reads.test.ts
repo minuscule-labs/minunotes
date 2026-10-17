@@ -172,21 +172,62 @@ describe('SQL Select board reads', () => {
     const f = await setupPropertyBoardTest();
     const t = await f.addType();
     await f.saveSelect(t.config, 0, 'owner', t.token);
-    for (let i = 0; i < 210; i++) {
-      const id = `n${String(i).padStart(3, '0')}`;
-      await f.addNote(id, 'Same title', ['board', 'project', 'selected', ...(i < 25 ? ['hidden'] : [])]);
-      await f.db.insert(f.schema.notePropertyState).values({
-        noteId: id,
-        userId: 'owner',
-        revision: 1,
-        values: JSON.stringify({
-          [f.field.id]: f.field.options[i >= 200 ? 1 : 0].id,
-          [t.typeField.id]: t.typeField.options[i % 3].id,
-        }),
-        createdAt: f.now,
-        updatedAt: f.now,
-      });
-    }
+    const candidates = Array.from({ length: 210 }, (_, i) => ({
+      id: `n${String(i).padStart(3, '0')}`,
+      index: i,
+      tags: ['board', 'project', 'selected', ...(i < 25 ? ['hidden'] : [])],
+    }));
+    await f.db.transaction(async (tx) => {
+      await tx.insert(f.schema.tags).values(
+        ['board', 'project', 'selected', 'hidden'].map((name) => ({
+          id: `owner_${name}`,
+          userId: 'owner',
+          name,
+          normalizedName: name,
+          createdAt: f.now,
+          updatedAt: f.now,
+        }))
+      );
+      // Keep every insert below 999 bound parameters, including the tag links.
+      for (let start = 0; start < candidates.length; start += 50) {
+        const batch = candidates.slice(start, start + 50);
+        await tx.insert(f.schema.notes).values(
+          batch.map(({ id }) => ({
+            id,
+            title: 'Same title',
+            folderId: 'board',
+            userId: 'owner',
+            content: `Private body for ${id}`,
+            createdAt: f.now,
+            updatedAt: f.now,
+          }))
+        );
+        await tx.insert(f.schema.notePropertyState).values(
+          batch.map(({ id, index }) => ({
+            noteId: id,
+            userId: 'owner',
+            revision: 1,
+            values: JSON.stringify({
+              [f.field.id]: f.field.options[index >= 200 ? 1 : 0].id,
+              [t.typeField.id]: t.typeField.options[index % 3].id,
+            }),
+            createdAt: f.now,
+            updatedAt: f.now,
+          }))
+        );
+        await tx.insert(f.schema.noteTags).values(
+          batch.flatMap(({ id, tags }) =>
+            tags.map((name) => ({
+              id: `${id}_${name}`,
+              userId: 'owner',
+              noteId: id,
+              tagId: `owner_${name}`,
+              createdAt: f.now,
+            }))
+          )
+        );
+      }
+    });
     const expected = Array.from({ length: 200 }, (_, i) => `n${String(i).padStart(3, '0')}`);
     const board = await f.boards.readBoardConfig('owner', 'board');
     if (!board) throw new Error('Missing board');
