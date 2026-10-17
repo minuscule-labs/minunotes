@@ -40,13 +40,66 @@ function toolResult(data: unknown) {
   };
 }
 
+const propertyMutationSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('reorder_options'), propertyId: z.string(), optionIds: z.array(z.string()) }).strict(),
+  z
+    .object({
+      type: z.literal('add'),
+      label: z.string().min(1).max(80),
+      fieldType: z.enum(['text', 'select', 'date']),
+      options: z.array(z.string().min(1).max(80)).min(1).max(8).optional(),
+    })
+    .strict(),
+  z.object({ type: z.literal('rename'), propertyId: z.string(), label: z.string().min(1).max(80) }).strict(),
+  z.object({ type: z.literal('archive'), propertyId: z.string() }).strict(),
+  z.object({ type: z.literal('reorder'), propertyIds: z.array(z.string()) }).strict(),
+  z.object({ type: z.literal('add_option'), propertyId: z.string(), label: z.string().min(1).max(80) }).strict(),
+  z
+    .object({
+      type: z.literal('rename_option'),
+      propertyId: z.string(),
+      optionId: z.string(),
+      label: z.string().min(1).max(80),
+    })
+    .strict(),
+  z.object({ type: z.literal('archive_option'), propertyId: z.string(), optionId: z.string() }).strict(),
+]);
+export type SchemaMutationRequest = { expectedRevision: number; mutation: z.infer<typeof propertyMutationSchema> };
+export type PropertyPatch = {
+  schemaId: string | null;
+  schemaRevision: number;
+  expectedRevision: number;
+  values: Record<string, string | null>;
+};
+
+const templateCreationSchema = z
+  .object({
+    folderId: z.string().min(1).max(100),
+    templateId: z.string().min(1).max(100),
+    snapshot: z.string().min(1).max(128),
+    schemaId: z.string().max(100).nullable(),
+    schemaRevision: z.number().int().nonnegative(),
+    title: z.string().min(1).max(1000),
+    tags: z.array(z.string().min(1).max(80)).max(50),
+    values: z.record(z.string(), z.string().max(1000).nullable()),
+    requestId: z.string().min(1).max(128),
+    variables: z.object({ date: z.string().max(80), time: z.string().max(80), datetime: z.string().max(80) }).strict(),
+  })
+  .strict();
+export type TemplateCreation = z.infer<typeof templateCreationSchema>;
+
 export type NotesMcpClient = {
   folders: {
+    templates: (folderId: string) => Promise<unknown>;
+    templatePreview: (folderId: string, templateId: string) => Promise<unknown>;
     list: (input?: { limit?: number; cursor?: string }) => Promise<unknown>;
     create: (input: { title: string; parentFolderId?: string }) => Promise<unknown>;
     trash: (folderId: string) => Promise<unknown>;
+    properties: (folderId: string) => Promise<unknown>;
+    mutateProperties: (folderId: string, input: SchemaMutationRequest) => Promise<unknown>;
   };
   notes: {
+    fromTemplate: (input: TemplateCreation) => Promise<unknown>;
     search: (input: { query: string; tag?: string; limit?: number; cursor?: string }) => Promise<unknown>;
     get: (noteId: string) => Promise<unknown>;
     create: (folderId: string, input: { title?: string; content?: string }) => Promise<unknown>;
@@ -71,6 +124,8 @@ export type NotesMcpClient = {
     events: (noteId: string, limit?: number) => Promise<unknown>;
     tags: (noteId: string) => Promise<unknown>;
     replaceTags: (noteId: string, tags: string[]) => Promise<unknown>;
+    properties: (noteId: string) => Promise<unknown>;
+    patchProperties: (noteId: string, input: PropertyPatch) => Promise<unknown>;
   };
   comments: {
     list: (noteId: string) => Promise<unknown>;
@@ -130,6 +185,42 @@ export type NotesMcpClient = {
 
 export function createNotesMcpServer(client: NotesMcpClient) {
   const server = new McpServer({ name: 'minunotes', version: '0.1.0' });
+  server.registerTool(
+    'notes_list_assigned_templates',
+    {
+      title: 'List assigned templates',
+      description:
+        'List only templates assigned to a destination you can create in. Requires read/create; grants no template library access.',
+      inputSchema: { folderId: z.string().min(1).max(100) },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId }) => toolResult(await client.folders.templates(folderId))
+  );
+  server.registerTool(
+    'notes_preview_assigned_template',
+    {
+      title: 'Preview assigned template',
+      description:
+        'Review destination-scoped body, tags, properties and schema. Snapshot is a concurrency token, never an access grant. Freeze the existing date/time strings before creation.',
+      inputSchema: { folderId: z.string().min(1).max(100), templateId: z.string().min(1).max(100) },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId, templateId }) => toolResult(await client.folders.templatePreview(folderId, templateId))
+  );
+  server.registerTool(
+    'notes_create_from_template',
+    {
+      title: 'Create from reviewed template',
+      description:
+        'Atomically create an ordinary note with the reviewed final tags/properties (empty explicitly clears), body and one create event. Honor reviewed template tags; do not clear them because card chips are hidden or invent tags/fields/options. Retry uncertain results with the SAME requestId and exact frozen payload; changed payload needs a new ID only after resolution. Stale review conflicts without writes; deleted receipts never recreate notes.',
+      inputSchema: templateCreationSchema,
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => toolResult(await client.notes.fromTemplate(input))
+  );
 
   server.registerTool(
     'notes_list_folders',
@@ -344,7 +435,7 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     {
       title: 'Create note',
       description:
-        'Create a note in an owned or explicitly scoped shared folder. Content created in a shared folder belongs to that folder owner. For net-new content, resolve the folder from folder metadata and create directly without reading unrelated notes.',
+        'Create a note in an owned or explicitly scoped shared folder. Content created in a shared folder belongs to that folder owner. For net-new content, resolve the folder from folder metadata and create directly without reading unrelated notes. For requested structured labels, prefer defined properties and stable IDs; ask when missing, do not invent tags or mirror Status/Type into tags unless requested.',
       inputSchema: { folderId: z.string(), title: z.string().optional(), content: z.string().optional() },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -654,7 +745,8 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     'notes_replace_note_tags',
     {
       title: 'Replace note tags',
-      description: 'Replace all tags assigned to one note. Tags omitted from the array are removed.',
+      description:
+        'Replace all tags assigned to one note. Tags omitted from the array are removed. Use only explicit/reviewed tags; preserve stored and reviewed template tags unless removal is requested. Prefer defined properties for Status/Type; do not invent tags or mirror properties into tags unless requested. Hidden board chips do not authorize clearing tags.',
       inputSchema: { noteId: z.string(), tags: z.array(z.string()).max(100) },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -682,5 +774,63 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     })
   );
 
+  server.registerTool(
+    'notes_read_folder_properties',
+    {
+      title: 'Read folder property schema',
+      description:
+        'Read the authorized folder-only Text/Select/Date schema. Prefer defined properties for structured Status/Type labels and use stable property/option IDs. Ask when missing; do not invent fields, options or tags. Note-only grants do not permit folder reads.',
+      inputSchema: { folderId: z.string() },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId }) => toolResult(await client.folders.properties(folderId))
+  );
+  server.registerTool(
+    'notes_mutate_folder_properties',
+    {
+      title: 'Mutate folder property schema',
+      description:
+        'Owner-only add/rename/reorder/archive operation with expectedRevision. Change definitions only when explicitly requested; ask before inventing fields/options. IDs are server-generated; types immutable. Existing agent edit/private-folder policies apply. Disable/switch an enabled board before archiving its grouping property; retained template defaults guard field/option archive.',
+      inputSchema: {
+        folderId: z.string(),
+        expectedRevision: z.number().int().nonnegative(),
+        mutation: propertyMutationSchema,
+      },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ folderId, ...input }) => toolResult(await client.folders.mutateProperties(folderId, input))
+  );
+  server.registerTool(
+    'notes_read_note_properties',
+    {
+      title: 'Read note properties',
+      description:
+        'Read only applicable definitions/values and independent revisions. No body hash, private owner/folder identities, or template defaults.',
+      inputSchema: { noteId: z.string() },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ noteId }) => toolResult(await client.notes.properties(noteId))
+  );
+  server.registerTool(
+    'notes_patch_note_properties',
+    {
+      title: 'Patch note properties',
+      description:
+        'Patch supplied active property IDs; null clears. Requires current schemaId, schemaRevision and expectedRevision from a properties read. A conflict preserves stored state. Does not change body/hash/tags or tag-backed classification. UI-configured Select boards regroup on refresh; no board writes or tag synchronization. Select values are stable option IDs from the schema, not labels. Prefer defined properties; do not mirror Status/Type into tags unless requested.',
+      inputSchema: {
+        noteId: z.string(),
+        schemaId: z.string().nullable(),
+        schemaRevision: z.number().int().nonnegative(),
+        expectedRevision: z.number().int().nonnegative(),
+        values: z.record(z.string(), z.string().nullable()),
+      },
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ noteId, ...input }) => toolResult(await client.notes.patchProperties(noteId, input))
+  );
   return server;
 }

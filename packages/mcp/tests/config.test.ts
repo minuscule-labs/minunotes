@@ -37,6 +37,62 @@ describe('config', () => {
     );
   });
 
+  it('uses destination template paths and preserves the exact reviewed creation payload', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'key' });
+    await client.folders.templates('folder /1');
+    await client.folders.templatePreview('folder /1', 'template /1');
+    const input = {
+      folderId: 'folder /1',
+      templateId: 'template /1',
+      snapshot: 'snapshot',
+      schemaId: null,
+      schemaRevision: 0,
+      title: 'Final',
+      tags: [],
+      values: {},
+      requestId: 'frozen-request',
+      variables: { date: 'd', time: 't', datetime: 'dt' },
+    };
+    await client.notes.fromTemplate(input);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://example.com/v1/harness/folders/folder%20%2F1/templates',
+      'https://example.com/v1/harness/folders/folder%20%2F1/templates/template%20%2F1/preview',
+      'https://example.com/v1/harness/notes/from-template',
+    ]);
+    expect(fetchMock.mock.calls[2]).toEqual([
+      expect.any(String),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(input) }),
+    ]);
+  });
+  it('forwards property contracts without body-hash coupling', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ revision: 1 }), { headers: { 'content-type': 'application/json' } })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'key' });
+    await client.folders.properties('folder /1');
+    await client.folders.mutateProperties('folder /1', {
+      expectedRevision: 0,
+      mutation: { type: 'add', label: 'Summary', fieldType: 'text' },
+    });
+    await client.notes.properties('note /1');
+    const patch = { schemaId: 'schema', schemaRevision: 1, expectedRevision: 0, values: { property: 'value' } };
+    await client.notes.patchProperties('note /1', patch);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://example.com/v1/harness/folders/folder%20%2F1/properties',
+      'https://example.com/v1/harness/folders/folder%20%2F1/properties',
+      'https://example.com/v1/harness/notes/note%20%2F1/properties',
+      'https://example.com/v1/harness/notes/note%20%2F1/properties',
+    ]);
+    expect(fetchMock.mock.calls[3]).toEqual([
+      expect.any(String),
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify(patch) }),
+    ]);
+  });
   it('forwards cursor pagination query parameters', async () => {
     const fetchMock = vi.fn(
       async () => new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } })

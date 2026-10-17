@@ -48,10 +48,26 @@ const collection = {
     { key: 'apiKey', value: '' },
     { key: 'folderId', value: 'folder_xxx' },
     { key: 'noteId', value: 'note_xxx' },
+    { key: 'templateId', value: 'template_id_from_assigned_list' },
+    { key: 'templateSnapshot', value: 'snapshot_from_preview' },
+    { key: 'templateSchemaIdJson', value: 'null' },
+    { key: 'templateSchemaRevision', value: '0' },
+    { key: 'templateTagsJson', value: '[]' },
+    { key: 'templateValuesJson', value: '{}' },
+    {
+      key: 'templateVariablesJson',
+      value: '{"date":"reviewed date","time":"reviewed time","datetime":"reviewed datetime"}',
+    },
+    { key: 'creationRequestId', value: 'new_id_generated_by_preview' },
     { key: 'sectionId', value: 'section-id' },
     { key: 'nodeId', value: 'node_a' },
     { key: 'targetNoteId', value: 'note_target' },
     { key: 'baseHash', value: 'hash_from_read' },
+    { key: 'propertySchemaId', value: 'schema_id_from_properties_read' },
+    { key: 'folderSchemaRevision', value: '0' },
+    { key: 'schemaRevision', value: '0' },
+    { key: 'propertiesRevision', value: '0' },
+    { key: 'propertyId', value: 'text_property_id_from_read' },
     { key: 'shareToken', value: 'share_xxx' },
     { key: 'folderCursor', value: '' },
     { key: 'tagCursor', value: '' },
@@ -63,6 +79,28 @@ const collection = {
 };
 
 const bodyExamples: Record<string, unknown> = {
+  TemplateCreation: {
+    folderId: '{{folderId}}',
+    templateId: '{{templateId}}',
+    snapshot: '{{templateSnapshot}}',
+    schemaId: '{{templateSchemaIdJson}}',
+    schemaRevision: '{{templateSchemaRevision}}',
+    title: 'Reviewed template instance',
+    tags: '{{templateTagsJson}}',
+    values: '{{templateValuesJson}}',
+    requestId: '{{creationRequestId}}',
+    variables: '{{templateVariablesJson}}',
+  },
+  SchemaMutationRequest: {
+    expectedRevision: '{{folderSchemaRevision}}',
+    mutation: { type: 'add', label: 'Summary', fieldType: 'text' },
+  },
+  PropertyPatch: {
+    schemaId: '{{propertySchemaId}}',
+    schemaRevision: '{{schemaRevision}}',
+    expectedRevision: '{{propertiesRevision}}',
+    values: { '{{propertyId}}': 'Property text' },
+  },
   CreateFolderRequest: { title: 'Harness evaluation', parentFolderId: '{{folderId}}' },
   CreateNoteRequest: {
     folderId: '{{folderId}}',
@@ -90,6 +128,7 @@ const bodyExamples: Record<string, unknown> = {
 
 const pathVariableExamples: Record<string, string> = {
   noteId: '{{noteId}}',
+  templateId: '{{templateId}}',
   folderId: '{{folderId}}',
   sectionId: '{{sectionId}}',
   nodeId: '{{nodeId}}',
@@ -130,7 +169,10 @@ function requestBody(operation: OpenApiOperation) {
   if (example === undefined) return undefined;
   return {
     mode: 'raw' as const,
-    raw: JSON.stringify(example, null, 2),
+    raw: JSON.stringify(example, null, 2).replace(
+      /"{{(folderSchemaRevision|schemaRevision|propertiesRevision|templateSchemaIdJson|templateSchemaRevision|templateTagsJson|templateValuesJson|templateVariablesJson)}}"/g,
+      '{{$1}}'
+    ),
     options: { raw: { language: 'json' as const } },
   };
 }
@@ -139,6 +181,14 @@ function testScript(operationId?: string) {
   const exec = [
     "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
   ];
+  if (operationId === 'listAssignedTemplates')
+    exec.push(
+      "const body = pm.response.json(); if (body.templates?.[0]?.id) pm.collectionVariables.set('templateId',body.templates[0].id);"
+    );
+  if (operationId === 'previewAssignedTemplate')
+    exec.push(
+      "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('templateSnapshot',body.snapshot); pm.collectionVariables.set('templateSchemaIdJson',JSON.stringify(body.schema.schemaId)); pm.collectionVariables.set('templateSchemaRevision',String(body.schema.revision)); pm.collectionVariables.set('templateTagsJson',JSON.stringify(body.tags)); pm.collectionVariables.set('templateValuesJson',JSON.stringify(body.values)); const now = new Date(), date = now.toLocaleDateString(), time = now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); pm.collectionVariables.set('templateVariablesJson',JSON.stringify({date,time,datetime:date+' '+time})); pm.collectionVariables.set('creationRequestId',pm.variables.replaceIn('{{$guid}}')); }"
+    );
   if (operationId === 'searchNotes') {
     exec.push(
       "const body = pm.response.json(); if (body.notes?.[0]?.id) pm.collectionVariables.set('noteId', body.notes[0].id);"
@@ -154,9 +204,23 @@ function testScript(operationId?: string) {
       "const body = pm.response.json(); if (body.folder?.id) pm.collectionVariables.set('folderId', body.folder.id);"
     );
   }
-  if (['createNote', 'createCanvas', 'createCanvasFromSyntax', 'getNote'].includes(operationId ?? '')) {
+  if (
+    ['createFromTemplate', 'createNote', 'createCanvas', 'createCanvasFromSyntax', 'getNote'].includes(
+      operationId ?? ''
+    )
+  ) {
     exec.push(
       "const body = pm.response.json(); if (body.note?.id) pm.collectionVariables.set('noteId', body.note.id);"
+    );
+  }
+  if (['readFolderProperties', 'mutateFolderProperties'].includes(operationId ?? '')) {
+    exec.push(
+      "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+    );
+  }
+  if (['readNoteProperties', 'patchNoteProperties'].includes(operationId ?? '')) {
+    exec.push(
+      "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('propertySchemaId', body.schema.schemaId ?? ''); pm.collectionVariables.set('schemaRevision', String(body.schema.revision)); pm.collectionVariables.set('propertiesRevision', String(body.revision)); const text = body.schema.definitions.find(field => field.type === 'text' && !field.archived); if (text) pm.collectionVariables.set('propertyId', text.id); }"
     );
   }
   if (operationId === 'getNote') {
