@@ -7,6 +7,7 @@
     "dev": "ENVIRONMENT=local TURSO_DB_URL=file:$PWD/local.db sst dev --mode=mono",
     "dev:sst": "ENVIRONMENT=local TURSO_DB_URL=file:$PWD/local.db sst dev",
     "dev:web": "vite --host 0.0.0.0 --port 5173 --strictPort",
+    "board:demo": "tsx scripts/board-demo.ts",
     "build": "vite build",
     "deploy": "sst deploy",
     "deploy:dev": "ENVIRONMENT=development sst deploy --stage dev",

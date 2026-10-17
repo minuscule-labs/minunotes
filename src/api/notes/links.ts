@@ -1,7 +1,11 @@
 import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { getMinuNotesNodeLink } from '../../shared/canvas-links';
 import { NOTE_ID_PATTERN, normalizeWikilinkTitle, parseWikilinks } from '../../shared/wikilinks';
-import { db } from '../db/client';
+import { db as defaultDb } from '../db/client';
+import type { MetadataExecutor } from './metadata-transaction';
+
+const db = defaultDb;
+
 import { noteLinks, notes } from '../db/schema';
 import {
   collaborationAccessibleNoteWhere,
@@ -162,7 +166,11 @@ export function parseCanvasNoteLinks(content: string): ParsedNoteLink[] {
   return links;
 }
 
-async function resolveUniqueTargetNote(input: { userId: string; sourceNoteId: string; targetTitle: string }) {
+async function resolveUniqueTargetNote(
+  input: { userId: string; sourceNoteId: string; targetTitle: string },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const normalized = normalizeNoteTitle(input.targetTitle);
   const rows = await db
     .select({ id: notes.id })
@@ -173,7 +181,11 @@ async function resolveUniqueTargetNote(input: { userId: string; sourceNoteId: st
   return candidates.length === 1 ? candidates[0].id : null;
 }
 
-async function resolveTargetNoteById(input: { userId: string; sourceNoteId: string; targetNoteId: string }) {
+async function resolveTargetNoteById(
+  input: { userId: string; sourceNoteId: string; targetNoteId: string },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   if (input.targetNoteId === input.sourceNoteId) return null;
   const [target] = await db
     .select({ id: notes.id, title: notes.title })
@@ -183,12 +195,16 @@ async function resolveTargetNoteById(input: { userId: string; sourceNoteId: stri
   return target ?? null;
 }
 
-export async function reindexNoteLinks(input: {
-  userId: string;
-  noteId: string;
-  markdown: string;
-  documentType?: string;
-}) {
+export async function reindexNoteLinks(
+  input: {
+    userId: string;
+    noteId: string;
+    markdown: string;
+    documentType?: string;
+  },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const parsed = input.documentType?.startsWith('canvas.')
     ? parseCanvasNoteLinks(input.markdown)
     : parseNoteLinks(input.markdown);
@@ -199,20 +215,26 @@ export async function reindexNoteLinks(input: {
   const values = [];
   for (const link of parsed) {
     const target = link.targetNoteId
-      ? await resolveTargetNoteById({
-          userId: input.userId,
-          sourceNoteId: input.noteId,
-          targetNoteId: link.targetNoteId,
-        })
+      ? await resolveTargetNoteById(
+          {
+            userId: input.userId,
+            sourceNoteId: input.noteId,
+            targetNoteId: link.targetNoteId,
+          },
+          executor
+        )
       : null;
     const targetNoteId =
       target?.id ??
       (link.linkType === 'wikilink'
-        ? await resolveUniqueTargetNote({
-            userId: input.userId,
-            sourceNoteId: input.noteId,
-            targetTitle: link.targetTitle,
-          })
+        ? await resolveUniqueTargetNote(
+            {
+              userId: input.userId,
+              sourceNoteId: input.noteId,
+              targetTitle: link.targetTitle,
+            },
+            executor
+          )
         : null);
     values.push({
       id: createId('note_link'),
@@ -230,7 +252,11 @@ export async function reindexNoteLinks(input: {
   return { links: values };
 }
 
-export async function resolveUnresolvedNoteLinks(input: { userId: string; title: string; noteId: string }) {
+export async function resolveUnresolvedNoteLinks(
+  input: { userId: string; title: string; noteId: string },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const normalized = normalizeNoteTitle(input.title);
   const candidates = await db
     .select({ id: notes.id })

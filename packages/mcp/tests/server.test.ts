@@ -4,11 +4,32 @@ import { createNotesMcpServer } from '../src/server';
 function mockClient() {
   return {
     folders: {
+      templates: vi.fn(async () => ({ templates: [{ id: 'template-1', title: 'Feature' }] })),
+      templatePreview: vi.fn(async () => ({
+        snapshot: 'snapshot',
+        schema: { schemaId: null, revision: 0, definitions: [] },
+        tags: [],
+        values: {},
+        template: { id: 'template-1', title: 'Feature', body: '{{title}}' },
+      })),
+      properties: vi.fn(async () => ({ schemaId: 'schema-1', revision: 1, definitions: [] })),
+      mutateProperties: vi.fn(async () => ({ schemaId: 'schema-1', revision: 2, definitions: [] })),
       list: vi.fn(async () => ({ folders: [{ id: 'folder-1' }] })),
       create: vi.fn(async () => ({ folder: { id: 'folder-2' } })),
       trash: vi.fn(async () => ({ ok: true, folderCount: 1, noteCount: 0 })),
     },
     notes: {
+      fromTemplate: vi.fn(async () => ({ note: { id: 'created' }, replayed: false })),
+      properties: vi.fn(async () => ({
+        schema: { schemaId: 'schema-1', revision: 1, definitions: [] },
+        revision: 1,
+        values: {},
+      })),
+      patchProperties: vi.fn(async () => ({
+        schema: { schemaId: 'schema-1', revision: 1, definitions: [] },
+        revision: 2,
+        values: {},
+      })),
       search: vi.fn(async () => ({ notes: [{ id: 'note-1' }] })),
       get: vi.fn(async () => ({ note: { id: 'note-1', title: 'Note', content: 'Body' }, contentHash: 'hash' })),
       create: vi.fn(async () => ({ note: { id: 'note-2' }, contentHash: 'hash' })),
@@ -61,11 +82,73 @@ function tools(server: unknown) {
 }
 
 describe('createNotesMcpServer', () => {
+  it('delegates properties with independent revisions and structured results', async () => {
+    const client = mockClient();
+    const registered = tools(createNotesMcpServer(client as never));
+    const patch = {
+      noteId: 'note-1',
+      schemaId: 'schema-1',
+      schemaRevision: 1,
+      expectedRevision: 1,
+      values: { property_1: 'text', property_2: null },
+    };
+    const result = await registered.notes_patch_note_properties.handler(patch as never);
+    expect(client.notes.patchProperties).toHaveBeenCalledWith('note-1', {
+      schemaId: 'schema-1',
+      schemaRevision: 1,
+      expectedRevision: 1,
+      values: patch.values,
+    });
+    expect(result).toMatchObject({ structuredContent: { result: { revision: 2 } } });
+    await registered.notes_mutate_folder_properties.handler({
+      folderId: 'folder-1',
+      expectedRevision: 1,
+      mutation: { type: 'rename', propertyId: 'property_1', label: 'Summary' },
+    } as never);
+    expect(client.folders.mutateProperties).toHaveBeenCalledWith('folder-1', {
+      expectedRevision: 1,
+      mutation: { type: 'rename', propertyId: 'property_1', label: 'Summary' },
+    });
+    client.notes.patchProperties.mockRejectedValueOnce(new Error('409 conflict'));
+    await expect(registered.notes_patch_note_properties.handler(patch as never)).rejects.toThrow('409');
+  });
+  it('forwards reviewed template tokens and frozen payload with idempotent annotations', async () => {
+    const client = mockClient(),
+      registered = tools(createNotesMcpServer(client as never));
+    await registered.notes_list_assigned_templates.handler({ folderId: 'folder-1' } as never);
+    await registered.notes_preview_assigned_template.handler({
+      folderId: 'folder-1',
+      templateId: 'template-1',
+    } as never);
+    const input = {
+      folderId: 'folder-1',
+      templateId: 'template-1',
+      snapshot: 'snapshot',
+      schemaId: null,
+      schemaRevision: 0,
+      title: 'Final',
+      tags: [],
+      values: {},
+      requestId: 'frozen-request',
+      variables: { date: 'd', time: 't', datetime: 'dt' },
+    };
+    const result = await registered.notes_create_from_template.handler(input as never);
+    expect(client.notes.fromTemplate).toHaveBeenCalledWith(input);
+    expect(client.folders.templatePreview).toHaveBeenCalledWith('folder-1', 'template-1');
+    expect(result).toMatchObject({ structuredContent: { result: { note: { id: 'created' } } } });
+    expect(registered.notes_create_from_template.annotations).toMatchObject({
+      idempotentHint: true,
+      destructiveHint: false,
+    });
+  });
   it('registers expected tools with standard annotations', () => {
     const server = createNotesMcpServer(mockClient() as never);
     const registered = tools(server);
 
     expect(Object.keys(registered)).toEqual([
+      'notes_list_assigned_templates',
+      'notes_preview_assigned_template',
+      'notes_create_from_template',
       'notes_list_folders',
       'notes_create_folder',
       'notes_trash_folder',
@@ -99,6 +182,10 @@ describe('createNotesMcpServer', () => {
       'notes_list_tags',
       'notes_read_note_tags',
       'notes_replace_note_tags',
+      'notes_read_folder_properties',
+      'notes_mutate_folder_properties',
+      'notes_read_note_properties',
+      'notes_patch_note_properties',
     ]);
     expect(Object.keys(registered).filter((name) => /restore|permanent.*delete/i.test(name))).toEqual([]);
     expect(registered.notes_list_folders.description).toContain('explicitly scoped shared folders');
@@ -108,6 +195,13 @@ describe('createNotesMcpServer', () => {
     expect(registered.notes_get_note.description).toContain('Do not read solely to inspect permissions');
     expect(registered.notes_get_note.description).toContain('inaccessible, revoked, or trashed');
     expect(registered.notes_create_note.description).toContain('without reading unrelated notes');
+    expect(registered.notes_create_note.description).toContain('do not invent tags');
+    expect(registered.notes_read_folder_properties.description).toContain('stable property/option IDs');
+    expect(registered.notes_read_folder_properties.description).toContain('Ask when missing');
+    expect(registered.notes_mutate_folder_properties.description).toContain('only when explicitly requested');
+    expect(registered.notes_patch_note_properties.description).toContain('not labels');
+    expect(registered.notes_replace_note_tags.description).toContain('preserve stored and reviewed template tags');
+    expect(registered.notes_create_from_template.description).toContain('Honor reviewed template tags');
     expect(registered.notes_move_notes.description).toContain('Shared-resource structure is owner-only');
     expect(registered.notes_list_folders.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
     expect(registered.notes_create_folder.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });

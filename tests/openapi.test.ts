@@ -1,7 +1,78 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import app from '../src/api/index';
 
 describe('harness OpenAPI spec', () => {
+  it('describes Select regrouping and archive guards without adding board endpoints', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    const patch = spec.paths['/v1/harness/notes/{noteId}/properties'].patch.description;
+    expect(patch).toContain('Select-backed boards regroup on refresh');
+    expect(patch).toContain('no board writes or tag synchronization');
+    expect(spec.paths['/v1/harness/folders/{folderId}/properties'].patch.description).toContain(
+      'Disable/switch an enabled board'
+    );
+    expect(spec.paths['/v1/harness/notes/from-template'].post.description).not.toContain('remains tag-backed');
+    expect(Object.keys(spec.paths).some((path) => path.includes('/board'))).toBe(false);
+  });
+  it('guides agents toward defined properties without removing tag tools, permissions or reviewed defaults', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    expect(spec.paths['/v1/harness/folders/{folderId}/properties'].get.description).toContain(
+      'stable property/option IDs'
+    );
+    expect(spec.paths['/v1/harness/folders/{folderId}/properties'].get.description).toContain('Ask when missing');
+    expect(spec.paths['/v1/harness/folders/{folderId}/properties'].patch.description).toContain(
+      'only when explicitly requested'
+    );
+    expect(spec.paths['/v1/harness/notes'].post.description).toContain('Do not invent tags');
+    expect(spec.paths['/v1/harness/notes/{noteId}/tags'].put.description).toContain('preserve stored/template tags');
+    expect(spec.paths['/v1/harness/notes/from-template'].post.description).toContain('Honor reviewed template tags');
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const descriptions = JSON.stringify(collection);
+    expect(descriptions).toContain('Do not invent tags');
+    expect(descriptions).toContain('preserve stored/template tags');
+  });
+  it('template review/create examples preserve frozen tokens and parse numeric/null/JSON placeholders', async () => {
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const group = collection.item.find((i: { name: string }) => i.name === 'Templates');
+    expect(group.item).toHaveLength(3);
+    const create = group.item.find((i: { request: { method: string } }) => i.request.method === 'POST');
+    const vars = Object.fromEntries(collection.variable.map((v: { key: string; value: string }) => [v.key, v.value]));
+    const payload = JSON.parse(create.request.body.raw.replace(/{{([^}]+)}}/g, (_: string, key: string) => vars[key]));
+    expect(payload).toMatchObject({
+      schemaId: null,
+      schemaRevision: 0,
+      tags: [],
+      values: {},
+      variables: { date: 'reviewed date' },
+    });
+    expect(create.request.description).toContain('SAME request ID');
+    const response = await app.request('/openapi.json'),
+      spec = await response.json();
+    for (const path of [
+      '/v1/harness/folders/{folderId}/templates',
+      '/v1/harness/folders/{folderId}/templates/{templateId}/preview',
+      '/v1/harness/notes/from-template',
+    ])
+      expect(spec.paths).toHaveProperty(path);
+    expect(spec.components.schemas.TemplatePreview.properties).not.toHaveProperty('folderId');
+    expect(spec.components.schemas.TemplatePreview.properties).not.toHaveProperty('userId');
+    expect(spec.components.schemas.TemplateCreation.properties).not.toHaveProperty('body');
+  });
+  it('generated properties PATCH examples use independent numeric CAS placeholders, not body hashes', async () => {
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const properties = collection.item.find((item: { name: string }) => item.name === 'Properties');
+    expect(properties.item).toHaveLength(4);
+    const patches = properties.item.filter((item: { request: { method: string } }) => item.request.method === 'PATCH');
+    expect(patches).toHaveLength(2);
+    for (const item of patches) {
+      expect(item.request.body.raw).toContain('expectedRevision');
+      expect(item.request.body.raw).not.toContain('baseHash');
+      const expanded = item.request.body.raw.replace(/{{[^}]+}}/g, (key: string) =>
+        key.includes('Revision') ? '0' : 'example'
+      );
+      expect(JSON.parse(expanded).expectedRevision).toBe(0);
+    }
+  });
   it('serves the harness OpenAPI document', async () => {
     const response = await app.request('/openapi.json');
 
@@ -32,6 +103,12 @@ describe('harness OpenAPI spec', () => {
       in: 'header',
       name: 'X-API-Key',
     });
+    expect(spec.paths).toHaveProperty('/v1/harness/folders/{folderId}/properties');
+    expect(spec.paths).toHaveProperty('/v1/harness/notes/{noteId}/properties');
+    expect(spec.components.schemas.PropertyPatch?.properties).toHaveProperty('schemaId');
+    expect(spec.components.schemas.NoteProperties?.properties).not.toHaveProperty('folderId');
+    expect(spec.components.schemas.NoteProperties?.properties).not.toHaveProperty('userId');
+    expect(spec.components.schemas.PublicSharedNoteResponse?.properties).not.toHaveProperty('properties');
     expect(spec.paths).toHaveProperty('/v1/harness/folders');
     expect(spec.paths).toHaveProperty('/v1/harness/notes/{noteId}/edit');
     expect(spec.paths).toHaveProperty('/v1/harness/notes/orphans');

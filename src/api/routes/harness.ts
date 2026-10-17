@@ -1,5 +1,6 @@
 import { eq, inArray } from 'drizzle-orm';
 import { type Context, Hono } from 'hono';
+import { PropertyError } from '../../shared/properties';
 import { db } from '../db/client';
 import {
   type ApiKey,
@@ -70,6 +71,7 @@ import {
 } from '../lib/folder-access';
 import { createId } from '../lib/id';
 import { type AuthorizationCapability, capabilitiesAllow } from '../lib/integration-authorization';
+import { createRequestSizeLimitMiddleware } from '../middleware/request-limits';
 import {
   addCommentReply,
   type CommentActor,
@@ -90,7 +92,15 @@ import {
   parseCanvasNoteLinks,
   sanitizeCanvasNoteLinksForVisibleTargets,
 } from '../notes/links';
+import {
+  mutateFolderProperties,
+  type PropertyActor,
+  patchNoteProperties,
+  readFolderProperties,
+  readNoteProperties,
+} from '../notes/properties';
 import { listIntegrationAccessibleTags, listNoteTags, listUserTags, setNoteTags } from '../notes/tags';
+import { createFromTemplate, listAssignedTemplates, previewAssignedTemplate } from '../notes/templates';
 import { trashFolder, trashNote } from '../trash/operations';
 
 type Variables = {
@@ -990,6 +1000,94 @@ harnessRoutes.post('/notes/move', async (c) => {
     targetFolderId: body.targetFolderId,
     notes: result.value.notes.map((item) => summarizeHarnessNote(item.note)),
   });
+});
+
+function propertyActor(c: Context<{ Variables: Variables }>): PropertyActor {
+  const user = getUser(c);
+  if (!user) throw new PropertyError('Unauthorized', 403);
+  const integration = getIntegrationAuthorization(c);
+  return {
+    actorUserId: user.id,
+    ...getActor(c),
+    authorizationId: integration?.authorizationId,
+    credentialCapabilities: integration?.actor,
+  };
+}
+harnessRoutes.get('/folders/:folderId/templates', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json({ templates: await listAssignedTemplates(propertyActor(c), c.req.param('folderId')) });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.get('/folders/:folderId/templates/:templateId/preview', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await previewAssignedTemplate(propertyActor(c), c.req.param('folderId'), c.req.param('templateId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.use('/notes/from-template', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+harnessRoutes.post('/notes/from-template', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const result = await createFromTemplate(propertyActor(c), await c.req.json().catch(() => null));
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
+harnessRoutes.use('/folders/:folderId/properties', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+harnessRoutes.use('/notes/:noteId/properties', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+harnessRoutes.get('/folders/:folderId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readFolderProperties(propertyActor(c), c.req.param('folderId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.patch('/folders/:folderId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await mutateFolderProperties(propertyActor(c), c.req.param('folderId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.get('/notes/:noteId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readNoteProperties(propertyActor(c), c.req.param('noteId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.patch('/notes/:noteId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await patchNoteProperties(propertyActor(c), c.req.param('noteId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
 });
 
 harnessRoutes.get('/notes/:noteId/tags', async (c) => {

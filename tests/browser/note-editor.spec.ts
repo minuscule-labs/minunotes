@@ -1,5 +1,57 @@
 import { expect, test } from '@playwright/test';
 import { browserFixture, mockBrowserApi } from './fixtures';
+import { mockProperties } from './properties-fixtures';
+
+test('Markdown keeps inline properties and its saved body while popup metadata editing uses the same state', async ({
+  page,
+}) => {
+  const f = await mockProperties(page);
+  let bodyReads = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'GET' && new URL(request.url()).pathname === `/internal/notes/${browserFixture.source.id}`)
+      bodyReads++;
+  });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  const inline = page.locator('summary').filter({ hasText: /^Properties$/ });
+  await expect(inline).toBeVisible();
+  await inline.click();
+  const editor = page.locator('.cm-content');
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.type(' Body work.');
+  await f.body.expectSavedContent('Start here. Body work.');
+  const saves = f.body.saveRequests.length;
+  await page.getByRole('button', { name: 'Open note actions', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Source mode', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Properties', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Properties', exact: true });
+  await modal.getByLabel('Summary', { exact: true }).fill('Same note metadata');
+  await modal.getByLabel('Summary', { exact: true }).press('Tab');
+  await expect.poll(() => f.saves.length).toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate((id) => sessionStorage.getItem(`minunotes:properties-draft:${id}`), browserFixture.source.id)
+    )
+    .toBeNull();
+  await modal.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(modal).toHaveCount(0);
+  await expect(inline).toBeVisible();
+  await expect(page.getByLabel('Summary', { exact: true })).toHaveValue('Same note metadata');
+  await expect(editor).toContainText('Start here. Body work.');
+  expect(f.body.saveRequests).toHaveLength(saves);
+  expect(bodyReads).toBe(1);
+  expect(f.patches[0]).not.toHaveProperty('baseHash');
+});
+
+test('template action menus retain their existing actions without the note-properties modal', async ({ page }) => {
+  await mockProperties(page);
+  await page.goto(`/notes/${browserFixture.template.id}`);
+  await page.getByRole('button', { name: 'Open note actions', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Properties', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Source mode', exact: true })).toBeVisible();
+});
 
 test('autosaves editor content and preserves it after reload', async ({ page }) => {
   const api = await mockBrowserApi(page);

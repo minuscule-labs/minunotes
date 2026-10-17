@@ -87,12 +87,25 @@ function createHostedMcpClient(authState: {
 
   return {
     folders: {
+      templates: (folderId) => request(`/folders/${encodeURIComponent(folderId)}/templates`),
+      templatePreview: (folderId, templateId) =>
+        request(`/folders/${encodeURIComponent(folderId)}/templates/${encodeURIComponent(templateId)}/preview`),
+      properties: (folderId) => request(`/folders/${encodeURIComponent(folderId)}/properties`),
+      mutateProperties: (folderId, input) =>
+        request(`/folders/${encodeURIComponent(folderId)}/properties`, {
+          method: 'PATCH',
+          body: JSON.stringify(input),
+        }),
       list: (input = {}) => request(`/folders${toQueryString(input)}`),
       create: ({ title, parentFolderId }) =>
         request('/folders', { method: 'POST', body: JSON.stringify({ title, parentFolderId }) }),
       trash: (folderId) => request(`/folders/${encodeURIComponent(folderId)}/trash`, { method: 'POST' }),
     },
     notes: {
+      fromTemplate: (input) => request('/notes/from-template', { method: 'POST', body: JSON.stringify(input) }),
+      properties: (noteId) => request(`/notes/${encodeURIComponent(noteId)}/properties`),
+      patchProperties: (noteId, input) =>
+        request(`/notes/${encodeURIComponent(noteId)}/properties`, { method: 'PATCH', body: JSON.stringify(input) }),
       search: (input) =>
         request(
           `/notes/search${toQueryString({ q: input.query, tag: input.tag, limit: input.limit, cursor: input.cursor })}`

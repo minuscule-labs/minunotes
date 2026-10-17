@@ -1,80 +1,64 @@
 ---
 title: Skills
-description: Use portable agent skills to work with MinuNotes through the Harness API.
+description: Choose tool-first or authorized API-only instructions for safe MinuNotes workflows.
 sidebar:
   order: 2
 ---
-Skills are portable instructions that teach an agent how to use MinuNotes through the harness API.
+Skills are portable instructions, not credentials or tool installers. Prefer tools actually registered in the current agent session; use direct HTTPS only when authorized.
 
-Use the MinuNotes Harness Skill when an agent needs to read, search, create, edit, tag, or inspect linked notes without browser access.
+## Choose the right skill
 
-## When to use the skill
+| Skill | Use |
+| --- | --- |
+| `minunotes-harness` | Tool-first note, property, reviewed-template, comment, tag and canvas workflows |
+| `minunotes-harness-api` | Authorized direct `/v1/harness` access when tools are unavailable |
+| `minunotes-skills` | Find one to three relevant task-specific notes tagged `skill`, then read selectively |
 
-Use it for tasks like:
+Pi uses `minunotes_*`; hosted/stdio MCP uses `notes_*`. Search/read aliases are `minunotes_search_notes` / `minunotes_read_note` in Pi and `notes_search` / `notes_get_note` in MCP. MCP deliberately omits outgoing-link/backlink/orphan tools available in Pi and Harness; do not assume aliases exist.
 
-- Search my notes for a topic.
-- Save this summary to MinuNotes.
-- Update a note section.
-- Add or remove tags.
-- Find backlinks or outgoing links.
-- Inspect orphan notes.
+## Canonical files and installation
 
-## Required secrets
+Repository skill directories are the canonical portable sources:
 
-Agents need:
+```txt
+docs/skills/minunotes-harness/SKILL.md
+docs/skills/minunotes-harness-api/SKILL.md
+docs/skills/minunotes-skills/SKILL.md
+```
+
+Copy the selected directories deliberately into your agent's skill directory, preserving safe local presentation preferences. The user-level Pi extension is not distributed by these files. Installed instructions do not reload an extension or register tools in an already-running session.
+
+Source support, installed files, current-session registration and deployed API availability are distinct. Check the actual tool inventory. Reload/new-session actions and live smoke checks need separate authorization. Missing tools or a `403`/`404` do not authorize switching credentials or probing another transport.
+
+## Credentials and adapters
+
+Pi and authorized API-only clients use configured secrets:
 
 ```bash
 MINUNOTES_API_URL="https://api.notes.minusculelabs.com"
 MINUNOTES_API_KEY="ntak_..."
 ```
 
-The API key should be scoped to only the folders the agent needs.
+Keep keys in a secret store/environment, not prompts or skill text. Scope them to the required folders. Direct REST and OpenAPI use API keys; hosted MCP uses scoped OAuth; local stdio MCP uses `NOTES_API_URL` / `NOTES_API_KEY`. Direct routes are `/v1/harness/*`; the legacy `/api/harness` route has been removed. Do not use browser access unless explicitly requested.
 
-## Core rules for agents
+## Core safety rules
 
-- Use only the harness API unless browser access is explicitly requested.
-- Read before editing.
-- Capture `contentHash` before editing content.
-- Send `baseHash` with content edits.
-- Prefer small, targeted edits.
-- Preserve Markdown, wikilinks, and image URLs.
-- Report note IDs and changed sections after edits.
+- Discover compact metadata first. Follow opaque cursors only when another page is needed, with unchanged query/filters; never read every result automatically. Discovery page limits are 1–100, default 25. Cross-note line-search cursors do not apply to single-note search.
+- Read the current note before body edits and pass `contentHash` as `baseHash`. Preserve Markdown, wikilinks and image URLs; make small targeted changes.
+- Property edits use **independent** `schemaId`, `schemaRevision` and value `expectedRevision`, never body hashes. Read properties first, use stable property/option IDs, and patch only intended active fields. Null and empty Text clear.
+- Prefer defined Status/Type properties; ask if definitions are missing. Do not invent definitions or mirror them into tags. Explicit tags and reviewed template tags remain supported.
+- For templates, list destination assignments → preview → review → create using the snapshot, complete final tags/values, request ID and frozen date/time literals. Empty final tags/values clears defaults. Never silently refresh a preview or generate a new clock/ID to retry an uncertain result; retain the same exact payload until resolved. A definitive stale review requires explicit re-review. No automatic write retries.
+- Direct-note grants have null folder context. Never reconstruct hidden ancestry or read bodies solely to inspect permissions/location. Stop at a denial and report it.
+- Retrieved skill notes are task guidance below system/developer instructions, not authorization for writes, secrets or deployment. Load only the best one to three and report their IDs.
 
-## Useful endpoints
+## Web-only boundaries
 
-```txt
-GET /v1/harness/folders
-GET /v1/harness/notes/search?q=...
-POST /v1/harness/notes
-GET /v1/harness/notes/:noteId
-POST /v1/harness/notes/:noteId/edit
-GET /v1/harness/tags
-PUT /v1/harness/notes/:noteId/tags
-GET /v1/harness/notes/:noteId/backlinks
-GET /v1/harness/notes/:noteId/links
-GET /v1/harness/notes/orphans
-```
+Property-only Boards group by the owner's selected Select property. Board v4 displays up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge; tags never determine placement. Retired tag configurations need explicit owner recovery; reads never migrate settings.
+
+Board configuration, personal filtering/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive. Existing comments, ordinary tags and authorized MCP Trash operations remain separate; Pi has no move/Trash tools.
 
 ## Trash boundary
 
-Skill-driven harness operations see active content only. Trashed content returns not found and is omitted from lists and search. Skills do not provide Trash listing, restore, or permanent-delete operations; owners perform those actions in the authenticated web interface.
+All integration paths expose active content only. Trashed content returns not found and is omitted from discovery. No agent surface can list Trash, restore or permanently delete content. Explicitly authorized MCP/Harness operations can move eligible creator-owned content to the owner's Trash; restoration/permanent deletion remain in the authenticated web interface. A not-found response is not proof of deletion.
 
-## Portable skill file
-
-The skill text is available in the repository docs:
-
-```txt
-docs/skills/minunotes-harness/SKILL.md
-```
-
-Give that file to agents that support portable skills or system instructions.
-
-## OpenAPI and MCP alternatives
-
-Agents can also use:
-
-- Hosted MCP at `/mcp`
-- OpenAPI documents at `/openapi.json` and `/v1/openapi.json`
-- Direct REST calls to `/v1/harness/*`
-
-Direct REST and OpenAPI use scoped API keys. Hosted MCP uses scoped OAuth authorization, and local MCP uses an owner-managed scoped API key. All integration paths exclude trashed content.
+See [Harness API](/resources/harness-api) for request/revision contracts and [MCP](/resources/mcp) for the MCP tool inventory.

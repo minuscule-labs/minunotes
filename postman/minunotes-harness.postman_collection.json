@@ -23,6 +23,38 @@
       "value": "note_xxx"
     },
     {
+      "key": "templateId",
+      "value": "template_id_from_assigned_list"
+    },
+    {
+      "key": "templateSnapshot",
+      "value": "snapshot_from_preview"
+    },
+    {
+      "key": "templateSchemaIdJson",
+      "value": "null"
+    },
+    {
+      "key": "templateSchemaRevision",
+      "value": "0"
+    },
+    {
+      "key": "templateTagsJson",
+      "value": "[]"
+    },
+    {
+      "key": "templateValuesJson",
+      "value": "{}"
+    },
+    {
+      "key": "templateVariablesJson",
+      "value": "{\"date\":\"reviewed date\",\"time\":\"reviewed time\",\"datetime\":\"reviewed datetime\"}"
+    },
+    {
+      "key": "creationRequestId",
+      "value": "new_id_generated_by_preview"
+    },
+    {
       "key": "sectionId",
       "value": "section-id"
     },
@@ -37,6 +69,26 @@
     {
       "key": "baseHash",
       "value": "hash_from_read"
+    },
+    {
+      "key": "propertySchemaId",
+      "value": "schema_id_from_properties_read"
+    },
+    {
+      "key": "folderSchemaRevision",
+      "value": "0"
+    },
+    {
+      "key": "schemaRevision",
+      "value": "0"
+    },
+    {
+      "key": "propertiesRevision",
+      "value": "0"
+    },
+    {
+      "key": "propertyId",
+      "value": "text_property_id_from_read"
     },
     {
       "key": "shareToken",
@@ -81,15 +133,8 @@
             "description": "Run this first. The test script stores the first result id in the noteId collection variable.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/search?q=project",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "search"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "search"],
               "query": [
                 {
                   "key": "q",
@@ -127,15 +172,8 @@
             "description": "Expands the selected compact search result and stores its contentHash for safe edits.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}"]
             }
           },
           "event": [
@@ -147,6 +185,260 @@
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
                   "const body = pm.response.json(); if (body.note?.id) pm.collectionVariables.set('noteId', body.note.id);",
                   "const body = pm.response.json(); if (body.contentHash) pm.collectionVariables.set('baseHash', body.contentHash);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Templates",
+      "item": [
+        {
+          "name": "List assigned templates",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Destination create and read capability required, including credential ceiling and collaboration folder scope. Returns only assigned ID/title summaries; no template library, private storage folder or owner IDs. Note-only grants cannot discover templates.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "templates"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (body.templates?.[0]?.id) pm.collectionVariables.set('templateId',body.templates[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Preview assigned template",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Destination-scoped assigned Markdown body/defaults and active destination schema. Requires eligible creation and normal agent read/private restrictions. Snapshot covers body/title/defaults/assignment identity, never grants access. Preserve the original four variables only, freezing date/time/datetime literals during review.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/templates/{{templateId}}/preview",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "templates", "{{templateId}}", "preview"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('templateSnapshot',body.snapshot); pm.collectionVariables.set('templateSchemaIdJson',JSON.stringify(body.schema.schemaId)); pm.collectionVariables.set('templateSchemaRevision',String(body.schema.revision)); pm.collectionVariables.set('templateTagsJson',JSON.stringify(body.tags)); pm.collectionVariables.set('templateValuesJson',JSON.stringify(body.values)); const now = new Date(), date = now.toLocaleDateString(), time = now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); pm.collectionVariables.set('templateVariablesJson',JSON.stringify({date,time,datetime:date+' '+time})); pm.collectionVariables.set('creationRequestId',pm.variables.replaceIn('{{$guid}}')); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create from reviewed template",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "One atomic/idempotent ordinary Markdown note with complete final tags and property values, including explicit empty clears. Honor reviewed template tags; do not clear them because card chips are hidden or invent tags/fields/options. Destination owner retains ownership; authenticated actor provenance is preserved. Requires create, not source edit permission. Rechecks ACL/assignment/snapshot/schema in the transaction. No client-supplied replacement body. Retry uncertain or busy results with the SAME request ID and exact frozen payload. Completed retries return the original without requiring current defaults; inaccessible/moved/trashed/deleted notes are unavailable and never recreated. Changed payload with the same actor/destination/request key conflicts. 256 KiB body bound; no automatic write retries. On refresh, property-only boards use the folder owner-selected Select property; tags and properties are never synchronized.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"folderId\": \"{{folderId}}\",\n  \"templateId\": \"{{templateId}}\",\n  \"snapshot\": \"{{templateSnapshot}}\",\n  \"schemaId\": {{templateSchemaIdJson}},\n  \"schemaRevision\": {{templateSchemaRevision}},\n  \"title\": \"Reviewed template instance\",\n  \"tags\": {{templateTagsJson}},\n  \"values\": {{templateValuesJson}},\n  \"requestId\": \"{{creationRequestId}}\",\n  \"variables\": {{templateVariablesJson}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/notes/from-template",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "from-template"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (body.note?.id) pm.collectionVariables.set('noteId', body.note.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Properties",
+      "item": [
+        {
+          "name": "Read folder property schema",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Folder-read permission required; direct-note grants do not grant folder access. Missing state is schemaId null, revision 0. Prefer defined properties for structured Status/Type labels; use stable property/option IDs, not labels. Ask when missing; do not invent fields, options or tags.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/properties",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "properties"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mutate folder property schema",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Owner-only controlled add, rename, reorder or archive. Change definitions only when explicitly requested; ask before inventing fields/options. Server-generated IDs and immutable field types. Existing edit scope and private/read-only-folder policy apply. Reorder includes every historical ID. Retained assignment defaults block archiving referenced fields/choices until explicitly cleared or removed, including templates in Trash. Disable/switch an enabled board before archiving its grouping property. No board configuration endpoint is provided.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"expectedRevision\": {{folderSchemaRevision}},\n  \"mutation\": {\n    \"type\": \"add\",\n    \"label\": \"Summary\",\n    \"fieldType\": \"text\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/properties",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "properties"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read note properties",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Requires note read permission. Only current active fields/values are projected; no resource-owner or containing-folder identifiers. Archived choices remain labeled. Normal Markdown/canvas/mind-map notes only; public shares omit properties.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/properties",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "properties"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('propertySchemaId', body.schema.schemaId ?? ''); pm.collectionVariables.set('schemaRevision', String(body.schema.revision)); pm.collectionVariables.set('propertiesRevision', String(body.revision)); const text = body.schema.definitions.find(field => field.type === 'text' && !field.archived); if (text) pm.collectionVariables.set('propertyId', text.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patch note properties",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Requires note edit permission and applicable agent API-editability. Use schemaId, schemaRevision and expectedRevision from a fresh properties read. Supplied active IDs only; null clears and empty Text clears. Archived/foreign IDs cannot be newly assigned. Retained out-of-folder values stay invisible. No-op writes emit no event; changed writes emit properties_update without body/hash/tag/version changes. Property-only UI-configured Select-backed boards regroup on refresh; no board writes or tag synchronization. Select values use stable option IDs from the schema, not labels. Prefer defined properties; do not mirror Status/Type into tags unless requested.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schemaId\": \"{{propertySchemaId}}\",\n  \"schemaRevision\": {{schemaRevision}},\n  \"expectedRevision\": {{propertiesRevision}},\n  \"values\": {\n    \"{{propertyId}}\": \"Property text\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/properties",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "properties"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('propertySchemaId', body.schema.schemaId ?? ''); pm.collectionVariables.set('schemaRevision', String(body.schema.revision)); pm.collectionVariables.set('propertiesRevision', String(body.revision)); const text = body.schema.definitions.find(field => field.type === 'text' && !field.archived); if (text) pm.collectionVariables.set('propertyId', text.id); }"
                 ]
               }
             }
@@ -171,14 +463,8 @@
             "description": "Returns cursor-paginated tags visible in the authorized folder scope.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/tags?limit=10&cursor={{tagCursor}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "tags"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "tags"],
               "query": [
                 {
                   "key": "limit",
@@ -219,16 +505,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/tags",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "tags"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "tags"]
             }
           },
           "event": [
@@ -254,6 +532,7 @@
                 "type": "text"
               }
             ],
+            "description": "Replace the complete tag set; omitted tags are removed. Use only explicit/reviewed tags and preserve stored/template tags unless removal is requested. Prefer defined properties for Status/Type; do not invent tags or mirror properties into tags unless requested. Hidden card chips do not authorize clearing tags.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"tags\": [\n    \"evaluation\"\n  ]\n}",
@@ -265,16 +544,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/tags",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "tags"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "tags"]
             }
           },
           "event": [
@@ -308,14 +579,8 @@
             "description": "Returns compact owned and explicitly scoped shared-folder metadata. Owner/database and grant identifiers are omitted; inaccessible ancestry and trashed folder subtrees are excluded.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/folders?limit=10&cursor={{folderCursor}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "folders"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders"],
               "query": [
                 {
                   "key": "limit",
@@ -366,14 +631,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/folders",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "folders"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders"]
             }
           },
           "event": [
@@ -403,16 +662,8 @@
             "description": "Destructive. Requires edit capability. Shared-folder Editors may move only a subtree created entirely by the authorizing user, excluding shared roots and owner-managed sharing configuration. Trash restore and permanent deletion remain owner-only.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/trash",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "folders",
-                "{{folderId}}",
-                "trash"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "trash"]
             }
           },
           "event": [
@@ -446,15 +697,8 @@
             "description": "Searches active owned and explicitly scoped shared notes. Returns compact metadata with privacy-safe role/source context but without note content. Direct-note grants return null folder context. Use the read-note, lines, or section endpoints to expand a selected note.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/search?q=project&tag=release-notes&limit=10&cursor={{searchCursor}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "search"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "search"],
               "query": [
                 {
                   "key": "q",
@@ -506,15 +750,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/orphans?limit=10&cursor={{orphanCursor}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "orphans"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "orphans"],
               "query": [
                 {
                   "key": "limit",
@@ -556,15 +793,8 @@
             "description": "Returns cursor-paginated matching lines and requested context. Cross-note matches omit repeated hashes and size metadata; use the note read endpoint for full content and the current hash.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/search-lines?q=project&folderId={{folderId}}&context=2&limit=10&cursor={{lineSearchCursor}}&caseSensitive=false",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "search-lines"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "search-lines"],
               "query": [
                 {
                   "key": "q",
@@ -623,6 +853,7 @@
                 "type": "text"
               }
             ],
+            "description": "Create net-new content without reading unrelated notes. For requested structured labels, prefer defined folder properties and stable IDs; ask when missing. Do not invent tags or mirror Status/Type into tags unless requested.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"folderId\": \"{{folderId}}\",\n  \"title\": \"Harness evaluation note\",\n  \"content\": \"# Harness evaluation note\\n\\nCreated through the Postman collection.\\n\"\n}",
@@ -634,14 +865,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes"]
             }
           },
           "event": [
@@ -680,15 +905,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/move",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "move"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "move"]
             }
           },
           "event": [
@@ -717,15 +935,8 @@
             "description": "Reads an owned or explicitly scoped shared note when its content is needed and returns privacy-safe role/source context. Do not read solely to inspect permissions. Direct-note grants return null folder context. Owner and grant database identifiers are never returned. Not found can also mean inaccessible, revoked, or trashed.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}"]
             }
           },
           "event": [
@@ -755,16 +966,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/events?limit=10",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "events"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "events"],
               "query": [
                 {
                   "key": "limit",
@@ -800,16 +1003,8 @@
             "description": "Returns links from the note, including unresolved wikilinks where targetNoteId is null.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/links",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "links"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "links"]
             }
           },
           "event": [
@@ -838,16 +1033,8 @@
             "description": "Returns notes that link to the target note with wikilinks or internal note URLs. Results are filtered to source notes visible to the current API key.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/backlinks",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "backlinks"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "backlinks"]
             }
           },
           "event": [
@@ -875,16 +1062,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/lines?from=1&to=80",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "lines"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "lines"],
               "query": [
                 {
                   "key": "from",
@@ -924,16 +1103,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/search-lines?q=project&context=2&limit=10&caseSensitive=false",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "search-lines"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "search-lines"],
               "query": [
                 {
                   "key": "q",
@@ -983,16 +1154,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/outline",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "outline"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "outline"]
             }
           },
           "event": [
@@ -1020,17 +1183,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/sections/{{sectionId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "sections",
-                "{{sectionId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "sections", "{{sectionId}}"]
             }
           },
           "event": [
@@ -1059,16 +1213,8 @@
             "description": "Destructive. Requires edit capability and API editability. Shared-folder Editors may move only notes created by the authorizing user. Direct-note grants and resources with owner-managed sharing configuration are denied. Trash restore and permanent deletion remain owner-only.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/trash",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "trash"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "trash"]
             }
           },
           "event": [
@@ -1105,16 +1251,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/edit",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "edit"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "edit"]
             }
           },
           "event": [
@@ -1156,14 +1294,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/canvases",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "canvases"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "canvases"]
             }
           },
           "event": [
@@ -1201,15 +1333,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/canvases/from-syntax",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "canvases",
-                "from-syntax"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "canvases", "from-syntax"]
             }
           },
           "event": [
@@ -1247,16 +1372,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/canvas",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "canvas"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "canvas"]
             }
           },
           "event": [
@@ -1294,19 +1411,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/canvas/nodes/{{nodeId}}/link-note",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "canvas",
-                "nodes",
-                "{{nodeId}}",
-                "link-note"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "canvas", "nodes", "{{nodeId}}", "link-note"]
             }
           },
           "event": [
@@ -1335,19 +1441,8 @@
             "description": "Removes only MinuNotes internal-link metadata. External node URLs and other metadata are preserved.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/canvas/nodes/{{nodeId}}/link?baseHash={{baseHash}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "canvas",
-                "nodes",
-                "{{nodeId}}",
-                "link"
-              ],
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "canvas", "nodes", "{{nodeId}}", "link"],
               "query": [
                 {
                   "key": "baseHash",
@@ -1391,17 +1486,8 @@
             },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/canvas/from-syntax",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "canvas",
-                "from-syntax"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "canvas", "from-syntax"]
             }
           },
           "event": [
@@ -1435,16 +1521,8 @@
             "description": "Lists Review threads on an active markdown note. Explicit Comment permission and read access to the note folder are required.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments"]
             }
           },
           "event": [
@@ -1473,16 +1551,8 @@
             "description": "Creates a thread and first message. Explicit Comment permission, read access, a current document hash, and an exact markdown anchor are required. Note edit permission is not required.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments"]
             }
           },
           "event": [
@@ -1511,17 +1581,8 @@
             "description": "The note owner or thread author may delete the complete thread.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}"]
             }
           },
           "event": [
@@ -1549,18 +1610,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/replies",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "replies"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "replies"]
             }
           },
           "event": [
@@ -1588,18 +1639,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/anchor",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "anchor"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "anchor"]
             }
           },
           "event": [
@@ -1627,18 +1668,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/resolve",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "resolve"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "resolve"]
             }
           },
           "event": [
@@ -1666,18 +1697,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/reopen",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "reopen"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "reopen"]
             }
           },
           "event": [
@@ -1706,19 +1727,8 @@
             "description": "Only the original message author may edit it.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/messages/{{messageId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "messages",
-                "{{messageId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "messages", "{{messageId}}"]
             }
           },
           "event": [
@@ -1747,19 +1757,8 @@
             "description": "Only the original author may delete a message. Deleting the root message deletes its thread.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/messages/{{messageId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "harness",
-                "notes",
-                "{{noteId}}",
-                "comments",
-                "{{threadId}}",
-                "messages",
-                "{{messageId}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments", "{{threadId}}", "messages", "{{messageId}}"]
             }
           },
           "event": [
@@ -1788,9 +1787,7 @@
             "description": "Adds the selected reaction for the current actor, or removes it when already present. Requires read and explicit Comment permission.",
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments/{{threadId}}/messages/{{messageId}}/reactions",
-              "host": [
-                "{{baseUrl}}"
-              ],
+              "host": ["{{baseUrl}}"],
               "path": [
                 "v1",
                 "harness",
@@ -1834,14 +1831,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/internal/share/{{shareToken}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "internal",
-                "share",
-                "{{shareToken}}"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "share", "{{shareToken}}"]
             }
           },
           "event": [
@@ -1869,17 +1860,8 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/internal/share/{{shareToken}}/attachments/{{attachmentId}}/content",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "internal",
-                "share",
-                "{{shareToken}}",
-                "attachments",
-                "{{attachmentId}}",
-                "content"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "share", "{{shareToken}}", "attachments", "{{attachmentId}}", "content"]
             }
           },
           "event": [
@@ -1907,9 +1889,7 @@
             ],
             "url": {
               "raw": "{{baseUrl}}/internal/share/folders/{{shareToken}}/notes/{{noteId}}/attachments/{{attachmentId}}/content",
-              "host": [
-                "{{baseUrl}}"
-              ],
+              "host": ["{{baseUrl}}"],
               "path": [
                 "internal",
                 "share",
@@ -1949,18 +1929,8 @@
             "description": "The token must be active and the source note must belong to the shared folder subtree. The endpoint accepts no target list and returns no private note metadata.",
             "url": {
               "raw": "{{baseUrl}}/internal/share/folders/{{shareToken}}/notes/{{noteId}}/wikilinks",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "internal",
-                "share",
-                "folders",
-                "{{shareToken}}",
-                "notes",
-                "{{noteId}}",
-                "wikilinks"
-              ]
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "share", "folders", "{{shareToken}}", "notes", "{{noteId}}", "wikilinks"]
             }
           },
           "event": [

@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { syncNoteAttachmentReferences } from '../attachments/references';
-import { db } from '../db/client';
+import { db as defaultDb } from '../db/client';
+import type { MetadataExecutor } from './metadata-transaction';
+
+const db = defaultDb;
+
 import { folders, type Note, type NoteVersion, noteEvents, notes, noteVersions } from '../db/schema';
 import { hashMarkdown } from '../harness/hash';
 import { createId } from '../lib/id';
@@ -35,7 +39,8 @@ function hashState(
     .digest('hex');
 }
 
-async function latestVersion(input: { userId: string; noteId: string }) {
+async function latestVersion(input: { userId: string; noteId: string }, executor: MetadataExecutor = defaultDb) {
+  const db = executor;
   const [version] = await db
     .select()
     .from(noteVersions)
@@ -45,7 +50,11 @@ async function latestVersion(input: { userId: string; noteId: string }) {
   return version ?? null;
 }
 
-async function pruneVersions(input: { userId: string; noteId: string; keep?: number }) {
+async function pruneVersions(
+  input: { userId: string; noteId: string; keep?: number },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const excess = await db
     .select({ id: noteVersions.id })
     .from(noteVersions)
@@ -68,14 +77,18 @@ export async function shouldCreateUserCheckpoint(input: { userId: string; noteId
   return Date.now() - latest.createdAt.getTime() >= USER_CHECKPOINT_INTERVAL_MS;
 }
 
-export async function createNoteVersion(input: {
-  note: Note;
-  reason: NoteVersionReason;
-  actorType: VersionActorType;
-  actorId?: string | null;
-}) {
+export async function createNoteVersion(
+  input: {
+    note: Note;
+    reason: NoteVersionReason;
+    actorType: VersionActorType;
+    actorId?: string | null;
+  },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const stateHash = await hashState(input.note);
-  const latest = await latestVersion({ userId: input.note.userId, noteId: input.note.id });
+  const latest = await latestVersion({ userId: input.note.userId, noteId: input.note.id }, executor);
   if (latest?.stateHash === stateHash) return latest;
 
   const [version] = await db
@@ -98,7 +111,7 @@ export async function createNoteVersion(input: {
     })
     .returning();
 
-  await pruneVersions({ userId: input.note.userId, noteId: input.note.id });
+  await pruneVersions({ userId: input.note.userId, noteId: input.note.id }, executor);
   return version;
 }
 

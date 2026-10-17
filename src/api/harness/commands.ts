@@ -8,7 +8,11 @@ import {
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
 import type { MinuNotesNodeExtra, MinuNotesNodeMetadata } from '../../shared/canvas-links';
 import { syncNoteAttachmentReferences } from '../attachments/references';
-import { db } from '../db/client';
+import { db as defaultDb } from '../db/client';
+import type { MetadataExecutor } from '../notes/metadata-transaction';
+
+const db = defaultDb;
+
 import { folders, type Note, noteEvents, notes, noteTags, noteVersions, tags } from '../db/schema';
 import {
   collaborationAccessibleNoteWhere,
@@ -45,7 +49,8 @@ export type NoteEventType =
   | 'toggle_api_editable'
   | 'restore'
   | 'trash'
-  | 'restore_from_trash';
+  | 'restore_from_trash'
+  | 'properties_update';
 
 export type DocumentCommandResult<T> =
   | { ok: true; value: T }
@@ -588,6 +593,7 @@ export function getNoteEventSummary(
     isApiEditable?: boolean;
   }
 ) {
+  if (eventType === 'properties_update') return 'Updated note properties';
   if (eventType === 'create') return 'Created note';
   if (eventType === 'edit_patch') return 'Patched note content';
   if (eventType === 'move') return 'Moved note to another folder';
@@ -608,16 +614,20 @@ export function getNoteEventSummary(
   return changed.length > 0 ? `Updated ${changed.join(', ')}` : 'Updated note';
 }
 
-async function insertNoteEvent(input: {
-  noteId: string;
-  userId: string;
-  actorType: ActorType;
-  actorId?: string;
-  eventType: NoteEventType;
-  summary: string;
-  beforeHash?: string;
-  afterHash?: string;
-}) {
+async function insertNoteEvent(
+  input: {
+    noteId: string;
+    userId: string;
+    actorType: ActorType;
+    actorId?: string;
+    eventType: NoteEventType;
+    summary: string;
+    beforeHash?: string;
+    afterHash?: string;
+  },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const now = new Date();
   const shouldCoalesce =
     input.actorType === 'user' && (input.eventType === 'update' || input.eventType === 'edit_patch');
@@ -667,17 +677,21 @@ async function insertNoteEvent(input: {
   });
 }
 
-export async function createDocument(input: {
-  userId: string;
-  creatorUserId: string;
-  folderId: string;
-  title?: string;
-  markdown?: string;
-  actorType?: ActorType;
-  actorId?: string;
-  type?: NoteType;
-  documentType?: DocumentType;
-}) {
+export async function createDocument(
+  input: {
+    userId: string;
+    creatorUserId: string;
+    folderId: string;
+    title?: string;
+    markdown?: string;
+    actorType?: ActorType;
+    actorId?: string;
+    type?: NoteType;
+    documentType?: DocumentType;
+  },
+  executor: MetadataExecutor = defaultDb
+) {
+  const db = executor;
   const [folder] = await db
     .select()
     .from(folders)
@@ -721,34 +735,43 @@ export async function createDocument(input: {
 
   await db.insert(notes).values(note);
   if (note.documentType === 'markdown' && note.content.includes('/internal/attachments/')) {
-    await syncNoteAttachmentReferences({ noteId: note.id, userId: note.userId, markdown: note.content });
+    await syncNoteAttachmentReferences({ noteId: note.id, userId: note.userId, markdown: note.content }, executor);
   }
-  await reindexNoteLinks({
-    noteId: note.id,
-    userId: note.userId,
-    markdown: note.content,
-    documentType: note.documentType,
-  });
+  await reindexNoteLinks(
+    {
+      noteId: note.id,
+      userId: note.userId,
+      markdown: note.content,
+      documentType: note.documentType,
+    },
+    executor
+  );
   if (note.documentType === 'markdown') {
-    await resolveUnresolvedNoteLinks({ noteId: note.id, userId: note.userId, title: note.title });
+    await resolveUnresolvedNoteLinks({ noteId: note.id, userId: note.userId, title: note.title }, executor);
   }
 
   const contentHash = hashMarkdown(note.content);
-  await createNoteVersion({
-    note: note as Note,
-    reason: 'create',
-    actorType: note.updatedByActorType ?? 'user',
-    actorId: note.updatedByActorId,
-  });
-  await insertNoteEvent({
-    noteId: note.id,
-    userId: note.userId,
-    actorType: note.updatedByActorType ?? 'user',
-    actorId: note.updatedByActorId ?? undefined,
-    eventType: 'create',
-    summary: getNoteEventSummary('create', {}),
-    afterHash: contentHash,
-  });
+  await createNoteVersion(
+    {
+      note: note as Note,
+      reason: 'create',
+      actorType: note.updatedByActorType ?? 'user',
+      actorId: note.updatedByActorId,
+    },
+    executor
+  );
+  await insertNoteEvent(
+    {
+      noteId: note.id,
+      userId: note.userId,
+      actorType: note.updatedByActorType ?? 'user',
+      actorId: note.updatedByActorId ?? undefined,
+      eventType: 'create',
+      summary: getNoteEventSummary('create', {}),
+      afterHash: contentHash,
+    },
+    executor
+  );
 
   return { ok: true, value: { note, contentHash } } satisfies DocumentCommandResult<{
     note: typeof note;

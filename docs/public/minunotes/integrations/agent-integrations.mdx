@@ -8,7 +8,8 @@ MinuNotes supports several integration paths for agents and tools. They all use 
 
 ## Recommended paths
 
-- **Harness API** for agents that can call HTTPS directly.
+- **Pi tools** (`minunotes_*`) for coding agents with the local extension installed and loaded.
+- **Harness API** for authorized direct HTTPS use when registered tools are unavailable.
 - **Hosted MCP** for MCP-native hosted agents and shared runtimes.
 - **Local MCP** for desktop clients that spawn local MCP processes.
 - **OpenAPI** for actions, REST tool importers, and compatibility with non-MCP platforms.
@@ -17,9 +18,9 @@ MinuNotes supports several integration paths for agents and tools. They all use 
 
 Create one API key per agent or project. Keys can use **All non-private folders**, **Project roots**, or **Specific folders**.
 
-Project roots are top-level folders that behave like lightweight workspaces for agents. A project-root grant includes that folder and its non-private subfolders. Specific folder grants are exact exceptions for a small set of folders.
+Project roots are top-level folders that behave like lightweight workspaces for agents. Folder rules can apply to an exact folder or subtree; the nearest applicable rule wins. With restricted access, a matching rule is required.
 
-Each key has Read, Create, and Edit permissions for its selected scope. Folder-level “Read-only for agents” blocks Create/Edit for All and Project-root keys, while Specific folder keys can be used as intentional write exceptions. Enable folder creation only when an agent is explicitly allowed to create folders.
+Global Read, Create, Edit and Comment capabilities are a maximum ceiling: folder rules can restrict, never expand them. For All access, an unconfigured folder inherits that ceiling. Folder-level “Read-only for agents” normally blocks writes; an applicable exact rule with Specific access is an existing intentional exception, after all other capability and policy checks. Enable folder creation only when explicitly allowed.
 
 Private folders are never accessible to agents or integrations. Private status also applies to child folders.
 
@@ -33,11 +34,28 @@ Full note reads include privacy-safe role/source context. Discovery stays compac
 
 Trashed notes, templates, and folder subtrees are unavailable to integrations. Harness, OpenAPI, hosted MCP, local MCP, OAuth, and API-key clients cannot list Trash, restore, or permanently delete content. Focused destructive operations can move eligible creator-owned notes and folders to the owner’s Trash after explicit approval. Owners perform restore and permanent deletion in the authenticated web interface.
 
+## Properties, templates and discovery
+
+Harness, hosted/stdio MCP and the updated Pi adapter support folder-schema reads and controlled owner mutations, note-property reads/patches, and assigned-template list → preview → reviewed creation. Properties use stable IDs and independent schema/value revisions, not the body hash. Creation uses a reviewed snapshot, complete final tags/values, one request ID and frozen date/time literals; uncertain retries retain that exact payload. No automatic write retries.
+
+Discovery is bounded and cursor-paginated. Continue only when another metadata page is needed, with the same query/filters; never expand every note by default. Direct-note grants have null folder context—do not reconstruct hidden ancestry.
+
+Boards are property-only: owner-selected Select columns and up to 12 stacked values-only Card properties, with no special Type badge or tag-driven placement. Board configuration, personal filtering/sorting, folder duplication, owner template defaults and destructive option deletion remain web-only on these agent surfaces. Non-destructive schema archive, ordinary tags, comments and authorized MCP Trash remain separate.
+
+Installed files do not reload current tools, and source capability does not prove deployed availability. Check the registered inventory; do not switch transports after denial. See [Harness API](/resources/harness-api), [MCP](/resources/mcp) and [Skills](/resources/skills) for workflows and adapter selection.
+
 ## Core endpoints
 
 ```txt
 GET /v1/harness/folders
 POST /v1/harness/notes
+GET /v1/harness/folders/:folderId/properties
+PATCH /v1/harness/folders/:folderId/properties
+GET /v1/harness/notes/:noteId/properties
+PATCH /v1/harness/notes/:noteId/properties
+GET /v1/harness/folders/:folderId/templates
+GET /v1/harness/folders/:folderId/templates/:templateId/preview
+POST /v1/harness/notes/from-template
 POST /v1/harness/notes/:noteId/edit
 POST /v1/harness/canvases
 POST /v1/harness/canvases/from-syntax

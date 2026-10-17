@@ -1,7 +1,8 @@
 import { and, desc, eq, gt, inArray, isNull, ne, or } from 'drizzle-orm';
 import { type Context, Hono } from 'hono';
+import { PropertyError } from '../../shared/properties';
 import { db } from '../db/client';
-import { apiKeys, folders, noteShareLinks, notes, templateFolderAssignments, user as users } from '../db/schema';
+import { apiKeys, noteShareLinks, notes, user as users } from '../db/schema';
 import {
   type DocumentEdit,
   editDocument,
@@ -29,6 +30,7 @@ import { resolveNoteTrashEligibility, trashEligibilityStatus } from '../lib/coll
 import { createId } from '../lib/id';
 import { pageRows, parsePageRequest } from '../lib/pagination';
 import { buildShareUrl, generateShareToken, hashShareToken } from '../lib/share-tokens';
+import { createRequestSizeLimitMiddleware } from '../middleware/request-limits';
 import {
   addCommentReply,
   type CommentAnchorInput,
@@ -43,10 +45,18 @@ import {
 } from '../notes/comments';
 import { listBacklinks, listOrphanNotes, listOutgoingLinks, sanitizeCanvasNoteLinksForActor } from '../notes/links';
 import { compactNoteSelection } from '../notes/listing';
+import { patchNoteProperties, readNoteProperties } from '../notes/properties';
 import { listAccessibleTags, listNoteTags, setNoteTags } from '../notes/tags';
+import {
+  readTemplateDefaults,
+  readTemplateMembership,
+  saveAssignmentDefaults,
+  saveTemplateMembership,
+  saveTemplateTags,
+} from '../notes/templates';
 import { getNoteVersion, listNoteVersions, restoreNoteVersion, serializeVersion } from '../notes/versions';
 import { trashNote, trashNotes } from '../trash/operations';
-import { activeFolderWhere, activeNoteWhere } from '../trash/policy';
+import { activeNoteWhere } from '../trash/policy';
 
 type Variables = {
   user: typeof auth.$Infer.Session.user | null;
@@ -54,6 +64,30 @@ type Variables = {
 };
 
 export const noteRoutes = new Hono<{ Variables: Variables }>();
+
+noteRoutes.use('/:noteId/properties', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+noteRoutes.get('/:noteId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readNoteProperties({ actorUserId: user.id }, c.req.param('noteId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+noteRoutes.patch('/:noteId/properties', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await patchNoteProperties({ actorUserId: user.id }, c.req.param('noteId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
 
 function getUser(c: Context<{ Variables: Variables }>) {
   const user = c.get('user');
@@ -186,59 +220,71 @@ noteRoutes.get('/templates', async (c) => {
   return c.json({ templates: result.items, page: result.page, limit: result.limit, hasMore: result.hasMore });
 });
 
+noteRoutes.use('/templates/:templateId/*', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
 noteRoutes.get('/templates/:templateId/folders', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
-  const rows = await db
-    .select({ folder: folders })
-    .from(templateFolderAssignments)
-    .innerJoin(folders, eq(templateFolderAssignments.folderId, folders.id))
-    .innerJoin(notes, eq(templateFolderAssignments.templateId, notes.id))
-    .where(
-      and(
-        eq(templateFolderAssignments.userId, user.id),
-        eq(templateFolderAssignments.templateId, c.req.param('templateId')),
-        activeFolderWhere(user.id),
-        activeNoteWhere(user.id, eq(notes.type, 'template'))
-      )
-    );
-  return c.json({ folders: rows.map((row) => row.folder) });
+  try {
+    return c.json(await readTemplateMembership({ actorUserId: user.id }, c.req.param('templateId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
 });
-
 noteRoutes.put('/templates/:templateId/folders', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
-  const templateId = c.req.param('templateId');
-  const [template] = await db
-    .select()
-    .from(notes)
-    .where(activeNoteWhere(user.id, eq(notes.id, templateId), eq(notes.type, 'template')))
-    .limit(1);
-  if (!template) return c.json({ error: 'Template not found' }, 404);
-  const body = (await c.req.json().catch(() => null)) as { folderIds?: string[] } | null;
-  const folderIds = [...new Set(body?.folderIds ?? [])];
-  if (folderIds.length) {
-    const valid = await db
-      .select({ id: folders.id })
-      .from(folders)
-      .where(activeFolderWhere(user.id, inArray(folders.id, folderIds)));
-    if (valid.length !== folderIds.length) return c.json({ error: 'One or more folders were not found' }, 400);
-  }
-  await db
-    .delete(templateFolderAssignments)
-    .where(and(eq(templateFolderAssignments.userId, user.id), eq(templateFolderAssignments.templateId, templateId)));
-  if (folderIds.length) {
-    await db.insert(templateFolderAssignments).values(
-      folderIds.map((folderId) => ({
-        id: crypto.randomUUID(),
-        userId: user.id,
-        templateId,
-        folderId,
-        createdAt: new Date(),
-      }))
+  try {
+    return c.json(
+      await saveTemplateMembership(
+        { actorUserId: user.id },
+        c.req.param('templateId'),
+        await c.req.json().catch(() => null)
+      )
     );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
   }
-  return c.json({ ok: true });
+});
+noteRoutes.get('/templates/:templateId/defaults', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readTemplateDefaults({ actorUserId: user.id }, c.req.param('templateId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+noteRoutes.put('/templates/:templateId/defaults', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await saveTemplateTags({ actorUserId: user.id }, c.req.param('templateId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+noteRoutes.put('/templates/:templateId/folders/:folderId/defaults', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await saveAssignmentDefaults(
+        { actorUserId: user.id },
+        c.req.param('templateId'),
+        c.req.param('folderId'),
+        await c.req.json().catch(() => null)
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
 });
 
 noteRoutes.get('/search', async (c) => {

@@ -9,6 +9,8 @@ import { NoteCanvasEditor } from '../components/note-canvas-editor';
 import { type CommentDialogPosition, NoteCommentDialog } from '../components/note-comment-dialog';
 import { NoteCommentsPanel } from '../components/note-comments-panel';
 import { NoteEditor } from '../components/note-editor';
+import { NotePropertiesPanel } from '../components/note-properties-panel';
+import { TemplateDefaultsPanel } from '../components/template-defaults-panel';
 import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/ui/empty-state';
 import { ModalCloseButton } from '../components/ui/modal-close-button';
@@ -70,6 +72,12 @@ function NoteView() {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [editorMode, setEditorMode] = useState<'live' | 'source'>('live');
+  const [propertiesModalNoteId, setPropertiesModalNoteId] = useState<string | null>(null);
+  const propertiesTrigger = useRef<HTMLButtonElement | null>(null);
+  const propertiesOpen = propertiesModalNoteId === noteId;
+  useEffect(() => {
+    setPropertiesModalNoteId(null);
+  }, [noteId]);
   const [saveError, setSaveError] = useState(false);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [isStale, setIsStale] = useState(false);
@@ -149,6 +157,8 @@ function NoteView() {
   };
 
   const applyDetailsUpdate = (response: { note: NonNullable<typeof data>['note']; contentHash: string }) => {
+    if (response.note.folderId !== data?.note.folderId)
+      void qc.invalidateQueries({ queryKey: ['note-properties', noteId] });
     setTitle(response.note.title);
     setContent(response.note.content);
     applySavedNote(response);
@@ -855,18 +865,35 @@ function NoteView() {
         <span role="status" className="notes-muted px-2 text-xs">
           Moving empty draft to Trash…
         </span>
-      ) : canEdit ? (
-        <NoteActionsPopover
-          note={data.note}
-          icon="settings"
-          onDelete={() => remove.mutateAsync()}
-          onToggleApiEditable={isOwner ? () => toggleApiEditable.mutate() : undefined}
-          onNoteUpdated={applyDetailsUpdate}
-          editorMode={data.note.documentType === 'markdown' ? editorMode : undefined}
-          onEditorModeChange={data.note.documentType === 'markdown' ? setEditorMode : undefined}
-          ownerControls={isOwner}
-          canTrash={isOwner || data.access?.canTrash === true}
-        />
+      ) : canEdit || data.note.type === 'note' ? (
+        <>
+          {!canEdit ? (
+            <span className="rounded-md border border-[var(--notes-border)] px-2 py-1 text-[var(--notes-muted)] text-xs capitalize">
+              {accessRole}
+            </span>
+          ) : null}
+          <NoteActionsPopover
+            note={data.note}
+            icon="settings"
+            onDelete={() => remove.mutateAsync()}
+            onToggleApiEditable={isOwner ? () => toggleApiEditable.mutate() : undefined}
+            onNoteUpdated={applyDetailsUpdate}
+            editorMode={canEdit && data.note.documentType === 'markdown' ? editorMode : undefined}
+            onEditorModeChange={canEdit && data.note.documentType === 'markdown' ? setEditorMode : undefined}
+            ownerControls={isOwner}
+            canTrash={isOwner || data.access?.canTrash === true}
+            propertiesOpen={propertiesOpen}
+            propertiesOnly={!canEdit}
+            onProperties={
+              data.note.type === 'note'
+                ? (trigger) => {
+                    propertiesTrigger.current = trigger;
+                    setPropertiesModalNoteId(noteId);
+                  }
+                : undefined
+            }
+          />
+        </>
       ) : (
         <span className="rounded-md border border-[var(--notes-border)] px-2 py-1 text-[var(--notes-muted)] text-xs capitalize">
           {accessRole}
@@ -1008,6 +1035,19 @@ function NoteView() {
           actions={actions}
           readOnly={!canEdit}
         />
+        {data.note.type === 'note' ? (
+          <NotePropertiesPanel
+            key={noteId}
+            noteId={noteId}
+            canEdit={canEdit}
+            isOwner={isOwner}
+            folderId={data.note.folderId}
+            modalOnly
+            modalOpen={propertiesOpen}
+            onModalOpenChange={(open) => setPropertiesModalNoteId(open ? noteId : null)}
+            onReturnFocus={() => propertiesTrigger.current?.focus()}
+          />
+        ) : null}
         {conflictDraftDialog}
       </>
     );
@@ -1022,6 +1062,22 @@ function NoteView() {
         saveState={saveState}
         onTitleChange={updateTitle}
         onContentChange={updateContent}
+        propertiesPanel={
+          data.note.type === 'note' ? (
+            <NotePropertiesPanel
+              key={noteId}
+              noteId={noteId}
+              canEdit={canEdit}
+              isOwner={isOwner}
+              folderId={data.note.folderId}
+              modalOpen={propertiesOpen}
+              onModalOpenChange={(open) => setPropertiesModalNoteId(open ? noteId : null)}
+              onReturnFocus={() => propertiesTrigger.current?.focus()}
+            />
+          ) : accessRole === 'owner' ? (
+            <TemplateDefaultsPanel key={noteId} templateId={noteId} />
+          ) : undefined
+        }
         initialEditing={!data.note.content.trim()}
         editorMode={editorMode}
         updatedMeta={updatedMeta}

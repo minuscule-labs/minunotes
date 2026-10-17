@@ -1,3 +1,24 @@
+const propertyResponses = (schema: string) => ({
+  '200': {
+    description: 'Current properties state',
+    content: { 'application/json': { schema: { $ref: `#/components/schemas/${schema}` } } },
+  },
+  '400': { $ref: '#/components/responses/BadRequest' },
+  '401': { $ref: '#/components/responses/Unauthorized' },
+  '403': { $ref: '#/components/responses/Forbidden' },
+  '404': { $ref: '#/components/responses/NotFound' },
+  '409': {
+    description: 'Stale schema identity/revision or properties revision; no partial changes',
+    content: { 'application/json': { schema: { type: 'object', properties: { error: { type: 'string' } } } } },
+  },
+});
+const propertyLabel = { type: 'string', minLength: 1, maxLength: 80 };
+const mutationObject = (type: string, properties: Record<string, unknown>, required: string[]) => ({
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', ...required],
+  properties: { type: { const: type }, ...properties },
+});
 export const harnessOpenApiSpec = {
   openapi: '3.1.0',
   info: {
@@ -15,8 +36,122 @@ export const harnessOpenApiSpec = {
     { name: 'Canvases' },
     { name: 'Tags' },
     { name: 'Shared' },
+    { name: 'Properties' },
+    { name: 'Templates' },
   ],
   paths: {
+    '/v1/harness/folders/{folderId}/templates': {
+      get: {
+        tags: ['Templates'],
+        operationId: 'listAssignedTemplates',
+        summary: 'List assigned templates',
+        description:
+          'Destination create and read capability required, including credential ceiling and collaboration folder scope. Returns only assigned ID/title summaries; no template library, private storage folder or owner IDs. Note-only grants cannot discover templates.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        responses: propertyResponses('AssignedTemplatesResponse'),
+      },
+    },
+    '/v1/harness/folders/{folderId}/templates/{templateId}/preview': {
+      get: {
+        tags: ['Templates'],
+        operationId: 'previewAssignedTemplate',
+        summary: 'Preview assigned template',
+        description:
+          'Destination-scoped assigned Markdown body/defaults and active destination schema. Requires eligible creation and normal agent read/private restrictions. Snapshot covers body/title/defaults/assignment identity, never grants access. Preserve the original four variables only, freezing date/time/datetime literals during review.',
+        parameters: [
+          { $ref: '#/components/parameters/FolderId' },
+          { name: 'templateId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: propertyResponses('TemplatePreview'),
+      },
+    },
+    '/v1/harness/notes/from-template': {
+      post: {
+        tags: ['Templates'],
+        operationId: 'createFromTemplate',
+        summary: 'Create from reviewed template',
+        description:
+          'One atomic/idempotent ordinary Markdown note with complete final tags and property values, including explicit empty clears. Honor reviewed template tags; do not clear them because card chips are hidden or invent tags/fields/options. Destination owner retains ownership; authenticated actor provenance is preserved. Requires create, not source edit permission. Rechecks ACL/assignment/snapshot/schema in the transaction. No client-supplied replacement body. Retry uncertain or busy results with the SAME request ID and exact frozen payload. Completed retries return the original without requiring current defaults; inaccessible/moved/trashed/deleted notes are unavailable and never recreated. Changed payload with the same actor/destination/request key conflicts. 256 KiB body bound; no automatic write retries. On refresh, property-only boards use the folder owner-selected Select property; tags and properties are never synchronized.',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/TemplateCreation' } } },
+        },
+        responses: {
+          ...propertyResponses('TemplateCreationResponse'),
+          '201': {
+            description: 'Created',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/TemplateCreationResponse' } } },
+          },
+          '413': { description: 'Request body exceeds 256 KiB' },
+        },
+      },
+    },
+    '/v1/harness/folders/{folderId}/properties': {
+      get: {
+        tags: ['Properties'],
+        operationId: 'readFolderProperties',
+        summary: 'Read folder property schema',
+        description:
+          'Folder-read permission required; direct-note grants do not grant folder access. Missing state is schemaId null, revision 0. Prefer defined properties for structured Status/Type labels; use stable property/option IDs, not labels. Ask when missing; do not invent fields, options or tags.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        responses: propertyResponses('PropertySchema'),
+      },
+      patch: {
+        tags: ['Properties'],
+        operationId: 'mutateFolderProperties',
+        summary: 'Mutate folder property schema',
+        description:
+          'Owner-only controlled add, rename, reorder or archive. Change definitions only when explicitly requested; ask before inventing fields/options. Server-generated IDs and immutable field types. Existing edit scope and private/read-only-folder policy apply. Reorder includes every historical ID. Retained assignment defaults block archiving referenced fields/choices until explicitly cleared or removed, including templates in Trash. Disable/switch an enabled board before archiving its grouping property. No board configuration endpoint is provided.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SchemaMutationRequest' },
+              example: {
+                expectedRevision: 0,
+                mutation: { type: 'add', label: 'Status', fieldType: 'select', options: ['Todo', 'Done'] },
+              },
+            },
+          },
+        },
+        responses: propertyResponses('PropertySchema'),
+      },
+    },
+    '/v1/harness/notes/{noteId}/properties': {
+      get: {
+        tags: ['Properties'],
+        operationId: 'readNoteProperties',
+        summary: 'Read note properties',
+        description:
+          'Requires note read permission. Only current active fields/values are projected; no resource-owner or containing-folder identifiers. Archived choices remain labeled. Normal Markdown/canvas/mind-map notes only; public shares omit properties.',
+        parameters: [{ $ref: '#/components/parameters/NoteId' }],
+        responses: propertyResponses('NoteProperties'),
+      },
+      patch: {
+        tags: ['Properties'],
+        operationId: 'patchNoteProperties',
+        summary: 'Patch note properties',
+        description:
+          'Requires note edit permission and applicable agent API-editability. Use schemaId, schemaRevision and expectedRevision from a fresh properties read. Supplied active IDs only; null clears and empty Text clears. Archived/foreign IDs cannot be newly assigned. Retained out-of-folder values stay invisible. No-op writes emit no event; changed writes emit properties_update without body/hash/tag/version changes. Property-only UI-configured Select-backed boards regroup on refresh; no board writes or tag synchronization. Select values use stable option IDs from the schema, not labels. Prefer defined properties; do not mirror Status/Type into tags unless requested.',
+        parameters: [{ $ref: '#/components/parameters/NoteId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PropertyPatch' },
+              example: {
+                schemaId: 'property_schema_example',
+                schemaRevision: 1,
+                expectedRevision: 0,
+                values: { property_example: 'Text' },
+              },
+            },
+          },
+        },
+        responses: propertyResponses('NoteProperties'),
+      },
+    },
     '/v1/harness/tags': {
       get: {
         tags: ['Tags'],
@@ -170,6 +305,8 @@ export const harnessOpenApiSpec = {
         tags: ['Notes'],
         operationId: 'createNote',
         summary: 'Create a note',
+        description:
+          'Create net-new content without reading unrelated notes. For requested structured labels, prefer defined folder properties and stable IDs; ask when missing. Do not invent tags or mirror Status/Type into tags unless requested.',
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateNoteRequest' } } },
@@ -501,6 +638,8 @@ export const harnessOpenApiSpec = {
         tags: ['Tags'],
         operationId: 'updateNoteTags',
         summary: 'Replace note tags',
+        description:
+          'Replace the complete tag set; omitted tags are removed. Use only explicit/reviewed tags and preserve stored/template tags unless removal is requested. Prefer defined properties for Status/Type; do not invent tags or mirror properties into tags unless requested. Hidden card chips do not authorize clearing tags.',
         parameters: [{ $ref: '#/components/parameters/NoteId' }],
         requestBody: {
           required: true,
@@ -915,6 +1054,184 @@ export const harnessOpenApiSpec = {
       },
     },
     schemas: {
+      AssignedTemplatesResponse: {
+        type: 'object',
+        required: ['templates'],
+        properties: {
+          templates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'title'],
+              properties: { id: { type: 'string' }, title: { type: 'string' } },
+            },
+          },
+        },
+      },
+      TemplatePreview: {
+        type: 'object',
+        required: ['template', 'tags', 'values', 'schema', 'snapshot'],
+        properties: {
+          template: {
+            type: 'object',
+            required: ['id', 'title', 'body'],
+            properties: { id: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' } },
+          },
+          tags: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+          values: { type: 'object', additionalProperties: { type: 'string' } },
+          schema: { $ref: '#/components/schemas/PropertySchema' },
+          snapshot: { type: 'string', maxLength: 128 },
+        },
+      },
+      TemplateCreation: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'folderId',
+          'templateId',
+          'snapshot',
+          'schemaId',
+          'schemaRevision',
+          'title',
+          'tags',
+          'values',
+          'requestId',
+          'variables',
+        ],
+        properties: {
+          folderId: { type: 'string', minLength: 1, maxLength: 100 },
+          templateId: { type: 'string', minLength: 1, maxLength: 100 },
+          snapshot: { type: 'string', minLength: 1, maxLength: 128 },
+          schemaId: { type: ['string', 'null'], maxLength: 100 },
+          schemaRevision: { type: 'integer', minimum: 0 },
+          title: { type: 'string', minLength: 1, maxLength: 1000 },
+          tags: {
+            type: 'array',
+            maxItems: 50,
+            uniqueItems: true,
+            items: { type: 'string', minLength: 1, maxLength: 80 },
+          },
+          values: {
+            type: 'object',
+            maxProperties: 12,
+            additionalProperties: { type: ['string', 'null'], maxLength: 1000 },
+          },
+          requestId: { type: 'string', minLength: 1, maxLength: 128 },
+          variables: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['date', 'time', 'datetime'],
+            properties: {
+              date: { type: 'string', maxLength: 80 },
+              time: { type: 'string', maxLength: 80 },
+              datetime: { type: 'string', maxLength: 80 },
+            },
+          },
+        },
+      },
+      TemplateCreationResponse: {
+        type: 'object',
+        required: ['note', 'contentHash', 'replayed'],
+        properties: {
+          note: {
+            type: 'object',
+            required: ['id', 'title', 'folderId'],
+            properties: { id: { type: 'string' }, title: { type: 'string' }, folderId: { type: 'string' } },
+          },
+          contentHash: { type: 'string' },
+          replayed: { type: 'boolean' },
+        },
+      },
+      PropertyOption: {
+        type: 'object',
+        required: ['id', 'label', 'archived'],
+        properties: { id: { type: 'string' }, label: propertyLabel, archived: { type: 'boolean' } },
+      },
+      PropertyDefinition: {
+        type: 'object',
+        required: ['id', 'label', 'type', 'archived', 'options'],
+        properties: {
+          id: { type: 'string' },
+          label: propertyLabel,
+          type: { type: 'string', enum: ['text', 'select', 'date'] },
+          archived: { type: 'boolean' },
+          options: { type: 'array', items: { $ref: '#/components/schemas/PropertyOption' } },
+        },
+      },
+      PropertySchema: {
+        type: 'object',
+        required: ['schemaId', 'revision', 'definitions'],
+        properties: {
+          schemaId: { type: ['string', 'null'] },
+          revision: { type: 'integer', minimum: 0 },
+          definitions: { type: 'array', items: { $ref: '#/components/schemas/PropertyDefinition' } },
+        },
+      },
+      NoteProperties: {
+        type: 'object',
+        required: ['schema', 'revision', 'values'],
+        properties: {
+          schema: { $ref: '#/components/schemas/PropertySchema' },
+          revision: { type: 'integer', minimum: 0 },
+          values: { type: 'object', additionalProperties: { type: 'string' } },
+        },
+      },
+      PropertyPatch: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['schemaId', 'schemaRevision', 'expectedRevision', 'values'],
+        properties: {
+          schemaId: { type: ['string', 'null'] },
+          schemaRevision: { type: 'integer', minimum: 0 },
+          expectedRevision: { type: 'integer', minimum: 0 },
+          values: { type: 'object', additionalProperties: { type: ['string', 'null'] } },
+        },
+      },
+      SchemaMutationRequest: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedRevision', 'mutation'],
+        properties: {
+          expectedRevision: { type: 'integer', minimum: 0 },
+          mutation: {
+            oneOf: [
+              mutationObject(
+                'add',
+                {
+                  label: propertyLabel,
+                  fieldType: { type: 'string', enum: ['text', 'select', 'date'] },
+                  options: { type: 'array', minItems: 1, maxItems: 8, items: propertyLabel },
+                },
+                ['label', 'fieldType']
+              ),
+              mutationObject('rename', { propertyId: { type: 'string' }, label: propertyLabel }, [
+                'propertyId',
+                'label',
+              ]),
+              mutationObject('archive', { propertyId: { type: 'string' } }, ['propertyId']),
+              mutationObject('reorder', { propertyIds: { type: 'array', items: { type: 'string' } } }, ['propertyIds']),
+              mutationObject('add_option', { propertyId: { type: 'string' }, label: propertyLabel }, [
+                'propertyId',
+                'label',
+              ]),
+              mutationObject(
+                'rename_option',
+                { propertyId: { type: 'string' }, optionId: { type: 'string' }, label: propertyLabel },
+                ['propertyId', 'optionId', 'label']
+              ),
+              mutationObject('archive_option', { propertyId: { type: 'string' }, optionId: { type: 'string' } }, [
+                'propertyId',
+                'optionId',
+              ]),
+              mutationObject(
+                'reorder_options',
+                { propertyId: { type: 'string' }, optionIds: { type: 'array', items: { type: 'string' } } },
+                ['propertyId', 'optionIds']
+              ),
+            ],
+          },
+        },
+      },
       ErrorResponse: { type: 'object', required: ['error'], properties: { error: { type: 'string' } } },
       DeleteResponse: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean', const: true } } },
       CommentActor: {

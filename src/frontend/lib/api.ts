@@ -1,3 +1,21 @@
+import type {
+  FolderDuplicationPreview,
+  FolderDuplicationRequest,
+  FolderDuplicationResult,
+} from '../../shared/folder-duplication';
+import { hasNoteQuery, noteQueryIdentity } from '../../shared/note-filters';
+import { DEFAULT_NOTE_SORT, isPropertySort, type NoteSort, noteSortIdentity } from '../../shared/note-sort';
+import type {
+  NoteProperties,
+  OptionDeletionPreview,
+  OptionDeletionRequest,
+  PropertyPatch,
+  PropertySchema,
+  SchemaMutationRequest,
+} from '../../shared/properties';
+
+import type { AssignedTemplate, TemplateCreation, TemplateDefaults, TemplatePreview } from '../../shared/templates';
+
 const API_URL = (import.meta.env.VITE_API_URL ?? '/internal').replace(/\/$/, '');
 
 export class ApiError extends Error {
@@ -480,7 +498,128 @@ async function fetchAllTemplates() {
   }
 }
 
+export type SavedBoard = { config: import('../../shared/board').BoardConfig; version: number } & Partial<
+  Pick<
+    import('../../shared/board').EffectiveBoard,
+    'columns' | 'groupingState' | 'cardProperties' | 'reconfigurationRequired'
+  >
+>;
+export type BoardCard = {
+  id: string;
+  folderId: string;
+  title: string;
+  documentType: string;
+  createdAt: string;
+  updatedAt: string;
+  unclassifiedReason: import('../../shared/board').UnclassifiedReason | null;
+  properties: import('../../shared/board').BoardCardProperty[];
+};
+export type FolderQueryRequest = {
+  sort?: NoteSort;
+  query: import('../../shared/note-filters').NoteQuery;
+  schema?: import('../../shared/board').BoardSchemaToken;
+};
+export type FolderQueryEcho = {
+  sortIdentity?: string;
+  queryIdentity?: string;
+  querySchema?: import('../../shared/board').BoardSchemaToken;
+};
+export function verifyFolderQueryEcho(page: FolderQueryEcho, captured: FolderQueryRequest) {
+  if (captured.sort && captured.sort !== DEFAULT_NOTE_SORT && page.sortIdentity !== noteSortIdentity(captured.sort))
+    throw new ApiError('Sort order was not confirmed. Refresh or reset the sort.', 409);
+  if (hasNoteQuery(captured.query) && page.queryIdentity !== noteQueryIdentity(captured.query))
+    throw new ApiError('Folder query was not confirmed. Refresh and review the search or filters.', 409);
+  if (
+    (captured.query.filters.all.length || isPropertySort(captured.sort)) &&
+    (!captured.schema ||
+      page.querySchema?.schemaId !== captured.schema.schemaId ||
+      page.querySchema?.schemaRevision !== captured.schema.schemaRevision)
+  )
+    throw new ApiError(
+      isPropertySort(captured.sort)
+        ? 'Sort definitions changed. Refresh definitions and review the sort.'
+        : 'Filter definitions changed. Refresh definitions and review the query.',
+      409
+    );
+}
+function appendFolderQuery(search: URLSearchParams, captured?: FolderQueryRequest) {
+  if (!captured) return;
+  if (captured.sort && captured.sort !== DEFAULT_NOTE_SORT) search.set('sort', noteSortIdentity(captured.sort));
+  if (captured.query.q) search.set('q', captured.query.q);
+  if (captured.query.filters.all.length) {
+    search.set('filters', JSON.stringify(captured.query.filters));
+  }
+  if (captured.query.filters.all.length || isPropertySort(captured.sort)) {
+    if (captured.schema) {
+      search.set('schemaId', captured.schema.schemaId);
+      search.set('schemaRevision', String(captured.schema.schemaRevision));
+    }
+  }
+}
+export type BoardPage = PageResponse &
+  FolderQueryEcho & {
+    cards: BoardCard[];
+    lane: string;
+    configVersion: number;
+    schemaId?: string;
+    schemaRevision?: number;
+    access: CollaborationAccess;
+  };
 export const api = {
+  folderProperties: (folderId: string) =>
+    request<PropertySchema>(`/folders/${encodeURIComponent(folderId)}/properties`),
+  mutateFolderProperties: (folderId: string, input: SchemaMutationRequest) =>
+    request<PropertySchema>(`/folders/${encodeURIComponent(folderId)}/properties`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  previewOptionDeletion: (folderId: string, propertyId: string, optionId: string) =>
+    request<OptionDeletionPreview>(
+      `/folders/${encodeURIComponent(folderId)}/properties/${encodeURIComponent(propertyId)}/options/${encodeURIComponent(optionId)}/deletion-preview`,
+      { cache: 'no-store' }
+    ),
+  deletePropertyOption: (folderId: string, propertyId: string, optionId: string, input: OptionDeletionRequest) =>
+    request<PropertySchema>(
+      `/folders/${encodeURIComponent(folderId)}/properties/${encodeURIComponent(propertyId)}/options/${encodeURIComponent(optionId)}`,
+      { method: 'DELETE', body: JSON.stringify(input) }
+    ),
+  noteProperties: (noteId: string) => request<NoteProperties>(`/notes/${encodeURIComponent(noteId)}/properties`),
+  patchNoteProperties: (noteId: string, input: PropertyPatch) =>
+    request<NoteProperties>(`/notes/${encodeURIComponent(noteId)}/properties`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  boardConfig: (folderId: string) =>
+    request<{ board: SavedBoard | null; access: CollaborationAccess }>(
+      `/folders/${encodeURIComponent(folderId)}/board/config`
+    ),
+  saveBoardConfig: (
+    folderId: string,
+    config: SavedBoard['config'],
+    expectedVersion: number,
+    schema?: import('../../shared/board').BoardSchemaToken
+  ) =>
+    request<{ board: SavedBoard }>(`/folders/${encodeURIComponent(folderId)}/board/config`, {
+      method: 'PUT',
+      body: JSON.stringify({ config, expectedVersion, ...schema }),
+    }),
+  boardLane: (
+    folderId: string,
+    lane: string,
+    version: number,
+    page = 1,
+    schema?: import('../../shared/board').BoardSchemaToken,
+    captured?: FolderQueryRequest,
+    signal?: AbortSignal
+  ) => {
+    const search = new URLSearchParams({ lane, version: String(version), page: String(page), limit: '25' });
+    if (schema) {
+      search.set('schemaId', schema.schemaId);
+      search.set('schemaRevision', String(schema.schemaRevision));
+    }
+    appendFolderQuery(search, captured);
+    return request<BoardPage>(`/folders/${encodeURIComponent(folderId)}/board?${search}`, { signal });
+  },
   accountProfile: () => request<{ profile: AccountProfile }>('/account/profile'),
   apiKeys: () => request<{ keys: ApiKey[] }>('/api-keys'),
   oauthClients: () => request<{ clients: OAuthClient[] }>('/oauth/clients'),
@@ -692,6 +831,16 @@ export const api = {
     request<{ ok: true }>(`/folders/${folderId}/share-link`, { method: 'DELETE' }),
   createFolder: (title: string, parentFolderId?: string | null) =>
     request<{ folder: Folder }>('/folders', { method: 'POST', body: JSON.stringify({ title, parentFolderId }) }),
+  previewFolderDuplication: (folderId: string, parentFolderId: string | null, signal?: AbortSignal) =>
+    request<FolderDuplicationPreview>(
+      `/folders/${encodeURIComponent(folderId)}/duplicate-preview${parentFolderId === null ? '' : `?parentFolderId=${encodeURIComponent(parentFolderId)}`}`,
+      { signal }
+    ),
+  duplicateFolder: (folderId: string, input: FolderDuplicationRequest) =>
+    request<FolderDuplicationResult>(`/folders/${encodeURIComponent(folderId)}/duplicate`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   renameFolder: (folderId: string, title: string) =>
     request<{ folder: Folder }>(`/folders/${folderId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
   updateFolder: (
@@ -707,12 +856,41 @@ export const api = {
   templates: (page = 1, limit = 50) =>
     request<PageResponse & { templates: NoteListItem[] }>(`/notes/templates?page=${page}&limit=${limit}`),
   allTemplates: () => fetchAllTemplates(),
-  folderTemplates: (folderId: string) => request<{ templates: NoteListItem[] }>(`/folders/${folderId}/templates`),
-  templateFolders: (templateId: string) => request<{ folders: Folder[] }>(`/notes/templates/${templateId}/folders`),
-  updateTemplateFolders: (templateId: string, folderIds: string[]) =>
-    request<{ ok: true }>(`/notes/templates/${templateId}/folders`, {
+  folderTemplates: (folderId: string) => request<{ templates: AssignedTemplate[] }>(`/folders/${folderId}/templates`),
+  templatePreview: (folderId: string, templateId: string) =>
+    request<TemplatePreview>(`/folders/${folderId}/templates/${templateId}/preview`),
+  createFromTemplate: (input: TemplateCreation) =>
+    request<{ note: { id: string; title: string; folderId: string }; contentHash: string; replayed: boolean }>(
+      `/folders/${input.folderId}/notes/from-template`,
+      { method: 'POST', body: JSON.stringify(input) }
+    ),
+  templateDefaults: (templateId: string) => request<TemplateDefaults>(`/notes/templates/${templateId}/defaults`),
+  saveTemplateTags: (templateId: string, input: { expectedRevision: number; tags: string[] }) =>
+    request<{ revision: number; tags: string[] }>(`/notes/templates/${templateId}/defaults`, {
       method: 'PUT',
-      body: JSON.stringify({ folderIds }),
+      body: JSON.stringify(input),
+    }),
+  saveAssignmentDefaults: (
+    templateId: string,
+    folderId: string,
+    input: {
+      assignmentId: string;
+      expectedRevision: number;
+      schemaId: string | null;
+      schemaRevision: number;
+      values: Record<string, string | null>;
+    }
+  ) =>
+    request<{ id: string; revision: number; schemaId: string | null; values: Record<string, string> }>(
+      `/notes/templates/${templateId}/folders/${folderId}/defaults`,
+      { method: 'PUT', body: JSON.stringify(input) }
+    ),
+  templateFolders: (templateId: string) =>
+    request<{ folders: Folder[]; snapshot?: string }>(`/notes/templates/${templateId}/folders`),
+  updateTemplateFolders: (templateId: string, folderIds: string[], snapshot?: string) =>
+    request<{ ok: true; snapshot?: string }>(`/notes/templates/${templateId}/folders`, {
+      method: 'PUT',
+      body: JSON.stringify({ folderIds, snapshot }),
     }),
   folderDetail: (folderId: string) =>
     request<{
@@ -722,10 +900,21 @@ export const api = {
       access: CollaborationAccess;
       sharedBy: CollaborationIdentity | null;
     }>(`/folders/${folderId}/detail`),
-  notes: (folderId: string, type: NoteType = 'note', page = 1, limit = 50) =>
-    request<PageResponse & { notes: NoteListItem[]; access: CollaborationAccess }>(
-      `/folders/${folderId}/notes?type=${type}&page=${page}&limit=${limit}`
-    ),
+  notes: (
+    folderId: string,
+    type: NoteType = 'note',
+    page = 1,
+    limit = 50,
+    captured?: FolderQueryRequest,
+    signal?: AbortSignal
+  ) => {
+    const search = new URLSearchParams({ type, page: String(page), limit: String(limit) });
+    appendFolderQuery(search, captured);
+    return request<PageResponse & FolderQueryEcho & { notes: NoteListItem[]; access: CollaborationAccess }>(
+      `/folders/${encodeURIComponent(folderId)}/notes?${search}`,
+      { signal }
+    );
+  },
   recentNotes: (limit = 10, page = 1, scope: DiscoveryScope = 'all') =>
     request<PageResponse & { notes: DiscoveryNote[] }>(
       `/notes/recent?page=${page}&limit=${limit}&scope=${encodeURIComponent(scope)}`

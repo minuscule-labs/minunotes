@@ -64,12 +64,28 @@ export function createClient(env: NodeJS.ProcessEnv = process.env): NotesMcpClie
 
   return {
     folders: {
+      templates: (folderId) => request(`/harness/folders/${encodeURIComponent(folderId)}/templates`),
+      templatePreview: (folderId, templateId) =>
+        request(`/harness/folders/${encodeURIComponent(folderId)}/templates/${encodeURIComponent(templateId)}/preview`),
+      properties: (folderId) => request(`/harness/folders/${encodeURIComponent(folderId)}/properties`),
+      mutateProperties: (folderId, input) =>
+        request(`/harness/folders/${encodeURIComponent(folderId)}/properties`, {
+          method: 'PATCH',
+          body: JSON.stringify(input),
+        }),
       list: (input = {}) => request(`/harness/folders${toQueryString(input)}`),
       create: ({ title, parentFolderId }) =>
         request('/harness/folders', { method: 'POST', body: JSON.stringify({ title, parentFolderId }) }),
       trash: (folderId) => request(`/harness/folders/${encodeURIComponent(folderId)}/trash`, { method: 'POST' }),
     },
     notes: {
+      fromTemplate: (input) => request('/harness/notes/from-template', { method: 'POST', body: JSON.stringify(input) }),
+      properties: (noteId) => request(`/harness/notes/${encodeURIComponent(noteId)}/properties`),
+      patchProperties: (noteId, input) =>
+        request(`/harness/notes/${encodeURIComponent(noteId)}/properties`, {
+          method: 'PATCH',
+          body: JSON.stringify(input),
+        }),
       search: (input) =>
         request(
           `/harness/notes/search${toQueryString({ q: input.query, tag: input.tag, limit: input.limit, cursor: input.cursor })}`

@@ -288,6 +288,34 @@
       "when": 1791196630508,
       "tag": "0040_shared_folder_navigation_index",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1791470525478,
+      "tag": "0041_folder_board_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1791799800106,
+      "tag": "0042_note_properties",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1791841108472,
+      "tag": "0043_template_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1792183863208,
+      "tag": "0044_folder_duplication_requests",
+      "breakpoints": true
     }
   ]
 }
