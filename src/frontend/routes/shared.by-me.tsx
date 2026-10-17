@@ -3,6 +3,7 @@ import { createRoute, Link } from '@tanstack/react-router';
 import { type FormEvent, useState } from 'react';
 import { FolderShareDialog } from '../components/folder-share-dialog';
 import { NoteShareDialog } from '../components/note-share-dialog';
+import { type ResourceColumn, ResourceName, ResourceTable } from '../components/resource-table';
 import { SharingPageTabs } from '../components/sharing-page-tabs';
 import { EmptyState } from '../components/ui/empty-state';
 import { api, type CollaborationResourceType, type OwnedSharedResource } from '../lib/api';
@@ -99,6 +100,74 @@ function OwnedResourceTable({
   });
   const title = type === 'note' ? 'Notes' : 'Folders';
   const resources = result.data?.resources ?? [];
+  const columns: ResourceColumn<OwnedSharedResource>[] = [
+    { id: 'title', header: 'Title', cell: (item) => <OwnedResourceTitle item={item} /> },
+    {
+      id: 'active',
+      header: 'Active',
+      align: 'center',
+      width: '5rem',
+      cell: (item) => <CountCell count={item.activeCollaboratorCount} label="active collaborators" tone="active" />,
+    },
+    {
+      id: 'pending',
+      header: 'Pending',
+      align: 'center',
+      width: '5.5rem',
+      cell: (item) => <CountCell count={item.pendingInvitationCount} label="pending invitations" tone="pending" />,
+    },
+    {
+      id: 'expired',
+      header: 'Expired',
+      align: 'center',
+      width: '5.5rem',
+      cell: (item) => <CountCell count={item.expiredInvitationCount} label="expired invitations" tone="expired" />,
+    },
+    {
+      id: 'public',
+      header: 'Public link',
+      width: '7rem',
+      cell: (item) => (
+        <>
+          {' '}
+          <span
+            className={`inline-flex rounded-full border px-2 py-0.5 font-medium text-xs ${
+              item.publicLinkActive
+                ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300'
+                : 'border-[var(--notes-border)] text-[var(--notes-muted)]'
+            }`}
+          >
+            {item.publicLinkActive ? 'On' : 'Off'}
+          </span>
+        </>
+      ),
+    },
+    {
+      id: 'updated',
+      header: 'Updated',
+      width: '9rem',
+      cell: (item) => <span className="notes-muted">{new Date(item.resource.updatedAt).toLocaleDateString()}</span>,
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      align: 'right',
+      width: '7rem',
+      cell: (item) => (
+        <>
+          {' '}
+          <button
+            type="button"
+            className="rounded-md border border-[var(--notes-border)] px-3 py-1.5 font-medium text-xs hover:bg-[var(--notes-hover)]"
+            onClick={() => onManage({ type: item.type, id: item.resource.id })}
+            aria-label={`Manage sharing for ${item.resource.title}`}
+          >
+            Manage
+          </button>
+        </>
+      ),
+    },
+  ];
 
   return (
     <section aria-labelledby={`shared-by-me-${type}-heading`}>
@@ -128,62 +197,23 @@ function OwnedResourceTable({
         <EmptyState title={`Unable to load shared ${title.toLowerCase()}`}>Try refreshing the page.</EmptyState>
       ) : null}
       {!result.isLoading && !result.error ? (
-        <div className="overflow-x-auto rounded-lg border border-[var(--notes-border)]">
-          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
-            <thead className="bg-[var(--notes-table-header-bg)]">
-              <tr>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Title
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-center font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Active
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-center font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Pending
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-center font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Expired
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Public link
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Updated
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-right font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {resources.length === 0 ? (
-                <tr>
-                  <td className="notes-muted px-4 py-6 text-center" colSpan={7}>
-                    {query
-                      ? `No shared ${title.toLowerCase()} match “${query}”.`
-                      : `No ${title.toLowerCase()} are currently shared.`}
-                  </td>
-                </tr>
-              ) : (
-                resources.map((resource) => (
-                  <OwnedResourceRow key={resource.resource.id} item={resource} onManage={onManage} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          items={resources}
+          columns={columns}
+          rowId={(item) => item.resource.id}
+          minWidth={900}
+          empty={
+            query
+              ? `No shared ${title.toLowerCase()} match “${query}”.`
+              : `No ${title.toLowerCase()} are currently shared.`
+          }
+        />
       ) : null}
     </section>
   );
 }
 
-function OwnedResourceRow({
-  item,
-  onManage,
-}: {
-  item: OwnedSharedResource;
-  onManage: (resource: ManagedResource) => void;
-}) {
+function OwnedResourceTitle({ item }: { item: OwnedSharedResource }) {
   const destination =
     item.type === 'note' ? (
       <Link
@@ -191,7 +221,7 @@ function OwnedResourceRow({
         params={{ noteId: item.resource.id }}
         className="font-medium text-[var(--notes-blue)] hover:underline"
       >
-        {item.resource.title}
+        <ResourceName>{item.resource.title}</ResourceName>
       </Link>
     ) : (
       <Link
@@ -199,39 +229,10 @@ function OwnedResourceRow({
         params={{ folderId: item.resource.id }}
         className="font-medium text-[var(--notes-blue)] hover:underline"
       >
-        {item.resource.title}
+        <ResourceName>{item.resource.title}</ResourceName>
       </Link>
     );
-  return (
-    <tr className="border-[var(--notes-border)] border-t hover:bg-[var(--notes-hover)]">
-      <td className="max-w-sm px-4 py-3">{destination}</td>
-      <CountCell count={item.activeCollaboratorCount} label="active collaborators" tone="active" />
-      <CountCell count={item.pendingInvitationCount} label="pending invitations" tone="pending" />
-      <CountCell count={item.expiredInvitationCount} label="expired invitations" tone="expired" />
-      <td className="px-4 py-3">
-        <span
-          className={`inline-flex rounded-full border px-2 py-0.5 font-medium text-xs ${
-            item.publicLinkActive
-              ? 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300'
-              : 'border-[var(--notes-border)] text-[var(--notes-muted)]'
-          }`}
-        >
-          {item.publicLinkActive ? 'On' : 'Off'}
-        </span>
-      </td>
-      <td className="px-4 py-3 text-[var(--notes-muted)]">{new Date(item.resource.updatedAt).toLocaleDateString()}</td>
-      <td className="px-4 py-3 text-right">
-        <button
-          type="button"
-          className="rounded-md border border-[var(--notes-border)] px-3 py-1.5 font-medium text-xs hover:bg-[var(--notes-hover)]"
-          onClick={() => onManage({ type: item.type, id: item.resource.id })}
-          aria-label={`Manage sharing for ${item.resource.title}`}
-        >
-          Manage
-        </button>
-      </td>
-    </tr>
-  );
+  return destination;
 }
 
 function CountCell({ count, label, tone }: { count: number; label: string; tone: 'active' | 'pending' | 'expired' }) {
@@ -244,14 +245,10 @@ function CountCell({ count, label, tone }: { count: number; label: string; tone:
           ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300'
           : 'border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300';
   return (
-    <td className="px-4 py-3 text-center">
-      <span
-        className={`inline-flex min-w-7 justify-center rounded-full border px-2 py-0.5 font-medium text-xs ${color}`}
-      >
-        <span className="sr-only">{label}: </span>
-        {count}
-      </span>
-    </td>
+    <span className={`inline-flex min-w-7 justify-center rounded-full border px-2 py-0.5 font-medium text-xs ${color}`}>
+      <span className="sr-only">{label}: </span>
+      {count}
+    </span>
   );
 }
 

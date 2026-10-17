@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, useNavigate } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
 import { DeleteConfirmDialog } from '../components/delete-confirm-dialog';
+import { FolderPropertiesSettings } from '../components/folder-properties-settings';
 import { RenameFolderDialog } from '../components/rename-folder-dialog';
 import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/ui/empty-state';
@@ -14,32 +15,58 @@ function FolderSettingsView() {
   const qc = useQueryClient();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [renameOpen, setRenameOpen] = useState(false);
+  const [membershipBase, setMembershipBase] = useState<Record<
+    string,
+    { folders: import('../lib/api').Folder[]; snapshot?: string }
+  > | null>(null);
+  const [assignmentMessage, setAssignmentMessage] = useState('');
+  const [refreshingAssignments, setRefreshingAssignments] = useState(false);
   const folders = useQuery({ queryKey: ['folders'], queryFn: api.folders });
   const templates = useQuery({ queryKey: ['templates', 'all'], queryFn: api.allTemplates });
   const assigned = useQuery({ queryKey: ['folder-templates', folderId], queryFn: () => api.folderTemplates(folderId) });
   const folder = folders.data?.folders.find((item) => item.id === folderId);
 
+  const memberships = useQuery({
+    queryKey: ['template-memberships', folderId, templates.data?.templates.map((t) => t.id)],
+    queryFn: async () =>
+      Object.fromEntries(
+        await Promise.all(
+          (templates.data?.templates ?? []).map(async (t) => [t.id, await api.templateFolders(t.id)] as const)
+        )
+      ),
+    enabled: Boolean(templates.data),
+    retry: false,
+  });
   useEffect(() => {
-    if (!assigned.data) return;
+    if (!assigned.data || !memberships.data || membershipBase) return;
     setSelectedIds(new Set(assigned.data.templates.map((template) => template.id)));
-  }, [assigned.data]);
+    setMembershipBase(memberships.data);
+  }, [assigned.data, memberships.data, membershipBase]);
 
   const saveTemplates = useMutation({
     mutationFn: async () => {
       const templatesToUpdate = templates.data?.templates ?? [];
       await Promise.all(
         templatesToUpdate.map(async (template) => {
-          const current = await api.templateFolders(template.id);
+          const current = membershipBase?.[template.id];
+          if (!current) throw new Error('Refresh assignments before saving');
           const folderIds = new Set(current.folders.map((item) => item.id));
           if (selectedIds.has(template.id)) folderIds.add(folderId);
           else folderIds.delete(folderId);
-          return api.updateTemplateFolders(template.id, [...folderIds]);
+          return api.updateTemplateFolders(template.id, [...folderIds], current.snapshot);
         })
       );
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['folder-templates', folderId] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['folder-templates', folderId] });
+      const latest = await memberships.refetch();
+      if (latest.data) setMembershipBase(latest.data);
+      setAssignmentMessage('Template assignments saved');
     },
+    onError: (error: Error) =>
+      setAssignmentMessage(
+        `${error.message}. Your assignment selection is preserved; refresh and review before retrying.`
+      ),
   });
 
   const privacy = useMutation({
@@ -134,6 +161,8 @@ function FolderSettingsView() {
         </div>
       </div>
 
+      <FolderPropertiesSettings key={folderId} folderId={folderId} />
+
       <div className="rounded-lg border border-[var(--notes-border)] bg-[var(--notes-panel)] p-4">
         <h3 className="font-semibold">Templates</h3>
         <p className="notes-muted mt-1 text-sm">
@@ -150,6 +179,7 @@ function FolderSettingsView() {
                   className="mt-1"
                   type="checkbox"
                   checked={selectedIds.has(template.id)}
+                  disabled={saveTemplates.isPending || refreshingAssignments}
                   onChange={(event) =>
                     setSelectedIds((current) => {
                       const next = new Set(current);
@@ -177,15 +207,42 @@ function FolderSettingsView() {
         <div className="mt-4 flex gap-2">
           <Button
             onClick={() => saveTemplates.mutate()}
-            disabled={saveTemplates.isPending || !templates.data?.templates.length}
+            disabled={
+              saveTemplates.isPending || refreshingAssignments || !membershipBase || !templates.data?.templates.length
+            }
           >
             Save template settings
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={saveTemplates.isPending || refreshingAssignments}
+            onClick={async () => {
+              setRefreshingAssignments(true);
+              try {
+                const latest = await memberships.refetch();
+                if (latest.error) throw latest.error;
+                if (latest.data) setMembershipBase(latest.data);
+                setAssignmentMessage('Assignments refreshed; your selection is preserved. Review before saving.');
+              } catch (error) {
+                setAssignmentMessage(`${(error as Error).message}. Selection preserved.`);
+              } finally {
+                setRefreshingAssignments(false);
+              }
+            }}
+          >
+            Refresh assignments
           </Button>
           {saveTemplates.isSuccess ? (
             <span className="self-center text-[var(--notes-muted)] text-sm">Saved</span>
           ) : null}
         </div>
       </div>
+
+      {assignmentMessage || memberships.error ? (
+        <p role="status" className="notes-muted text-sm">
+          {assignmentMessage || 'Assignments could not load. Refresh assignments to retry.'}
+        </p>
+      ) : null}
 
       <div className="rounded-lg border border-[var(--notes-button-destructive-border)] bg-[var(--notes-button-destructive-bg)] p-4">
         <h3 className="font-semibold text-[var(--notes-button-destructive-text)]">Danger zone</h3>

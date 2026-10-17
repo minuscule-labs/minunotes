@@ -205,7 +205,7 @@ export function FolderSidebar({
               {hasChildren ? (
                 <button
                   type="button"
-                  className="rounded-md p-1 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
                   aria-label={expanded ? `Collapse ${folder.title}` : `Expand ${folder.title}`}
                   aria-expanded={expanded}
                   aria-controls={childListId}
@@ -218,7 +218,7 @@ export function FolderSidebar({
                   )}
                 </button>
               ) : (
-                <span className="w-5 shrink-0" aria-hidden="true" />
+                <span className="w-6 shrink-0" aria-hidden="true" />
               )}
               <Link
                 to="/folders/$folderId"
@@ -383,7 +383,7 @@ export function FolderSidebar({
         {isLoading ? <p className="text-slate-500 text-sm">Loading...</p> : null}
         {error ? <p className="text-red-600 text-xs">API unavailable. Check VITE_API_URL.</p> : null}
         <div className="notes-sidebar-scroll -mr-4 min-h-0 flex-1 space-y-1 overflow-y-auto pr-4 pb-4">
-          <div className="flex items-center justify-between gap-1 pl-2 pb-1">
+          <div className="flex items-center justify-between gap-1 pb-1">
             <button
               type="button"
               className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md text-left text-[var(--notes-muted)] hover:text-[var(--notes-text)]"
@@ -391,11 +391,13 @@ export function FolderSidebar({
               aria-controls="sidebar-owned-folder-tree"
               onClick={() => setFoldersSectionExpanded((value) => !value)}
             >
-              {foldersSectionExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              )}
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center" aria-hidden="true">
+                {foldersSectionExpanded ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+              </span>
               <FolderIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span className="font-medium text-xs tracking-wide">Folders</span>
             </button>

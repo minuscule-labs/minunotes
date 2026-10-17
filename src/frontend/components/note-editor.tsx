@@ -56,6 +56,7 @@ export function NoteEditor({
   staleNotice,
   updatedMeta,
   headerExtra,
+  propertiesPanel,
   wikiLinks,
   comments,
   reviewPanel,
@@ -75,6 +76,7 @@ export function NoteEditor({
   staleNotice?: ReactNode;
   updatedMeta?: ReactNode;
   headerExtra?: ReactNode;
+  propertiesPanel?: ReactNode;
   wikiLinks?: WikiLinksProp;
   comments?: CommentsProp;
   reviewPanel?: ReactNode;
@@ -312,6 +314,7 @@ export function NoteEditor({
         {updatedMeta ? <div className="notes-muted mt-2 text-xs">{updatedMeta}</div> : null}
         {headerExtra}
       </div>
+      {propertiesPanel}
       <div className="overflow-x-hidden bg-[var(--notes-bg)] pb-20 sm:pb-24">
         <div>
           <MarkdownEditor

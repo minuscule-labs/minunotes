@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
 import { useState } from 'react';
+import { type ResourceColumn, ResourceName, ResourceTable } from '../components/resource-table';
 import { SharingPageTabs } from '../components/sharing-page-tabs';
 import { Avatar } from '../components/ui/avatar';
 import { EmptyState } from '../components/ui/empty-state';
@@ -35,6 +36,31 @@ function SharedResourceTable({ type }: { type: CollaborationResourceType }) {
   });
   const title = type === 'note' ? 'Notes' : 'Folders';
   const items = query.data?.collaborations ?? [];
+  const columns: ResourceColumn<SharedCollaboration>[] = [
+    { id: 'title', header: 'Title', cell: (item) => <SharedResourceTitle item={item} /> },
+    {
+      id: 'owner',
+      header: 'Shared by',
+      width: '12rem',
+      cell: (item) => (
+        <span className="flex min-w-0 items-center gap-2">
+          <Avatar identity={item.owner} size="sm" decorative />
+          <span className="min-w-0">{item.owner.label}</span>
+        </span>
+      ),
+    },
+    { id: 'role', header: 'Role', width: '7rem', cell: (item) => ROLE_LABEL[item.role] },
+    {
+      id: 'updated',
+      header: 'Updated',
+      width: '9rem',
+      cell: (item) => (
+        <span className="notes-muted">
+          {new Date((item.type === 'note' ? item.note : item.folder).updatedAt).toLocaleDateString()}
+        </span>
+      ),
+    },
+  ];
 
   return (
     <section aria-labelledby={`shared-${type}-heading`}>
@@ -64,44 +90,19 @@ function SharedResourceTable({ type }: { type: CollaborationResourceType }) {
         <EmptyState title={`Unable to load shared ${title.toLowerCase()}`}>Try refreshing the page.</EmptyState>
       ) : null}
       {!query.isLoading && !query.error ? (
-        <div className="overflow-x-auto rounded-lg border border-[var(--notes-border)]">
-          <table className="w-full min-w-[680px] border-collapse text-left text-sm">
-            <thead className="bg-[var(--notes-table-header-bg)]">
-              <tr>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Title
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Shared by
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Role
-                </th>
-                <th className="border-[var(--notes-border)] border-b px-4 py-2.5 text-left font-medium text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-                  Updated
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 ? (
-                <tr>
-                  <td className="notes-muted px-4 py-6 text-center" colSpan={4}>
-                    No shared {title.toLowerCase()} on this page.
-                  </td>
-                </tr>
-              ) : (
-                items.map((item) => <SharedResourceRow key={item.grantId} item={item} />)
-              )}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          items={items}
+          columns={columns}
+          rowId={(item) => item.grantId}
+          minWidth={680}
+          empty={<>No shared {title.toLowerCase()} on this page.</>}
+        />
       ) : null}
     </section>
   );
 }
 
-function SharedResourceRow({ item }: { item: SharedCollaboration }) {
-  const resource = item.type === 'note' ? item.note : item.folder;
+function SharedResourceTitle({ item }: { item: SharedCollaboration }) {
   const link =
     item.type === 'note' ? (
       <Link
@@ -109,7 +110,7 @@ function SharedResourceRow({ item }: { item: SharedCollaboration }) {
         params={{ noteId: item.note.id }}
         className="font-medium text-[var(--notes-blue)] hover:underline"
       >
-        {item.note.title}
+        <ResourceName>{item.note.title}</ResourceName>
       </Link>
     ) : (
       <Link
@@ -117,22 +118,10 @@ function SharedResourceRow({ item }: { item: SharedCollaboration }) {
         params={{ folderId: item.folder.id }}
         className="font-medium text-[var(--notes-blue)] hover:underline"
       >
-        {item.folder.title}
+        <ResourceName>{item.folder.title}</ResourceName>
       </Link>
     );
-  return (
-    <tr className="border-t border-[var(--notes-border)] hover:bg-[var(--notes-hover)]">
-      <td className="max-w-sm px-4 py-3">{link}</td>
-      <td className="px-4 py-3">
-        <span className="flex items-center gap-2">
-          <Avatar identity={item.owner} size="sm" decorative />
-          <span>{item.owner.label}</span>
-        </span>
-      </td>
-      <td className="px-4 py-3">{ROLE_LABEL[item.role]}</td>
-      <td className="px-4 py-3 text-[var(--notes-muted)]">{new Date(resource.updatedAt).toLocaleDateString()}</td>
-    </tr>
-  );
+  return link;
 }
 
 function PaginationControls({

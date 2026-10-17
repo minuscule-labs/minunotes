@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { FolderPlus } from 'lucide-react';
-import { useState } from 'react';
+import { type Ref, useState } from 'react';
 import type { Folder } from '../lib/api';
 import { api } from '../lib/api';
 import { CreateFolderDialog } from './create-folder-dialog';
@@ -20,6 +20,9 @@ export function FolderActionsPopover({
   ownerControls = true,
   canCreateSubfolder = ownerControls,
   canTrash = ownerControls,
+  view,
+  viewTriggerRef,
+  onViewChange,
 }: {
   folder: Folder;
   depth?: number;
@@ -28,6 +31,9 @@ export function FolderActionsPopover({
   ownerControls?: boolean;
   canCreateSubfolder?: boolean;
   canTrash?: boolean;
+  view?: 'list' | 'board';
+  viewTriggerRef?: Ref<HTMLButtonElement>;
+  onViewChange?: (view: 'list' | 'board') => void;
 }) {
   const [open, setOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -60,7 +66,13 @@ export function FolderActionsPopover({
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
+        <PopoverTrigger
+          asChild
+          ref={(node) => {
+            if (typeof viewTriggerRef === 'function') viewTriggerRef(node);
+            else if (viewTriggerRef) viewTriggerRef.current = node;
+          }}
+        >
           <ActionMenuIconButton icon={icon} aria-label={`Actions for ${folder.title}`} className={triggerClassName} />
         </PopoverTrigger>
         <PopoverContent align="end" className="w-48 p-1">
@@ -115,6 +127,17 @@ export function FolderActionsPopover({
                 Move
               </ActionMenuButton>
             </>
+          ) : null}
+          {view && onViewChange ? (
+            <ActionMenuButton
+              onClick={() => {
+                const next = view === 'list' ? 'board' : 'list';
+                onViewChange(next);
+                setOpen(false);
+              }}
+            >
+              {view === 'list' ? 'Switch to board' : 'Switch to list'}
+            </ActionMenuButton>
           ) : null}
           {canTrash ? (
             <DeleteConfirmDialog

@@ -360,6 +360,13 @@ export async function mockBrowserApi(
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
+    if (/^\/(notes|folders)\/[^/]+\/properties$/.test(path) && method === 'GET')
+      return json(
+        path.startsWith('/notes/')
+          ? { schema: { schemaId: null, revision: 0, definitions: [] }, revision: 0, values: {} }
+          : { schemaId: null, revision: 0, definitions: [] }
+      );
+
     if (path === '/account/profile' && method === 'GET') {
       const sessionEmail = options.sessionEmail === undefined ? 'browser@example.com' : options.sessionEmail;
       return json({ profile: { identity: browserUserIdentity, email: sessionEmail, imageUrl: null } });
@@ -832,6 +839,14 @@ export async function mockBrowserApi(
         },
       });
     }
+
+    const templateDefaultsMatch = path.match(/^\/notes\/templates\/([^/]+)\/defaults$/);
+    if (templateDefaultsMatch && method === 'GET') return json({ revision: 0, tags: [], assignments: [] });
+    const templateFoldersMatch = path.match(/^\/notes\/templates\/([^/]+)\/folders$/);
+    if (templateFoldersMatch && method === 'GET') return json({ folders: [], snapshot: 'empty-membership' });
+    if (templateFoldersMatch && method === 'PUT') return json({ ok: true, snapshot: 'empty-membership' });
+    const assignedTemplatesMatch = path.match(/^\/folders\/([^/]+)\/templates$/);
+    if (assignedTemplatesMatch && method === 'GET') return json({ templates: [] });
 
     if (path === '/notes/templates' && method === 'GET')
       return json({ templates: [...notes.values()].filter((note) => note.type === 'template') });

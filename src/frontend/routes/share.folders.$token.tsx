@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 import { createRoute, useNavigate } from '@tanstack/react-router';
 import type React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type ResourceColumn, ResourceName, ResourceTable } from '../components/resource-table';
 import { SharedMarkdownRenderer } from '../components/shared-markdown-renderer';
 import { EmptyState } from '../components/ui/empty-state';
 import {
@@ -252,6 +253,10 @@ function SharedFolderTree({
   );
 }
 
+type SharedContentsItem =
+  | { kind: 'folder'; folder: SharedFolderTreeNode }
+  | { kind: 'note'; note: SharedFolderTreeNode['notes'][number] };
+
 function SharedFolderContents({
   folder,
   onSelectFolder,
@@ -262,6 +267,48 @@ function SharedFolderContents({
   onSelectNote: (noteId: string) => void;
 }) {
   const hasContents = folder.children.length > 0 || folder.notes.length > 0;
+  const items: SharedContentsItem[] = [
+    ...folder.children.map((folder) => ({ kind: 'folder' as const, folder })),
+    ...folder.notes.map((note) => ({ kind: 'note' as const, note })),
+  ];
+  const columns: ResourceColumn<SharedContentsItem>[] = [
+    {
+      id: 'name',
+      header: 'Name',
+      cell: (item) => (
+        <button
+          type="button"
+          className="max-w-full text-left font-medium hover:underline"
+          onClick={() => (item.kind === 'folder' ? onSelectFolder(item.folder.id) : onSelectNote(item.note.id))}
+          title={item.kind === 'folder' ? item.folder.title : item.note.title}
+        >
+          <ResourceName>{item.kind === 'folder' ? item.folder.title : item.note.title}</ResourceName>
+        </button>
+      ),
+    },
+    {
+      id: 'type',
+      header: 'Type',
+      width: '6rem',
+      hiddenBelow: 'sm',
+      cell: (item) => (
+        <span className="notes-muted">
+          {item.kind === 'folder' ? 'Folder' : item.note.documentType.startsWith('canvas.') ? 'Canvas' : 'Note'}
+        </span>
+      ),
+    },
+    {
+      id: 'updated',
+      header: 'Updated',
+      width: '11rem',
+      hiddenBelow: 'md',
+      cell: (item) => (
+        <span className="notes-muted">
+          {new Date(item.kind === 'folder' ? item.folder.updatedAt : item.note.updatedAt).toLocaleString()}
+        </span>
+      ),
+    },
+  ];
   return (
     <section className="mx-auto w-full max-w-5xl p-4 sm:p-6">
       <div className="mb-6">
@@ -277,61 +324,11 @@ function SharedFolderContents({
           </EmptyState>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-[var(--notes-border)] bg-[var(--notes-panel)]">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-[var(--notes-border)] text-[var(--notes-muted)] text-xs uppercase tracking-wide">
-              <tr>
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="hidden px-4 py-3 font-medium sm:table-cell">Type</th>
-                <th className="hidden px-4 py-3 font-medium md:table-cell">Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {folder.children.map((child) => (
-                <tr
-                  key={child.id}
-                  className="border-b border-[var(--notes-border)] last:border-0 hover:bg-[var(--notes-hover)]"
-                >
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      className="font-medium text-left hover:underline"
-                      onClick={() => onSelectFolder(child.id)}
-                    >
-                      {child.title}
-                    </button>
-                  </td>
-                  <td className="hidden px-4 py-3 text-[var(--notes-muted)] sm:table-cell">Folder</td>
-                  <td className="hidden px-4 py-3 text-[var(--notes-muted)] md:table-cell">
-                    {new Date(child.updatedAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-              {folder.notes.map((note) => (
-                <tr
-                  key={note.id}
-                  className="border-b border-[var(--notes-border)] last:border-0 hover:bg-[var(--notes-hover)]"
-                >
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      className="font-medium text-left hover:underline"
-                      onClick={() => onSelectNote(note.id)}
-                    >
-                      {note.title}
-                    </button>
-                  </td>
-                  <td className="hidden px-4 py-3 text-[var(--notes-muted)] sm:table-cell">
-                    {note.documentType.startsWith('canvas.') ? 'Canvas' : 'Note'}
-                  </td>
-                  <td className="hidden px-4 py-3 text-[var(--notes-muted)] md:table-cell">
-                    {new Date(note.updatedAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          items={items}
+          columns={columns}
+          rowId={(item) => (item.kind === 'folder' ? `folder-${item.folder.id}` : `note-${item.note.id}`)}
+        />
       )}
     </section>
   );

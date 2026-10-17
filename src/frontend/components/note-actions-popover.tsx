@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api, type Note, type NoteListItem } from '../lib/api';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
 import { MoveNoteDialog } from './move-note-dialog';
@@ -20,6 +20,9 @@ export function NoteActionsPopover({
   icon = 'more',
   ownerControls = true,
   canTrash = ownerControls,
+  onProperties,
+  propertiesOpen = false,
+  propertiesOnly = false,
 }: {
   note: NoteListItem;
   onDelete: () => unknown | Promise<unknown>;
@@ -30,7 +33,11 @@ export function NoteActionsPopover({
   icon?: 'more' | 'settings';
   ownerControls?: boolean;
   canTrash?: boolean;
+  onProperties?: (trigger: HTMLButtonElement | null) => void;
+  propertiesOpen?: boolean;
+  propertiesOnly?: boolean;
 }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -69,86 +76,106 @@ export function NoteActionsPopover({
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
+        <PopoverTrigger asChild ref={triggerRef}>
           <ActionMenuIconButton icon={icon} aria-label="Open note actions" />
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-44 p-1">
-          <ActionMenuButton onClick={() => void copyNoteLink()}>
-            {copiedLink ? 'Copied link' : 'Copy note link'}
-          </ActionMenuButton>
-          <ActionMenuButton
-            onClick={() => {
-              setDetailsOpen(true);
-              setOpen(false);
-            }}
-          >
-            Details
-          </ActionMenuButton>
-          {ownerControls ? (
+        <PopoverContent
+          align="end"
+          className="w-44 p-1"
+          onCloseAutoFocus={(event) => {
+            if (propertiesOpen) event.preventDefault();
+          }}
+        >
+          {onProperties ? (
             <ActionMenuButton
               onClick={() => {
-                setShareOpen(true);
+                onProperties(triggerRef.current);
                 setOpen(false);
               }}
             >
-              Share
+              Properties
             </ActionMenuButton>
           ) : null}
-          {editorMode && onEditorModeChange ? (
-            <ActionMenuButton
-              onClick={() => {
-                onEditorModeChange(editorMode === 'live' ? 'source' : 'live');
-                setOpen(false);
-              }}
-            >
-              {editorMode === 'live' ? 'Source mode' : 'Live mode'}
-            </ActionMenuButton>
-          ) : null}
-          {ownerControls ? (
+          {!propertiesOnly ? (
             <>
-              <MoveNoteDialog
-                note={note}
-                onOpenChange={setOpen}
-                trigger={<ActionMenuItemLabel>Move note</ActionMenuItemLabel>}
-              />
-              <ActionMenuButton
-                disabled={duplicate.isPending}
-                onClick={() => {
-                  duplicate.mutate();
-                  setOpen(false);
-                }}
-              >
-                Duplicate
+              <ActionMenuButton onClick={() => void copyNoteLink()}>
+                {copiedLink ? 'Copied link' : 'Copy note link'}
               </ActionMenuButton>
               <ActionMenuButton
                 onClick={() => {
-                  setVersionsOpen(true);
+                  setDetailsOpen(true);
                   setOpen(false);
                 }}
               >
-                Version history
+                Details
               </ActionMenuButton>
-              <ActionMenuButton
-                onClick={() => {
-                  navigate({ to: '/notes/$noteId/activity', params: { noteId: note.id } });
-                  setOpen(false);
-                }}
-              >
-                View activity
-              </ActionMenuButton>
-              {onToggleApiEditable ? (
+              {ownerControls ? (
                 <ActionMenuButton
                   onClick={() => {
-                    onToggleApiEditable();
+                    setShareOpen(true);
                     setOpen(false);
                   }}
                 >
-                  {note.isApiEditable ? 'Disable API edits' : 'Enable API edits'}
+                  Share
                 </ActionMenuButton>
+              ) : null}
+              {editorMode && onEditorModeChange ? (
+                <ActionMenuButton
+                  onClick={() => {
+                    onEditorModeChange(editorMode === 'live' ? 'source' : 'live');
+                    setOpen(false);
+                  }}
+                >
+                  {editorMode === 'live' ? 'Source mode' : 'Live mode'}
+                </ActionMenuButton>
+              ) : null}
+              {ownerControls ? (
+                <>
+                  <MoveNoteDialog
+                    note={note}
+                    onOpenChange={setOpen}
+                    trigger={<ActionMenuItemLabel>Move note</ActionMenuItemLabel>}
+                  />
+                  <ActionMenuButton
+                    disabled={duplicate.isPending}
+                    onClick={() => {
+                      duplicate.mutate();
+                      setOpen(false);
+                    }}
+                  >
+                    Duplicate
+                  </ActionMenuButton>
+                  <ActionMenuButton
+                    onClick={() => {
+                      setVersionsOpen(true);
+                      setOpen(false);
+                    }}
+                  >
+                    Version history
+                  </ActionMenuButton>
+                  <ActionMenuButton
+                    onClick={() => {
+                      navigate({ to: '/notes/$noteId/activity', params: { noteId: note.id } });
+                      setOpen(false);
+                    }}
+                  >
+                    View activity
+                  </ActionMenuButton>
+                  {onToggleApiEditable ? (
+                    <ActionMenuButton
+                      onClick={() => {
+                        onToggleApiEditable();
+                        setOpen(false);
+                      }}
+                    >
+                      {note.isApiEditable ? 'Disable API edits' : 'Enable API edits'}
+                    </ActionMenuButton>
+                  ) : null}
+                </>
               ) : null}
             </>
           ) : null}
-          {canTrash ? (
+          {!propertiesOnly && canTrash ? (
             <DeleteConfirmDialog
               label="note"
               heading="Move note to Trash?"
