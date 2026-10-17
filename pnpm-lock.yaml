@@ -51,8 +51,8 @@ importers:
         specifier: github:minuscule-labs/minucanvas#v0.9.0
         version: github.com/minuscule-labs/minucanvas/3815188364a52bf80d3df17892e7637d9bd84a58(react-dom@19.2.6)(react@19.2.6)
       '@dpklabs/minueditor':
-        specifier: github:minuscule-labs/minueditor#f92db82604ba724a1b573ed63e4670f02bc17727
-        version: github.com/minuscule-labs/minueditor/f92db82604ba724a1b573ed63e4670f02bc17727(@codemirror/autocomplete@6.20.2)(@codemirror/commands@6.10.3)(@codemirror/lang-markdown@6.5.0)(@codemirror/language@6.12.3)(@codemirror/state@6.6.0)(@codemirror/view@6.43.0)(react-dom@19.2.6)(react@19.2.6)
+        specifier: github:minuscule-labs/minueditor#v0.17.1
+        version: github.com/minuscule-labs/minueditor/7cb2806b35cdbc2bf7a6e80ee361e84540fdb43c(@codemirror/autocomplete@6.20.2)(@codemirror/commands@6.10.3)(@codemirror/lang-markdown@6.5.0)(@codemirror/language@6.12.3)(@codemirror/state@6.6.0)(@codemirror/view@6.43.0)(react-dom@19.2.6)(react@19.2.6)
       '@hono/node-server':
         specifier: ^2.0.3
         version: 2.0.3(hono@4.12.21)
@@ -8259,11 +8259,11 @@ packages:
       react-dom: 19.2.6(react@19.2.6)
     dev: false
 
-  github.com/minuscule-labs/minueditor/f92db82604ba724a1b573ed63e4670f02bc17727(@codemirror/autocomplete@6.20.2)(@codemirror/commands@6.10.3)(@codemirror/lang-markdown@6.5.0)(@codemirror/language@6.12.3)(@codemirror/state@6.6.0)(@codemirror/view@6.43.0)(react-dom@19.2.6)(react@19.2.6):
-    resolution: {tarball: https://codeload.github.com/minuscule-labs/minueditor/tar.gz/f92db82604ba724a1b573ed63e4670f02bc17727}
-    id: github.com/minuscule-labs/minueditor/f92db82604ba724a1b573ed63e4670f02bc17727
+  github.com/minuscule-labs/minueditor/7cb2806b35cdbc2bf7a6e80ee361e84540fdb43c(@codemirror/autocomplete@6.20.2)(@codemirror/commands@6.10.3)(@codemirror/lang-markdown@6.5.0)(@codemirror/language@6.12.3)(@codemirror/state@6.6.0)(@codemirror/view@6.43.0)(react-dom@19.2.6)(react@19.2.6):
+    resolution: {tarball: https://codeload.github.com/minuscule-labs/minueditor/tar.gz/7cb2806b35cdbc2bf7a6e80ee361e84540fdb43c}
+    id: github.com/minuscule-labs/minueditor/7cb2806b35cdbc2bf7a6e80ee361e84540fdb43c
     name: '@dpklabs/minueditor'
-    version: 0.16.4
+    version: 0.17.1
     prepare: true
     requiresBuild: true
     peerDependencies:
