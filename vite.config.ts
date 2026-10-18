@@ -27,7 +27,14 @@ export default defineConfig(async ({ mode }) => {
   return {
     plugins: [mdx({ remarkPlugins: [remarkFrontmatter, remarkMdxFrontmatter] }), react(), tailwindcss()],
     test: {
-      exclude: ['**/node_modules/**', '**/dist/**', '**/.{git,cache,output,temp}/**', 'tests/browser/**'],
+      // Demo lifecycle tests bind ports and start real servers; run with test:demo instead.
+      exclude: [
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/.{git,cache,output,temp}/**',
+        'tests/browser/**',
+        'tests/demo/**',
+      ],
     },
     resolve: {
       dedupe: [
