@@ -204,7 +204,7 @@ test.describe('real disposable board demo', () => {
     await panel.getByLabel('Add property', { exact: true }).selectOption(status.id);
     await panel.getByRole('checkbox', { name: todo.label, exact: true }).check();
     await panel.getByRole('button', { name: 'Apply', exact: true }).click();
-    await page.getByRole('button', { name: /^Sort by ·/ }).click();
+    await page.getByRole('button', { name: /^Sort ·/ }).click();
     const sortPanel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
     await sortPanel.getByRole('button', { name: 'Status · select property', exact: true }).click();
     await sortPanel.getByLabel('Sort direction', { exact: true }).selectOption('desc');
