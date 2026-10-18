@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { benchmarkCandidates, runPropertyBoardBenchmark } from '../scripts/lib/property-board-benchmark';
+import type { BenchmarkDiagnosticEvent } from '../scripts/lib/property-board-diagnostics';
 
 const exec = promisify(execFile);
 
@@ -28,24 +29,107 @@ describe('owned local property board benchmark', () => {
   });
   it('cleans a newly owned sandbox on injected failure before DB/service imports', async () => {
     let root = '';
+    const events: BenchmarkDiagnosticEvent[] = [];
     await expect(
-      runPropertyBoardBenchmark((created) => {
-        root = created;
-        throw new Error('Injected failure');
-      })
+      runPropertyBoardBenchmark(
+        (created) => {
+          root = created;
+          throw new Error('Injected failure');
+        },
+        (event) => events.push(event)
+      )
     ).rejects.toThrow('Injected failure');
     expect(root).toContain('notes-property-board-benchmark-');
     await expect(stat(root)).rejects.toHaveProperty('code', 'ENOENT');
+    expect(events).toEqual([
+      { phase: 'sandbox', state: 'start' },
+      { phase: 'sandbox', state: 'complete' },
+      { phase: 'cleanup-sandbox', state: 'start' },
+      { phase: 'cleanup-sandbox', state: 'complete' },
+    ]);
   });
   it('runs real SQL with JSON capability, bounded exact pages, actual plans/counts/payload and no ambient remote target', async () => {
-    const { stdout } = await execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts'], {
+    const { stdout, stderr } = await execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts'], {
       ...process.env,
       TURSO_DB_URL: 'libsql://must-not-use.invalid',
       TURSO_AUTH_TOKEN: '',
+      PROPERTY_BOARD_BENCHMARK_DIAGNOSTICS: '1',
     });
     const summary = JSON.parse(stdout);
     const report = JSON.parse(await readFile(summary.output, 'utf8'));
     try {
+      const events = stderr
+        .trim()
+        .split('\n')
+        .map((line) => {
+          expect(line).toMatch(/^PROPERTY_BOARD_BENCHMARK /);
+          return JSON.parse(line.slice('PROPERTY_BOARD_BENCHMARK '.length)) as BenchmarkDiagnosticEvent & {
+            pid: number;
+            elapsedMs: number;
+          };
+        });
+      expect(events[0]).toMatchObject({ phase: 'load-benchmark', state: 'start', pid: expect.any(Number) });
+      expect(events.at(-1)).toMatchObject({ phase: 'print-summary', state: 'complete' });
+      const pending = new Set<string>();
+      for (const [index, event] of events.entries()) {
+        expect(event.pid).toBe(events[0].pid);
+        expect(event.elapsedMs).toBeGreaterThanOrEqual(index ? events[index - 1].elapsedMs : 0);
+        const key = JSON.stringify([event.phase, event.scenario, event.actor, event.run, event.view, event.migration]);
+        if (event.state === 'start') {
+          expect(pending.has(key)).toBe(false);
+          pending.add(key);
+        } else {
+          expect(pending.delete(key)).toBe(true);
+        }
+      }
+      expect(pending.size).toBe(0);
+      expect(
+        events
+          .filter((event) =>
+            [
+              'report',
+              'close-client',
+              'cleanup-sandbox',
+              'report-directory',
+              'serialize-report',
+              'write-report',
+              'print-summary',
+            ].includes(event.phase)
+          )
+          .map((event) => `${event.phase}:${event.state}`)
+      ).toEqual([
+        'report:start',
+        'report:complete',
+        'close-client:start',
+        'close-client:complete',
+        'cleanup-sandbox:start',
+        'cleanup-sandbox:complete',
+        'report-directory:start',
+        'report-directory:complete',
+        'serialize-report:start',
+        'serialize-report:complete',
+        'write-report:start',
+        'write-report:complete',
+        'print-summary:start',
+        'print-summary:complete',
+      ]);
+      for (const phase of [
+        'imports',
+        'migrations',
+        'seed',
+        'capabilities',
+        'board-reads',
+        'filtered-reads',
+        'query-plans',
+      ])
+        expect(events.some((event) => event.phase === phase && event.state === 'complete')).toBe(true);
+      for (const secret of [
+        'PROPERTY_BOARD_PRIVATE_BODY_SENTINEL',
+        'PROPERTY_BOARD_PRIVATE_METADATA_SENTINEL',
+        'PREVIEW_PRIVATE_SUFFIX',
+        'libsql://must-not-use.invalid',
+      ])
+        expect(stderr).not.toContain(secret);
       expect(report.fixture.candidates).toBe(1000);
       expect(report.environment.jsonScalarExtraction).toBe(true);
       expect(report.fixture.typeBadges).toBe(375);
@@ -109,6 +193,28 @@ describe('owned local property board benchmark', () => {
       await rm(path.dirname(summary.output), { recursive: true });
     }
   }, 60000);
+  it('keeps phase diagnostics opt-in and off JSON stdout', async () => {
+    const { stdout, stderr } = await execNode([
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      `import { createBenchmarkDiagnostics } from './scripts/lib/property-board-diagnostics.ts';
+      createBenchmarkDiagnostics()({ phase: 'imports', state: 'start' });
+      createBenchmarkDiagnostics(true)({ phase: 'seed', state: 'start' });
+      console.log(JSON.stringify({ ok: true }));`,
+    ]);
+    expect(JSON.parse(stdout)).toEqual({ ok: true });
+    const lines = stderr.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^PROPERTY_BOARD_BENCHMARK /);
+    expect(JSON.parse(lines[0].slice('PROPERTY_BOARD_BENCHMARK '.length))).toMatchObject({
+      phase: 'seed',
+      state: 'start',
+      pid: expect.any(Number),
+      elapsedMs: expect.any(Number),
+    });
+  });
   it('reports subprocess exit codes and captured output', async () => {
     await expect(
       execNode(['-e', 'console.log("diagnostic stdout"); console.error("diagnostic stderr"); process.exit(17)'])
@@ -119,6 +225,22 @@ describe('owned local property board benchmark', () => {
       /exit code: none, signal: SIGTERM/
     );
   });
+  it.skipIf(process.platform === 'win32')(
+    'preserves the last synchronous phase marker on a subprocess signal',
+    async () => {
+      await expect(
+        execNode([
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          `import { createBenchmarkDiagnostics } from './scripts/lib/property-board-diagnostics.ts';
+        createBenchmarkDiagnostics(true)({ phase: 'close-client', state: 'start' });
+        process.kill(process.pid, 'SIGTERM');`,
+        ])
+      ).rejects.toThrow(/signal: SIGTERM[\s\S]*PROPERTY_BOARD_BENCHMARK[^\n]*"phase":"close-client","state":"start"/);
+    }
+  );
   it('refuses target arguments before sandbox allocation', async () => {
     await expect(
       execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts', 'libsql://forbidden.invalid'])

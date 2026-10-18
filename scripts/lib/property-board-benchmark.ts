@@ -8,6 +8,7 @@ import type { Client, InStatement, ResultSet, Transaction, TransactionMode } fro
 import { DEFAULT_BOARD_CONFIG } from '../../src/shared/board';
 import { type NoteFilter, noteQueryIdentity, parseNoteQuery } from '../../src/shared/note-filters';
 import { applyMigrationAtomically } from './migration-runner';
+import type { BenchmarkDiagnostics } from './property-board-diagnostics';
 
 const clock = new Date('2026-10-08T12:00:00Z');
 const rootPath = new URL('../../', import.meta.url);
@@ -115,7 +116,11 @@ function instrument(client: Client, trace: Trace[]) {
 }
 
 /** No external target, no env-file loading; only a new marked local database. */
-export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string) => void) {
+export async function runPropertyBoardBenchmark(
+  onSandboxCreated?: (root: string) => void,
+  diagnostic: BenchmarkDiagnostics = () => {}
+) {
+  diagnostic({ phase: 'sandbox', state: 'start' });
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'notes-property-board-benchmark-')));
   const marker = randomBytes(32).toString('hex');
   await writeFile(path.join(root, '.owned'), marker, { mode: 0o600 });
@@ -135,7 +140,9 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
   let client: Client | undefined;
   let restore: (() => void) | undefined;
   try {
+    diagnostic({ phase: 'sandbox', state: 'complete' });
     onSandboxCreated?.(root);
+    diagnostic({ phase: 'imports', state: 'start' });
     // Environment is local BEFORE importing the singleton DB or service.
     const [{ libsql, db }, schema, boards] = await Promise.all([
       import('../../src/api/db/client'),
@@ -143,6 +150,8 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
       import('../../src/api/notes/boards'),
     ]);
     client = libsql;
+    diagnostic({ phase: 'imports', state: 'complete' });
+    diagnostic({ phase: 'migrations', state: 'start' });
     await client.execute(
       'create table __drizzle_migrations (id integer primary key, hash text not null, created_at integer)'
     );
@@ -152,6 +161,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
     const migrations = journal.entries.filter((m) => m.idx <= 43);
     assert.equal(migrations.at(-1)?.tag, '0043_template_defaults');
     for (const entry of migrations) {
+      diagnostic({ phase: 'migrations', state: 'start', migration: entry.tag });
       const text = await readFile(new URL(`drizzle/${entry.tag}.sql`, rootPath), 'utf8');
       await applyMigrationAtomically(
         client,
@@ -165,7 +175,10 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
         },
         '__drizzle_migrations'
       );
+      diagnostic({ phase: 'migrations', state: 'complete', migration: entry.tag });
     }
+    diagnostic({ phase: 'migrations', state: 'complete' });
+    diagnostic({ phase: 'seed', state: 'start' });
     await client.execute('pragma foreign_keys=on');
     const candidates = benchmarkCandidates();
     await db.transaction(async (tx) => {
@@ -270,6 +283,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
           )
         );
     });
+    diagnostic({ phase: 'seed', state: 'complete' });
     const config = {
       ...DEFAULT_BOARD_CONFIG,
       schemaVersion: 4,
@@ -277,6 +291,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
       cardPropertyIds: [typeField.id],
     };
 
+    diagnostic({ phase: 'capabilities', state: 'start' });
     assert.equal(await boards.boardJsonCapability(), true);
     const sqlite = (await client.execute('select sqlite_version() as version')).rows[0].version;
     const count = (
@@ -286,6 +301,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
     ).rows[0].count;
     assert.equal(Number(count), 1000);
     assert.equal((await client.execute('pragma foreign_key_check')).rows.length, 0);
+    diagnostic({ phase: 'capabilities', state: 'complete' });
     const trace: Trace[] = [];
     restore = instrument(client, trace);
     const samples: Array<{
@@ -308,12 +324,14 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
       { name: 'all-twelve-max-preview', ids: definitions.map((d) => d.id) },
     ];
     for (const [index, scenario] of scenarios.entries()) {
+      diagnostic({ phase: 'board-reads', state: 'start', scenario: scenario.name });
       await boards.saveBoardConfig('owner', 'board', { ...config, cardPropertyIds: scenario.ids }, index, {
         schemaId: 'schema_benchmark',
         schemaRevision: 1,
       });
       for (const actor of ['owner', 'reader'])
         for (let run = 0; run < 4; run++) {
+          diagnostic({ phase: 'board-reads', state: 'start', scenario: scenario.name, actor, run });
           trace.length = 0;
           const start = performance.now();
           const board = await boards.readAuthorizedBoard(actor, 'owner', 'board');
@@ -426,8 +444,11 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
             for (const q of trace.filter((q) => q.sql.includes('left join "note_property_state"')))
               planQueries.set(JSON.stringify([q.sql, q.args]), q);
           }
+          diagnostic({ phase: 'board-reads', state: 'complete', scenario: scenario.name, actor, run });
         }
+      diagnostic({ phase: 'board-reads', state: 'complete', scenario: scenario.name });
     }
+    diagnostic({ phase: 'filtered-reads', state: 'start' });
     const folderQueries = await import('../../src/api/notes/folder-query');
     const selectedBoard = await boards.saveBoardConfig('owner', 'board', config, 4, {
       schemaId: 'schema_benchmark',
@@ -502,6 +523,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
         const query = parseNoteQuery({ q: scenario.q, filters: JSON.stringify({ version: 1, all: scenario.all }) });
         const byView = new Map<string, string[]>();
         for (const view of ['list', 'board']) {
+          diagnostic({ phase: 'filtered-reads', state: 'start', scenario: scenario.name, actor, view });
           const ids: string[] = [];
           for (const lane of view === 'list' ? ['flat'] : selectedBoard.columns.map((c) => c.key)) {
             const expected = scenario.expected.filter(
@@ -567,14 +589,17 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
           assert.equal(new Set(ids).size, ids.length);
           byView.set(view, ids.sort());
           assert.deepEqual(ids, scenario.expected.map((n) => n.id).sort());
+          diagnostic({ phase: 'filtered-reads', state: 'complete', scenario: scenario.name, actor, view });
         }
         const listIds = byView.get('list') ?? [],
           boardIds = byView.get('board') ?? [];
         assert.deepEqual(listIds, boardIds);
         parity.push({ scenario: scenario.name, actor, matches: listIds.length, listIds, boardIds });
       }
+    diagnostic({ phase: 'filtered-reads', state: 'complete' });
     restore();
     restore = undefined;
+    diagnostic({ phase: 'query-plans', state: 'start' });
     const filteredPlans = [];
     for (const q of filteredPlanQueries.values())
       filteredPlans.push({
@@ -589,6 +614,8 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
         args: q.args,
         plan: (await client.execute({ sql: `EXPLAIN QUERY PLAN ${q.sql}`, args: q.args as never })).rows,
       });
+    diagnostic({ phase: 'query-plans', state: 'complete' });
+    diagnostic({ phase: 'report', state: 'start' });
     const require = createRequire(import.meta.url);
     const packageVersion = async (name: string) => {
       let directory = path.dirname(require.resolve(name));
@@ -604,7 +631,7 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
         directory = parent;
       }
     };
-    return {
+    const report = {
       environment: {
         node: process.version,
         platform: platform(),
@@ -663,13 +690,21 @@ export async function runPropertyBoardBenchmark(onSandboxCreated?: (root: string
         maxReturnedRows: Math.max(...samples.map((s) => s.returnedRows)),
       },
     };
+    diagnostic({ phase: 'report', state: 'complete' });
+    return report;
   } finally {
     restore?.();
-    client?.close();
+    if (client) {
+      diagnostic({ phase: 'close-client', state: 'start' });
+      client.close();
+      diagnostic({ phase: 'close-client', state: 'complete' });
+    }
+    diagnostic({ phase: 'cleanup-sandbox', state: 'start' });
     assert.equal(await readFile(path.join(root, '.owned'), 'utf8'), marker);
     assert.equal(await realpath(root), root);
     await rm(root, { recursive: true });
     planQueries.clear();
+    diagnostic({ phase: 'cleanup-sandbox', state: 'complete' });
   }
 }
 const planQueries = new Map<string, Trace>();
