@@ -330,10 +330,13 @@ export async function mockPropertyBoard(
     });
   });
   await page.route('**/internal/folders/*/properties', (route) => route.fulfill({ json: schema }));
-  await page.route(/\/internal\/folders\/[^/]+\/board(?:\/config)?(?:\?.*)?$/, async (route) => {
+  const boardRoute = /\/internal\/(?:share\/folders\/[^/]+\/)?folders\/[^/]+\/board(?:\/config)?(?:\?.*)?$/;
+  await page.route(boardRoute, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
+    const publicRead = url.pathname.startsWith('/internal/share/');
+    if (publicRead && request.method() !== 'GET') return reply({ error: 'Not found' }, 404);
     if (url.pathname.endsWith('/config')) {
       if (request.method() === 'PUT') {
         const input = request.postDataJSON();
@@ -351,7 +354,7 @@ export async function mockPropertyBoard(
         return reply({ board: snapshot() });
       }
       if (controls.readFailure) return reply({ error: 'Configuration read failed' }, controls.readFailure);
-      return reply({ board: version ? snapshot() : null, access });
+      return reply({ board: version ? snapshot() : null, ...(!publicRead ? { access } : {}) });
     }
     laneRequests.push(url);
     if (!config.enabled) return reply({ error: 'Board is not enabled' }, 404);
@@ -411,7 +414,7 @@ export async function mockPropertyBoard(
       hasMore: visible.length > pageNumber * limit,
       ...echo(query, url),
       ...sortEcho(url),
-      access,
+      ...(!publicRead ? { access } : {}),
     });
   });
   return {
