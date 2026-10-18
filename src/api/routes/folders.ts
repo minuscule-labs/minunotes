@@ -32,6 +32,7 @@ import { createId } from '../lib/id';
 import { parsePageRequest } from '../lib/pagination';
 import { buildFolderShareUrl, generateShareToken, hashShareToken } from '../lib/share-tokens';
 import { createRequestSizeLimitMiddleware } from '../middleware/request-limits';
+import { parseBoardLaneRequest } from '../notes/board-request';
 import { readAuthorizedBoard, readAuthorizedBoardLane, saveBoardConfig } from '../notes/boards';
 import { parseFolderQueryRequest, readFilteredFolderNotes } from '../notes/folder-query';
 import {
@@ -588,58 +589,23 @@ folderRoutes.put('/:folderId/board/config', async (c) => {
 folderRoutes.get('/:folderId/board', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
-  let readQuery: ReturnType<typeof parseFolderQueryRequest>;
-  try {
-    readQuery = parseFolderQueryRequest(new URL(c.req.url).searchParams);
-  } catch (error) {
-    if (error instanceof NoteQueryError) return c.json({ error: error.message }, 400);
-    throw error;
-  }
   const folderId = c.req.param('folderId');
   const access = await resolveFolderCollaborationAccess({ actorUserId: user.id, folderId });
   if (!access) return c.json({ error: 'Folder not found' }, 404);
-  for (const key of ['version', 'lane', 'page', 'limit', 'schemaId', 'schemaRevision']) {
-    if ((c.req.queries(key)?.length ?? 0) > 1) return c.json({ error: `Repeated ${key} parameter` }, 400);
-  }
-  const version = c.req.query('version');
-  if (version !== undefined && (!/^[1-9]\d*$/.test(version) || !Number.isSafeInteger(Number(version))))
-    return c.json({ error: 'Invalid configuration version' }, 400);
-  const lane = c.req.query('lane') ?? '';
-  const schemaId = c.req.query('schemaId');
-  const schemaRevision = c.req.query('schemaRevision');
-  if (schemaId !== undefined && !/^[a-zA-Z0-9_-]{1,100}$/.test(schemaId))
-    return c.json({ error: 'Invalid schema identity' }, 400);
-  if (
-    schemaRevision !== undefined &&
-    (!/^[1-9]\d*$/.test(schemaRevision) ||
-      !Number.isSafeInteger(Number(schemaRevision)) ||
-      Number(schemaRevision) >= Number.MAX_SAFE_INTEGER)
-  )
-    return c.json({ error: 'Invalid schema revision' }, 400);
-  if (['tag', 'boardTags', 'includeTags', 'excludeTags'].some((key) => c.req.queries(key) !== undefined))
-    return c.json({ error: 'Board tag filters are no longer supported. Refresh the property-only board.' }, 400);
-  const page = parsePageRequest(c.req.query('page'), c.req.query('limit'), { defaultLimit: 25 });
-  if (!Number.isSafeInteger(page.offset) || page.offset > 1000000)
-    return c.json({ error: 'Page is out of range' }, 400);
   try {
     return c.json({
       ...(await readAuthorizedBoardLane({
+        ...parseBoardLaneRequest(new URL(c.req.url).searchParams),
         actorUserId: user.id,
         userId: access.resourceOwnerUserId,
         folderId,
-        lane,
-        page,
-        query: readQuery.query,
-        sort: readQuery.sort,
-        version: version === undefined ? undefined : Number(version),
-        schemaId,
-        schemaRevision: schemaRevision === undefined ? undefined : Number(schemaRevision),
       })),
       access: serializeCollaborationAccess(access),
     });
   } catch (error) {
     if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
-    if (error instanceof BoardValidationError) return c.json({ error: error.message }, 400);
+    if (error instanceof BoardValidationError || error instanceof NoteQueryError)
+      return c.json({ error: error.message }, 400);
     throw error;
   }
 });

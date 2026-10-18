@@ -5,12 +5,14 @@ import {
   mindMapCanvasProfile,
   standardCanvasProfile,
 } from '@dpklabs/minucanvas';
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery } from '@tanstack/react-query';
 import { createRoute, useNavigate } from '@tanstack/react-router';
 import type React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { NotesBoard } from '../components/notes-board';
 import { type ResourceColumn, ResourceName, ResourceTable } from '../components/resource-table';
 import { SharedMarkdownRenderer } from '../components/shared-markdown-renderer';
+import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/ui/empty-state';
 import {
   ApiError,
@@ -24,6 +26,14 @@ import { rootRoute } from './__root';
 
 const EMPTY_CANVAS: JsonCanvasDocument = { nodes: [], edges: [] };
 const EMPTY_WIKILINK_RESOLUTIONS: SharedWikilinkResolution[] = [];
+
+function sharedFolderQueryOptions(token: string) {
+  return queryOptions({
+    queryKey: ['shared-folder', token],
+    queryFn: () => api.sharedFolder(token),
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
+  });
+}
 
 type CanvasViewport = { x: number; y: number; zoom: number };
 type SharedFolderTreeNode =
@@ -97,14 +107,10 @@ function findFolderNode(node: SharedFolderTreeNode, folderId: string): SharedFol
 
 function SharedFolderView() {
   const { token } = folderShareRoute.useParams();
-  const { note: selectedNoteId } = folderShareRoute.useSearch();
+  const { note: selectedNoteId, folder: selectedFolderId, view } = folderShareRoute.useSearch();
+  const boardView = view === 'board';
   const navigate = useNavigate();
-  const { data, error, isLoading } = useQuery({
-    queryKey: ['shared-folder', token],
-    queryFn: () => api.sharedFolder(token),
-    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
-  });
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const { data, error, isLoading } = useQuery(sharedFolderQueryOptions(token));
   const selectedNote = useMemo(
     () => data?.notes.find((note) => note.id === selectedNoteId) ?? null,
     [data?.notes, selectedNoteId]
@@ -120,11 +126,22 @@ function SharedFolderView() {
     enabled: Boolean(selectedNote && !selectedNote.documentType.startsWith('canvas.')),
     retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   });
-  const setSelectedNote = (noteId: string | null) => {
+  const wikilinkResolutions = useMemo(() => {
+    const resolutions = wikilinkData?.resolutions ?? EMPTY_WIKILINK_RESOLUTIONS;
+    if (!boardView) return resolutions;
+    const sharePath = `/share/folders/${encodeURIComponent(token)}`;
+    return resolutions.map((resolution) => {
+      if (!resolution.href?.startsWith(`${sharePath}?`)) return resolution;
+      const url = new URL(resolution.href, window.location.origin);
+      url.searchParams.set('view', 'board');
+      return { ...resolution, href: `${url.pathname}${url.search}${url.hash}` };
+    });
+  }, [boardView, token, wikilinkData?.resolutions]);
+  const setSelectedNote = (noteId: string | null, folderId = selectedFolderId) => {
     void navigate({
       to: '/share/folders/$token',
       params: { token },
-      search: { note: noteId ?? undefined },
+      search: { note: noteId ?? undefined, folder: folderId === data?.folder.id ? undefined : folderId, view },
     });
   };
   const folderTree = useMemo(
@@ -174,32 +191,60 @@ function SharedFolderView() {
                 depth={0}
                 selectedFolderId={selectedFolder?.id ?? null}
                 onSelectFolder={(folderId) => {
-                  setSelectedFolderId(folderId);
-                  setSelectedNote(null);
+                  setSelectedNote(null, folderId);
                 }}
               />
             ) : null}
           </nav>
         </aside>
-        <main className="min-w-0">
+        <main className={boardView && !selectedNoteId ? 'flex h-dvh min-w-0 flex-col' : 'min-w-0'}>
+          {!selectedNoteId && selectedFolder ? (
+            <div className="flex shrink-0 justify-end border-b border-[var(--notes-border)] px-6 py-3">
+              <button
+                type="button"
+                className="rounded-md px-3 py-2 text-sm hover:bg-[var(--notes-hover)]"
+                onClick={() =>
+                  void navigate({
+                    to: '/share/folders/$token',
+                    params: { token },
+                    search: {
+                      folder: selectedFolder.id === data.folder.id ? undefined : selectedFolder.id,
+                      view: boardView ? 'list' : 'board',
+                    },
+                  })
+                }
+              >
+                {boardView ? 'Switch to list' : 'Switch to board'}
+              </button>
+            </div>
+          ) : null}
           {selectedNote ? (
             <SharedFolderNoteView
               note={selectedNote}
               token={token}
-              resolutions={wikilinkData?.resolutions ?? EMPTY_WIKILINK_RESOLUTIONS}
+              resolutions={wikilinkResolutions}
               onBack={() => {
-                setSelectedFolderId(selectedNote.folderId);
-                setSelectedNote(null);
+                setSelectedNote(null, selectedNote.folderId);
               }}
             />
+          ) : selectedNoteId ? (
+            <SharedFolderMissingNote
+              key={`${token}-${selectedNoteId}`}
+              token={token}
+              onBack={() => setSelectedNote(null)}
+            />
+          ) : selectedFolder && boardView ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
+              <h2 className="shrink-0 text-xl font-semibold">{selectedFolder.title}</h2>
+              <NotesBoard key={`${token}-${selectedFolder.id}`} folderId={selectedFolder.id} shareToken={token} />
+            </div>
           ) : selectedFolder ? (
             <SharedFolderContents
               folder={selectedFolder}
               onSelectFolder={(folderId) => {
-                setSelectedFolderId(folderId);
-                setSelectedNote(null);
+                setSelectedNote(null, folderId);
               }}
-              onSelectNote={setSelectedNote}
+              onSelectNote={(noteId) => setSelectedNote(noteId)}
             />
           ) : (
             <div className="grid min-h-[60vh] place-items-center p-6">
@@ -334,6 +379,32 @@ function SharedFolderContents({
   );
 }
 
+function SharedFolderMissingNote({ token, onBack }: { token: string; onBack: () => void }) {
+  // Mount only for a cache miss. Refetch the same folder query once per selection,
+  // so the parent can open the note when it arrives without a separate note cache.
+  const { error, isFetching, refetch } = useQuery({
+    ...sharedFolderQueryOptions(token),
+    refetchOnMount: 'always',
+  });
+  return (
+    <section className="space-y-4 p-6">
+      <Button onClick={onBack}>Back to folder</Button>
+      {isFetching ? (
+        <p role="status">Loading shared note...</p>
+      ) : error ? (
+        <div role="alert" className="space-y-2">
+          <p>Unable to load shared note.</p>
+          <Button onClick={() => void refetch()}>Retry</Button>
+        </div>
+      ) : (
+        <EmptyState title="Shared note unavailable">
+          <p>It may have been removed or moved outside this shared folder.</p>
+        </EmptyState>
+      )}
+    </section>
+  );
+}
+
 function SharedFolderNoteView({
   note,
   token,
@@ -423,8 +494,10 @@ function SharedFolderShell({ children }: { children: React.ReactNode }) {
 export const folderShareRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/share/folders/$token',
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { note?: string; folder?: string; view?: 'list' | 'board' } => ({
     note: typeof search.note === 'string' && search.note ? search.note : undefined,
+    folder: typeof search.folder === 'string' && search.folder ? search.folder : undefined,
+    view: search.view === 'board' || search.view === 'list' ? search.view : undefined,
   }),
   component: SharedFolderView,
 });

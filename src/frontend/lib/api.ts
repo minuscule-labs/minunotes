@@ -565,6 +565,11 @@ export type BoardPage = PageResponse &
     schemaRevision?: number;
     access: CollaborationAccess;
   };
+function folderBoardPath(folderId: string, shareToken?: string) {
+  const folder = `/folders/${encodeURIComponent(folderId)}/board`;
+  return shareToken ? `/share/folders/${encodeURIComponent(shareToken)}${folder}` : folder;
+}
+
 export const api = {
   folderProperties: (folderId: string) =>
     request<PropertySchema>(`/folders/${encodeURIComponent(folderId)}/properties`),
@@ -589,9 +594,9 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
-  boardConfig: (folderId: string) =>
-    request<{ board: SavedBoard | null; access: CollaborationAccess }>(
-      `/folders/${encodeURIComponent(folderId)}/board/config`
+  boardConfig: (folderId: string, shareToken?: string) =>
+    request<{ board: SavedBoard | null; access?: CollaborationAccess }>(
+      `${folderBoardPath(folderId, shareToken)}/config`
     ),
   saveBoardConfig: (
     folderId: string,
@@ -610,7 +615,8 @@ export const api = {
     page = 1,
     schema?: import('../../shared/board').BoardSchemaToken,
     captured?: FolderQueryRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    shareToken?: string
   ) => {
     const search = new URLSearchParams({ lane, version: String(version), page: String(page), limit: '25' });
     if (schema) {
@@ -618,7 +624,7 @@ export const api = {
       search.set('schemaRevision', String(schema.schemaRevision));
     }
     appendFolderQuery(search, captured);
-    return request<BoardPage>(`/folders/${encodeURIComponent(folderId)}/board?${search}`, { signal });
+    return request<BoardPage>(`${folderBoardPath(folderId, shareToken)}?${search}`, { signal });
   },
   accountProfile: () => request<{ profile: AccountProfile }>('/account/profile'),
   apiKeys: () => request<{ keys: ApiKey[] }>('/api-keys'),

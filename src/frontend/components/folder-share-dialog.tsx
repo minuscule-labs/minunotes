@@ -7,10 +7,12 @@ import { CollaboratorAccessList } from './collaborator-access-list';
 
 export function FolderShareDialog({
   folder,
+  view,
   open,
   onOpenChange,
 }: {
   folder: { id: string };
+  view?: 'list' | 'board';
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -60,7 +62,9 @@ export function FolderShareDialog({
       nextUrl = result.shareLink.url;
     }
     if (!nextUrl) return;
-    await navigator.clipboard.writeText(nextUrl);
+    const publicUrl = new URL(nextUrl);
+    if (view === 'board') publicUrl.searchParams.set('view', 'board');
+    await navigator.clipboard.writeText(publicUrl.toString());
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
