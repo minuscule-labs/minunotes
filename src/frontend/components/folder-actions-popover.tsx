@@ -184,7 +184,7 @@ export function FolderActionsPopover({
           triggerRef={actionRef}
         />
       ) : null}
-      <FolderShareDialog folder={folder} open={shareOpen} onOpenChange={setShareOpen} />
+      <FolderShareDialog folder={folder} view={view} open={shareOpen} onOpenChange={setShareOpen} />
       <RenameFolderDialog folder={folder} open={renameOpen} onOpenChange={setRenameOpen} />
     </>
   );

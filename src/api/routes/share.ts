@@ -1,8 +1,13 @@
 import { and, asc, eq, gt, isNull, or } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { BoardValidationError } from '../../shared/board';
+import { NoteQueryError } from '../../shared/note-filters';
+import { PropertyError } from '../../shared/properties';
 import { db } from '../db/client';
 import { attachments, folderShareLinks, folders, noteShareLinks, notes } from '../db/schema';
 import { hashShareToken } from '../lib/share-tokens';
+import { parseBoardLaneRequest } from '../notes/board-request';
+import { readAuthorizedBoard, readAuthorizedBoardLane } from '../notes/boards';
 import { sanitizeCanvasNoteLinksForVisibleTargets } from '../notes/links';
 import {
   databaseSharedWikilinkRepository,
@@ -192,6 +197,52 @@ shareRoutes.get('/folders/:token/notes/:noteId/wikilinks', async (c) => {
     { repository }
   );
   return c.json({ resolutions });
+});
+
+// A board is a presentation of an existing folder share, never a separate grant.
+async function loadSharedBoardFolder(token: string, folderId: string) {
+  const row = await loadActiveFolderShare(token.trim());
+  if (!row) return null;
+  const userFolders = await loadUserFolders(row.folder.userId);
+  return collectFolderTreeIds(row.folder.id, userFolders).has(folderId) ? row.folder.userId : null;
+}
+
+shareRoutes.get('/folders/:token/folders/:folderId/board/config', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const folderId = c.req.param('folderId');
+  const ownerId = await loadSharedBoardFolder(c.req.param('token'), folderId);
+  if (!ownerId) return c.json({ error: 'Shared folder not found' }, 404);
+  try {
+    // The public token has already authorized this folder. Reuse the owner's
+    // board reader so classification, active-note rules and snapshots stay identical.
+    return c.json({ board: await readAuthorizedBoard(ownerId, ownerId, folderId) });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    if (error instanceof BoardValidationError) return c.json({ error: error.message }, 400);
+    throw error;
+  }
+});
+
+shareRoutes.get('/folders/:token/folders/:folderId/board', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const folderId = c.req.param('folderId');
+  const ownerId = await loadSharedBoardFolder(c.req.param('token'), folderId);
+  if (!ownerId) return c.json({ error: 'Shared folder not found' }, 404);
+  try {
+    return c.json(
+      await readAuthorizedBoardLane({
+        ...parseBoardLaneRequest(new URL(c.req.url).searchParams),
+        actorUserId: ownerId,
+        userId: ownerId,
+        folderId,
+      })
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    if (error instanceof BoardValidationError || error instanceof NoteQueryError)
+      return c.json({ error: error.message }, 400);
+    throw error;
+  }
 });
 
 shareRoutes.get('/folders/:token', async (c) => {

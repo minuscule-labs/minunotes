@@ -25,6 +25,7 @@ function BoardLane({
   generation,
   captured,
   actorId,
+  shareToken,
   onUnavailable,
 }: {
   folderId: string;
@@ -34,6 +35,7 @@ function BoardLane({
   generation: string;
   captured: FolderQueryRequest;
   actorId: string;
+  shareToken?: string;
   onUnavailable: (error: Error) => void;
 }) {
   const state = board.groupingState;
@@ -44,7 +46,7 @@ function BoardLane({
   const query = useInfiniteQuery({
     queryKey: ['board', folderId, 'lane', actorId, generation, lane],
     queryFn: async ({ pageParam, signal }) => {
-      const page = await api.boardLane(folderId, lane, board.version, pageParam, schema, captured, signal);
+      const page = await api.boardLane(folderId, lane, board.version, pageParam, schema, captured, signal, shareToken);
       verifyFolderQueryEcho(page, captured);
       if (
         page.configVersion !== board.version ||
@@ -136,13 +138,24 @@ function BoardLane({
                 key={card.id}
                 className="rounded border border-[var(--notes-border)] bg-[var(--notes-panel)] p-3 text-sm"
               >
-                <Link
-                  to="/notes/$noteId"
-                  params={{ noteId: card.id }}
-                  className="block font-medium underline-offset-2 [overflow-wrap:anywhere] hover:underline"
-                >
-                  {card.title}
-                </Link>
+                {shareToken ? (
+                  <Link
+                    to="/share/folders/$token"
+                    params={{ token: shareToken }}
+                    search={{ note: card.id, folder: folderId, view: 'board' }}
+                    className="block font-medium underline-offset-2 [overflow-wrap:anywhere] hover:underline"
+                  >
+                    {card.title}
+                  </Link>
+                ) : (
+                  <Link
+                    to="/notes/$noteId"
+                    params={{ noteId: card.id }}
+                    className="block font-medium underline-offset-2 [overflow-wrap:anywhere] hover:underline"
+                  >
+                    {card.title}
+                  </Link>
+                )}
                 <p className="mt-1 text-[var(--notes-muted)] text-xs">
                   {card.documentType.startsWith('canvas.') ? 'Canvas' : 'Note'} ·{' '}
                   {new Date(card.updatedAt).toLocaleString()}
@@ -212,6 +225,7 @@ function BoardLane({
 export function NotesBoard({
   folderId,
   actorId = '',
+  shareToken,
   appliedQuery = EMPTY_NOTE_QUERY,
   sort = DEFAULT_NOTE_SORT,
   filterSchema,
@@ -222,6 +236,7 @@ export function NotesBoard({
 }: {
   folderId: string;
   actorId?: string;
+  shareToken?: string;
   appliedQuery?: NoteQuery;
   sort?: NoteSort;
   filterSchema?: BoardSchemaToken;
@@ -231,10 +246,11 @@ export function NotesBoard({
   toolbarTarget?: HTMLDivElement | null;
 }) {
   const scrollHintId = useId();
+  const readerId = shareToken ? `share:${shareToken}` : actorId;
   const qc = useQueryClient();
   const query = useQuery({
-    queryKey: ['board', folderId, 'config', actorId],
-    queryFn: () => api.boardConfig(folderId),
+    queryKey: ['board', folderId, 'config', readerId],
+    queryFn: () => api.boardConfig(folderId, shareToken),
     retry,
     refetchOnWindowFocus: true,
   });
@@ -243,7 +259,7 @@ export function NotesBoard({
   }, [query.error, onAccessDenied]);
   const state = query.data?.board?.groupingState;
   const generation = JSON.stringify([
-    actorId,
+    readerId,
     folderReadIdentity(appliedQuery, sort),
     filterSchema,
     query.data?.board?.version ?? 0,
@@ -270,15 +286,17 @@ export function NotesBoard({
     if (!query.dataUpdatedAt || query.error) return;
     setBlocked(null);
     // A successful config/schema refresh resets all lane pages together.
-    void qc.resetQueries({ queryKey: ['board', folderId, 'lane'] });
-  }, [query.dataUpdatedAt, query.error, qc, folderId]);
+    void qc.resetQueries({ queryKey: ['board', folderId, 'lane', readerId] });
+  }, [query.dataUpdatedAt, query.error, qc, folderId, readerId]);
   useEffect(() => {
-    if (blocked?.generation === generation) qc.removeQueries({ queryKey: ['board', folderId, 'lane'] });
-  }, [blocked, generation, qc, folderId]);
+    if (blocked?.generation === generation) qc.removeQueries({ queryKey: ['board', folderId, 'lane', readerId] });
+  }, [blocked, generation, qc, folderId, readerId]);
   const refreshBoard = async () => {
     onRefreshDefinitions?.();
+    // Public cards open notes from this snapshot; refresh it before showing newer cards.
+    if (shareToken) await qc.invalidateQueries({ queryKey: ['shared-folder', shareToken], exact: true });
     const result = await query.refetch();
-    if (result.isError) await qc.invalidateQueries({ queryKey: ['board', folderId, 'lane'] });
+    if (result.isError) await qc.invalidateQueries({ queryKey: ['board', folderId, 'lane', readerId] });
   };
   if (query.isPending) return <p role="status">Loading board…</p>;
   if (!query.data || unavailable(query.error))
@@ -305,7 +323,7 @@ export function NotesBoard({
           <RefreshCw aria-hidden="true" className="h-4 w-4" />
         </Button>
       </QuickTooltip>
-      {!revoked && query.data.access.role === 'owner' ? (
+      {!shareToken && !revoked && query.data.access?.role === 'owner' ? (
         <FolderBoardSettingsDialog folderId={folderId} board={board} />
       ) : null}
     </div>
@@ -331,7 +349,7 @@ export function NotesBoard({
       ) : !board?.config.enabled ? (
         <p className="text-sm">
           Board is not enabled.{' '}
-          {query.data.access.role === 'owner'
+          {query.data.access?.role === 'owner'
             ? 'Use Board settings to configure it.'
             : 'The folder owner can enable it.'}
         </p>
@@ -356,7 +374,8 @@ export function NotesBoard({
                 label={lane.label}
                 generation={generation}
                 captured={captured}
-                actorId={actorId}
+                actorId={readerId}
+                shareToken={shareToken}
                 onUnavailable={onUnavailable}
               />
             ))}
