@@ -38,7 +38,7 @@ export const DEMO_TYPE_DEFINITION = mutatePropertyDefinitions(
 DEMO_PROPERTY_DEFINITIONS.push(DEMO_TYPE_DEFINITION);
 export const DEMO_CONFIG = validateBoardConfig({
   ...DEFAULT_BOARD_CONFIG,
-  schemaVersion: 4,
+  schemaVersion: 5,
   grouping: {
     type: 'select',
     schemaId: stableId('property_schema', 'board'),

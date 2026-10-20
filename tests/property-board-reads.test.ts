@@ -5,6 +5,175 @@ import { cleanupPropertyBoardTests, setupPropertyBoardTest } from './property-bo
 afterEach(cleanupPropertyBoardTests);
 
 describe('SQL Select board reads', () => {
+  it.each([
+    { selected: true, showUnclassified: true },
+    { selected: true, showUnclassified: false },
+    { selected: false, showUnclassified: true },
+    { selected: false, showUnclassified: false },
+  ])('keeps full classification separate from displayed lanes: %j', async ({ selected, showUnclassified }) => {
+    const f = await setupPropertyBoardTest();
+    const values: Record<string, unknown> = {
+      visible: f.field.options[0].id,
+      hidden: f.field.options[1].id,
+      archived: f.field.options[3].id,
+      unknown: 'unknown',
+      array: [f.field.options[0].id],
+      object: { id: f.field.options[0].id },
+      number: 1,
+      boolean: false,
+      null: null,
+      blank: '',
+      nul: `${f.field.options[0].id}\0bad`,
+    };
+    for (const [id, value] of Object.entries(values)) {
+      await f.addNote(id, id);
+      await f.db.insert(f.schema.notePropertyState).values({
+        noteId: id,
+        userId: 'owner',
+        revision: 1,
+        values: JSON.stringify({ [f.field.id]: value }),
+        createdAt: f.now,
+        updatedAt: f.now,
+      });
+    }
+    await f.addNote('unset', 'Unset');
+    await f.addNote('corrupt', 'Corrupt');
+    await f.libsql.execute('PRAGMA ignore_check_constraints=ON');
+    await f.db.insert(f.schema.notePropertyState).values({
+      noteId: 'corrupt',
+      userId: 'owner',
+      revision: 1,
+      values: '{broken',
+      createdAt: f.now,
+      updatedAt: f.now,
+    });
+    await f.libsql.execute('PRAGMA ignore_check_constraints=OFF');
+    await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 1,
+      mutation: { type: 'archive_option', propertyId: f.field.id, optionId: f.field.options[3].id },
+    });
+    const config = {
+      ...f.config,
+      columnVisibility: {
+        mode: 'selected' as const,
+        optionIds: selected ? [f.field.options[0].id] : [],
+        showUnclassified,
+      },
+    };
+    expect((await f.saveSelect(config, 0, 'owner', { ...f.token, schemaRevision: 2 })).status).toBe(200);
+    const { board } = await (await f.request('/internal/folders/board/board/config', 'viewer')).json();
+    expect(board.groupingState.available).toBe(true);
+    expect(board.columns.map((c: { key: string }) => c.key)).toEqual([
+      ...(selected ? [f.field.options[0].id] : []),
+      ...(showUnclassified ? ['unclassified'] : []),
+    ]);
+    for (const option of f.field.options) {
+      const response = await f.request(f.laneUrl(option.id, 2), 'viewer');
+      if (selected && option.id === f.field.options[0].id) {
+        expect(response.status).toBe(200);
+        expect((await response.json()).cards).toMatchObject([{ id: 'visible', unclassifiedReason: null }]);
+      } else {
+        expect(response.status).toBe(400);
+        expect(await response.text()).toContain('Unknown lane');
+      }
+    }
+    const response = await f.request(f.laneUrl('unclassified', 2), 'viewer');
+    if (showUnclassified) {
+      expect(response.status).toBe(200);
+      const { cards } = await response.json();
+      const expected = [
+        ...Object.keys(values).filter((id) => !['visible', 'hidden'].includes(id)),
+        'unset',
+        'corrupt',
+      ].sort();
+      expect(cards.map((c: { id: string }) => c.id).sort()).toEqual(expected);
+      for (const card of cards)
+        expect(card.unclassifiedReason).toBe(
+          ['unset', 'corrupt'].includes(card.id) ? 'no-property-value' : 'unavailable-property-value'
+        );
+    } else {
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain('Unknown lane');
+    }
+  });
+  it('supports zero active options and rejects mismatched internal classification snapshots', async () => {
+    const f = await setupPropertyBoardTest();
+    await f.addNote('retained', 'Retained');
+    await f.patch('retained', { [f.field.id]: f.field.options[0].id });
+    await f.addNote('unset', 'Unset');
+    // Historical/imported schemas may have no active options; normal mutation guards forbid this.
+    const definitions = structuredClone(f.propertySchema.definitions);
+    for (const option of definitions[0].options) option.archived = true;
+    await f.db.update(f.schema.folderPropertySchemas).set({ definitions: JSON.stringify(definitions), revision: 2 });
+    expect((await f.saveSelect(f.config, 0, 'owner', { ...f.token, schemaRevision: 2 })).status).toBe(200);
+    const board = await f.boards.readBoardConfig('owner', 'board');
+    if (!board) throw new Error('Missing board');
+    expect(board.columns).toEqual([{ key: 'unclassified', label: 'Unclassified' }]);
+    const input = {
+      actorUserId: 'viewer',
+      userId: 'owner',
+      folderId: 'board',
+      board,
+      schemaSnapshot: { ...f.propertySchema, definitions, revision: 2 },
+      lane: 'unclassified',
+      page: { page: 1, limit: 25, offset: 0 },
+    };
+    const execute = vi.spyOn(f.libsql, 'execute');
+    const result = await f.boards.readBoardLane(input);
+    expect(execute.mock.calls).toHaveLength(1);
+    expect(result.cards.map((c) => [c.id, c.unclassifiedReason])).toEqual([
+      ['retained', 'unavailable-property-value'],
+      ['unset', 'no-property-value'],
+    ]);
+    execute.mockClear();
+    await expect(f.boards.readBoardLane({ ...input, schemaSnapshot: f.propertySchema })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(execute.mock.calls).toHaveLength(0);
+    execute.mockRestore();
+    expect((await f.request(f.laneUrl('unclassified'))).status).toBe(409);
+    expect((await f.request(f.laneUrl(f.field.options[0].id, 2))).status).toBe(400);
+    expect(
+      (
+        await f.saveSelect({ ...f.config, columnVisibility: { mode: 'all', showUnclassified: false } }, 1, 'owner', {
+          ...f.token,
+          schemaRevision: 2,
+        })
+      ).status
+    ).toBe(200);
+    expect((await f.boards.readBoardConfig('owner', 'board'))?.columns).toEqual([]);
+    expect((await f.request(f.laneUrl('unclassified', 2, 2))).status).toBe(400);
+  });
+  it('moves cards between visible and hidden classifications on ordinary refresh without moving notes', async () => {
+    const f = await setupPropertyBoardTest();
+    const config = {
+      ...f.config,
+      columnVisibility: {
+        mode: 'selected' as const,
+        optionIds: [f.field.options[0].id],
+        showUnclassified: false,
+      },
+    };
+    await f.saveSelect(config);
+    await f.addNote('n', 'N');
+    const ids = async () => {
+      const response = await f.request(f.laneUrl(f.field.options[0].id), 'viewer');
+      expect(response.status).toBe(200);
+      return (await response.json()).cards.map((c: { id: string }) => c.id);
+    };
+    expect(await ids()).toEqual([]);
+    await f.patch('n', { [f.field.id]: f.field.options[0].id });
+    expect(await ids()).toEqual(['n']);
+    await f.patch('n', { [f.field.id]: f.field.options[1].id });
+    expect(await ids()).toEqual([]);
+    await f.patch('n', { [f.field.id]: f.field.options[0].id });
+    expect(await ids()).toEqual(['n']);
+    await f.patch('n', { [f.field.id]: null });
+    expect(await ids()).toEqual([]);
+    const rows = (await f.libsql.execute('select id, folder_id from notes')).rows;
+    expect(rows).toEqual([{ id: 'n', folder_id: 'board' }]);
+    expect((await f.request(f.laneUrl('unclassified'))).status).toBe(400);
+  });
   it('projects ordered Text/Select/Date previews, bounds Unicode in SQL and never changes notes or classification', async () => {
     const f = await setupPropertyBoardTest();
     const t = await f.addType();
@@ -231,6 +400,7 @@ describe('SQL Select board reads', () => {
     const expected = Array.from({ length: 200 }, (_, i) => `n${String(i).padStart(3, '0')}`);
     const board = await f.boards.readBoardConfig('owner', 'board');
     if (!board) throw new Error('Missing board');
+    const schemaSnapshot = await f.properties.readFolderProperties(f.actor, 'board');
     const execute = vi.spyOn(f.libsql, 'execute');
     const ids: string[] = [];
     for (let page = 1; page <= 8; page++) {
@@ -240,6 +410,7 @@ describe('SQL Select board reads', () => {
         userId: 'owner',
         folderId: 'board',
         board,
+        schemaSnapshot,
         lane: f.field.options[0].id,
         page: { page, limit: 25, offset: (page - 1) * 25 },
       });
@@ -286,12 +457,14 @@ describe('SQL Select board reads', () => {
     }
     const board = await f.boards.readBoardConfig('owner', 'board');
     if (!board) throw new Error('Missing board');
+    const schemaSnapshot = await f.properties.readFolderProperties(f.actor, 'board');
     const execute = vi.spyOn(f.libsql, 'execute');
     const result = await f.boards.readBoardLane({
       actorUserId: 'viewer',
       userId: 'owner',
       folderId: 'board',
       board,
+      schemaSnapshot,
       lane: f.field.options[0].id,
       page: { page: 1, limit: 25, offset: 0 },
     });
@@ -358,12 +531,14 @@ describe('SQL Select board reads', () => {
     await f.patch('n', { [f.field.id]: f.field.options[0].id });
     const board = await f.boards.readBoardConfig('owner', 'board');
     if (!board) throw new Error('Missing board');
+    const schemaSnapshot = await f.properties.readFolderProperties(f.actor, 'board');
     const execute = vi.spyOn(f.libsql, 'execute');
     await f.boards.readBoardLane({
       actorUserId: 'owner',
       userId: 'owner',
       folderId: 'board',
       board,
+      schemaSnapshot,
       lane: f.field.options[0].id,
       page: { page: 1, limit: 25, offset: 0 },
     });

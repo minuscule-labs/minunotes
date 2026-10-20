@@ -86,12 +86,24 @@ export function copyBoard(raw: string, schema?: SchemaCopy): string {
   const grouping = config.grouping;
   if (grouping && typeof grouping === 'object' && !Array.isArray(grouping)) {
     const g = grouping as Record<string, unknown>;
-    if (g.schemaId === schema.oldSchemaId)
+    if (g.schemaId === schema.oldSchemaId) {
+      const visibility = config.columnVisibility;
+      if (config.schemaVersion === 5 && visibility && typeof visibility === 'object' && !Array.isArray(visibility)) {
+        const v = visibility as Record<string, unknown>;
+        if (v.mode === 'selected' && Array.isArray(v.optionIds)) {
+          const options = typeof g.propertyId === 'string' ? schema.options.get(g.propertyId) : undefined;
+          config.columnVisibility = {
+            ...v,
+            optionIds: v.optionIds.map((id) => (typeof id === 'string' ? (options?.get(id) ?? id) : id)),
+          };
+        }
+      }
       config.grouping = {
         ...g,
         schemaId: schema.schemaId,
         propertyId: typeof g.propertyId === 'string' ? (schema.fields.get(g.propertyId) ?? g.propertyId) : g.propertyId,
       };
+    }
   }
   if (Array.isArray(config.cardPropertyIds))
     config.cardPropertyIds = config.cardPropertyIds.map((id) =>

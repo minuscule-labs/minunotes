@@ -27,6 +27,106 @@ async function setupSharedBoard(folderId = 'board') {
   return { ...f, createLink, shareLink, token, prefix, configUrl, laneUrl, read, typeField };
 }
 
+it('shares visibility projection, full classification and zero-column states without changing note access', async () => {
+  const f = await setupSharedBoard();
+  for (const [id, value] of Object.entries({
+    visible: f.field.options[0].id,
+    hidden: f.field.options[1].id,
+    archived: f.field.options[3].id,
+    unknown: 'unknown',
+    invalid: 42,
+  })) {
+    await f.addNote(id, id);
+    await f.db.insert(f.schema.notePropertyState).values({
+      noteId: id,
+      userId: 'owner',
+      revision: 1,
+      values: JSON.stringify({ [f.field.id]: value }),
+      createdAt: f.now,
+      updatedAt: f.now,
+    });
+  }
+  await f.addNote('unset', 'Unset');
+  const schema = await f.properties.mutateFolderProperties(f.actor, 'board', {
+    expectedRevision: 2,
+    mutation: { type: 'archive_option', propertyId: f.field.id, optionId: f.field.options[3].id },
+  });
+  const { board: initial } = await (await f.read(f.configUrl)).json();
+  const publicUrl = (lane: string, version: number, page = 1) =>
+    `${f.prefix}/board/board?lane=${lane}&version=${version}&schemaId=${schema.schemaId}&schemaRevision=3&limit=1&page=${page}`;
+  let version = 1;
+  for (const optionIds of [undefined, [f.field.options[0].id], []]) {
+    for (const showUnclassified of [true, false]) {
+      const columnVisibility =
+        optionIds === undefined ? { mode: 'all', showUnclassified } : { mode: 'selected', optionIds, showUnclassified };
+      expect(
+        (
+          await f.saveSelect({ ...initial.config, columnVisibility }, version, 'owner', {
+            schemaId: schema.schemaId as string,
+            schemaRevision: 3,
+          })
+        ).status
+      ).toBe(200);
+      version++;
+      const { board } = await (await f.read(f.configUrl)).json();
+      const ownerConfig = await (await f.request('/internal/folders/board/board/config')).json();
+      expect(board).toEqual(ownerConfig.board);
+      const active = schema.definitions[0].options.filter(
+        (o) => !o.archived && (!optionIds || optionIds.includes(o.id))
+      );
+      expect(board.columns.map((c: { key: string }) => c.key)).toEqual([
+        ...active.map((o) => o.id),
+        ...(showUnclassified ? ['unclassified'] : []),
+      ]);
+      expect(board.groupingState.available).toBe(true);
+      for (const lane of [...f.field.options.map((o) => o.id), 'unclassified']) {
+        const url = publicUrl(lane, version);
+        const displayed = board.columns.some((c: { key: string }) => c.key === lane);
+        const response = await f.read(url);
+        expect(response.status).toBe(displayed ? 200 : 400);
+        if (!displayed) continue;
+        const ids: string[] = [];
+        for (let page = 1; page <= 5; page++) {
+          const pageUrl = publicUrl(lane, version, page);
+          const publicPage = await (await f.read(pageUrl)).json();
+          const { access: _access, ...ownerPage } = await (
+            await f.request(pageUrl.replace(`${f.prefix}/board`, '/internal/folders/board'), 'viewer')
+          ).json();
+          expect(publicPage).toEqual(ownerPage);
+          ids.push(...publicPage.cards.map((c: { id: string }) => c.id));
+          if (!publicPage.hasMore) break;
+        }
+        expect(ids.sort()).toEqual(
+          lane === 'unclassified'
+            ? ['archived', 'invalid', 'unknown', 'unset']
+            : lane === f.field.options[0].id
+              ? ['visible']
+              : lane === f.field.options[1].id
+                ? ['hidden']
+                : []
+        );
+      }
+      expect((await f.read(publicUrl('unclassified', version - 1, 2))).status).toBe(409);
+      expect(
+        (await f.read(publicUrl('unclassified', version, 2).replace('schemaRevision=3', 'schemaRevision=2'))).status
+      ).toBe(409);
+    }
+  }
+  // Even a zero-column Board does not narrow the folder share or authenticated note access.
+  const sharedList = await (await f.read(`/internal/share/folders/${f.token}`)).json();
+  expect(sharedList.notes.map((n: { id: string }) => n.id).sort()).toEqual([
+    'archived',
+    'hidden',
+    'invalid',
+    'unknown',
+    'unset',
+    'visible',
+  ]);
+  expect(sharedList.notes.find((n: { id: string }) => n.id === 'hidden').content).toBe('Private body for hidden');
+  expect((await f.app.request('/internal/folders/board/share-link', { method: 'DELETE' })).status).toBe(200);
+  for (const url of [f.configUrl, publicUrl('unclassified', version)]) expect((await f.read(url)).status).toBe(404);
+});
+
 it('presents the existing folder share as the same board, anonymously and read-only', async () => {
   const f = await setupSharedBoard('root');
   await f.addNote('public', 'Public card');

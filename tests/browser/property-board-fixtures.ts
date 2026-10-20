@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import {
   type BoardConfig,
   type BoardDisplayProperty,
+  type ColumnVisibility,
   DEFAULT_BOARD_CONFIG,
   type EffectiveBoard,
   previewBoardProperty,
@@ -83,39 +84,51 @@ export async function mockPropertyBoard(
     readFailure: number;
     laneFailure: number;
     saveFailure: number;
+    schemaFailure: number;
     unavailable: boolean;
     queryEcho?: string | null;
     sortEcho?: string | null;
     schemaEcho?: { schemaId: string; schemaRevision: number } | null;
     listFailure?: number;
-  } = { readFailure: 0, laneFailure: 0, saveFailure: 0, unavailable: false };
+  } = { readFailure: 0, laneFailure: 0, saveFailure: 0, schemaFailure: 0, unavailable: false };
   const access = { role, source: role === 'owner' ? 'owner' : 'folder_grant' };
-  const snapshot = (): EffectiveBoard => ({
-    config,
-    version,
-    ...(retired ? { reconfigurationRequired: true as const } : {}),
-    cardProperties: schema.definitions
-      .filter((d) => config.cardPropertyIds.includes(d.id) && !d.archived)
-      .map(
-        (d) =>
-          ({
-            propertyId: d.id,
-            label: d.label,
-            type: d.type,
-            ...(d.type === 'select'
-              ? { options: d.options.filter((o) => !o.archived).map(({ id, label }) => ({ id, label })) }
-              : {}),
-          }) as BoardDisplayProperty
-      ),
-    columns:
-      retired || controls.unavailable || !config.enabled
+  const groupingField = () =>
+    schema.schemaId === config.grouping.schemaId
+      ? schema.definitions.find((d) => d.id === config.grouping.propertyId && !d.archived && d.type === 'select')
+      : undefined;
+  const snapshot = (): EffectiveBoard => {
+    const grouping = groupingField();
+    const unavailable = retired || controls.unavailable || !config.enabled || !grouping;
+    return {
+      config,
+      version,
+      ...(retired ? { reconfigurationRequired: true as const } : {}),
+      cardProperties: schema.definitions
+        .filter((d) => config.cardPropertyIds.includes(d.id) && !d.archived)
+        .map(
+          (d) =>
+            ({
+              propertyId: d.id,
+              label: d.label,
+              type: d.type,
+              ...(d.type === 'select'
+                ? { options: d.options.filter((o) => !o.archived).map(({ id, label }) => ({ id, label })) }
+                : {}),
+            }) as BoardDisplayProperty
+        ),
+      columns: unavailable
         ? []
         : [
-            ...field.options.filter((o) => !o.archived).map((o) => ({ key: o.id, label: o.label })),
-            { key: UNCLASSIFIED, label: 'Unclassified' },
+            ...grouping.options
+              .filter(
+                (o) =>
+                  !o.archived &&
+                  (config.columnVisibility.mode === 'all' || config.columnVisibility.optionIds.includes(o.id))
+              )
+              .map((o) => ({ key: o.id, label: o.label })),
+            ...(config.columnVisibility.showUnclassified ? [{ key: UNCLASSIFIED, label: 'Unclassified' }] : []),
           ],
-    groupingState:
-      retired || controls.unavailable || !config.enabled
+      groupingState: unavailable
         ? {
             type: 'select',
             available: false,
@@ -126,12 +139,13 @@ export async function mockPropertyBoard(
         : {
             type: 'select',
             available: true,
-            schemaId: 'schema_board',
+            schemaId: config.grouping.schemaId,
             schemaRevision: schema.revision,
-            propertyId: field.id,
-            label: field.label,
+            propertyId: grouping.id,
+            label: grouping.label,
           },
-  });
+    };
+  };
   const cards: Array<{
     id: string;
     title: string;
@@ -329,7 +343,11 @@ export async function mockPropertyBoard(
       },
     });
   });
-  await page.route('**/internal/folders/*/properties', (route) => route.fulfill({ json: schema }));
+  await page.route('**/internal/folders/*/properties', (route) =>
+    controls.schemaFailure
+      ? route.fulfill({ status: controls.schemaFailure, json: { error: 'Schema read failed' } })
+      : route.fulfill({ json: schema })
+  );
   const boardRoute = /\/internal\/(?:share\/folders\/[^/]+\/)?folders\/[^/]+\/board(?:\/config)?(?:\?.*)?$/;
   await page.route(boardRoute, async (route) => {
     const request = route.request();
@@ -348,7 +366,27 @@ export async function mockPropertyBoard(
           (input.config.enabled && (input.schemaId !== schema.schemaId || input.schemaRevision !== schema.revision))
         )
           return reply({ error: 'Snapshot changed; review before saving' }, 409);
-        config = validateBoardConfig(input.config);
+        let next: BoardConfig;
+        try {
+          next = validateBoardConfig(input.config);
+          if (next.enabled) {
+            const grouping = schema.definitions.find(
+              (d) => d.id === next.grouping.propertyId && !d.archived && d.type === 'select'
+            );
+            if (next.grouping.schemaId !== schema.schemaId || !grouping)
+              throw new Error('Choose an active Select property');
+            if (
+              next.columnVisibility.mode === 'selected' &&
+              next.columnVisibility.optionIds.some((id) => !grouping.options.some((o) => o.id === id && !o.archived))
+            )
+              throw new Error('Remove unavailable Visible columns');
+            if (next.cardPropertyIds.some((id) => !schema.definitions.some((d) => d.id === id && !d.archived)))
+              throw new Error('Remove unavailable Card properties');
+          }
+        } catch (error) {
+          return reply({ error: (error as Error).message }, 400);
+        }
+        config = next;
         retired = false;
         version++;
         return reply({ board: snapshot() });
@@ -358,7 +396,8 @@ export async function mockPropertyBoard(
     }
     laneRequests.push(url);
     if (!config.enabled) return reply({ error: 'Board is not enabled' }, 404);
-    if (retired || controls.unavailable) return reply({ error: 'Grouping unavailable' }, 409);
+    const grouping = groupingField();
+    if (retired || controls.unavailable || !grouping) return reply({ error: 'Grouping unavailable' }, 409);
     if (url.searchParams.has('tag')) return reply({ error: 'Board tag filters are no longer supported' }, 400);
     if (controls.laneFailure) return reply({ error: 'Lane read failed' }, controls.laneFailure);
     if (
@@ -374,10 +413,12 @@ export async function mockPropertyBoard(
       return reply({ error: (error as Error).message }, 409);
     }
     const lane = url.searchParams.get('lane');
+    if (!snapshot().columns.some((column) => column.key === lane)) return reply({ error: 'Unknown lane' }, 400);
     const visible = cards
       .filter((card) => matches(card, query))
       .map((card) => {
-        const active = field.options.find((o) => o.id === card.value && !o.archived);
+        const value = rawValue(card, grouping.id);
+        const active = grouping.options.find((o) => o.id === value && !o.archived);
         const properties = (snapshot().cardProperties ?? []).flatMap((definition) => {
           const raw =
             definition.propertyId === typeField.id
@@ -396,7 +437,7 @@ export async function mockPropertyBoard(
           createdAt: timestamp(card, 'createdAt'),
           updatedAt: timestamp(card, 'updatedAt'),
           lane: active?.id ?? UNCLASSIFIED,
-          unclassifiedReason: active ? null : card.value ? 'unavailable-property-value' : 'no-property-value',
+          unclassifiedReason: active ? null : value ? 'unavailable-property-value' : 'no-property-value',
         };
       })
       .filter((c) => c.lane === lane)
@@ -428,6 +469,9 @@ export async function mockPropertyBoard(
     laneRequests,
     listRequests,
     snapshot,
+    setColumnVisibility(columnVisibility: ColumnVisibility) {
+      config = validateBoardConfig({ ...config, columnVisibility });
+    },
     setCardProperties(ids: string[]) {
       config = validateBoardConfig({ ...config, cardPropertyIds: ids });
     },

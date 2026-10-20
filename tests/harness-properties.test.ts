@@ -60,7 +60,7 @@ describe('Harness properties parity', () => {
       'board',
       {
         ...DEFAULT_BOARD_CONFIG,
-        schemaVersion: 4,
+        schemaVersion: 5,
         grouping: { type: 'select', schemaId: schema.schemaId, propertyId: schema.definitions[0].id },
       },
       0,

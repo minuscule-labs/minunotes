@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test } from '@playwright/test';
+import type { ColumnVisibility } from '../../src/shared/board';
 import { browserFixture } from './fixtures';
 import { mockPropertyBoard } from './property-board-fixtures';
 
@@ -134,12 +135,14 @@ for (const width of [390, 1280])
       await expect(dialog.locator('details')).toHaveCount(0);
       await expect(dialog.getByRole('option', { name: 'Tags', exact: true })).toHaveCount(0);
       await expect(dialog.getByRole('button', { name: 'Refresh and review' })).toHaveCount(0);
-      await expect(dialog.getByRole('list', { name: 'Select column preview' }).getByRole('listitem')).toHaveText([
-        'Ready',
-        'Finished',
-        'Empty',
-        'Unclassified',
-      ]);
+      const visibility = dialog.getByRole('group', { name: 'Visible columns', exact: true });
+      await expect(visibility.getByRole('radio')).toHaveCount(0);
+      for (const label of ['Ready', 'Finished', 'Empty']) {
+        await expect(
+          visibility.getByRole('checkbox', { name: `${label} (grouping option)`, exact: true })
+        ).toBeChecked();
+      }
+      await expect(visibility.getByRole('checkbox', { name: 'Unclassified', exact: true })).toBeChecked();
       expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       await page.screenshot({ path: test.info().outputPath('property-only-settings.png') });
       await dialog.getByRole('checkbox', { name: /^(Type|Kind|Category)( select| \(unavailable\))$/ }).uncheck();
@@ -279,9 +282,10 @@ for (const legacy of ['tags', 'filtered'] as const)
         await expect(dialog).toHaveCount(0);
         await expect(boardRegion(page)).toBeVisible();
         expect(api.writes).toHaveLength(1);
-        expect(api.writes[0]).toMatchObject({ expectedVersion: 1, schemaRevision: 1, config: { schemaVersion: 4 } });
+        expect(api.writes[0]).toMatchObject({ expectedVersion: 1, schemaRevision: 1, config: { schemaVersion: 5 } });
         expect(Object.keys(api.writes[0].config).sort()).toEqual([
           'cardPropertyIds',
+          'columnVisibility',
           'enabled',
           'grouping',
           'mode',
@@ -317,13 +321,513 @@ test('absent boards require explicit property selection and save; disabling does
   await dialog.getByLabel('Columns', { exact: true }).selectOption('workflow_field');
   await dialog.getByRole('button', { name: 'Save board' }).click();
   await expect(boardRegion(page)).toBeVisible();
-  expect(api.writes[0]).toMatchObject({ expectedVersion: 0, config: { schemaVersion: 4 } });
+  expect(api.writes[0]).toMatchObject({ expectedVersion: 0, config: { schemaVersion: 5 } });
   await trigger.click();
   await dialog.getByLabel('Enabled').uncheck();
   await dialog.getByRole('button', { name: 'Save board' }).click();
   await expect(boardRegion(page)).toHaveCount(0);
   expect(api.writes[1]).toMatchObject({ expectedVersion: 1, config: { enabled: false } });
   expect(api.requests.filter((r) => r.method !== 'GET').every((r) => r.path.endsWith('/board/config'))).toBe(true);
+});
+
+for (const mode of ['all', 'selected'] as const)
+  for (const showUnclassified of [false, true])
+    test(`owner saves ${mode} columns / Unclassified ${showUnclassified} and reopens the same choices`, async ({
+      page,
+    }) => {
+      const api = await mockPropertyBoard(page);
+      if (mode === 'all') api.setColumnVisibility({ mode, showUnclassified });
+      await page.goto(boardUrl);
+      const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+      const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+      await trigger.click();
+      await dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true }).uncheck();
+      await page.keyboard.press('Escape');
+      await expect(trigger).toBeFocused();
+      expect(api.writes).toEqual([]);
+      await trigger.click();
+      await expect(dialog.getByRole('radio')).toHaveCount(0);
+      const ready = dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true });
+      await expect(ready).toBeChecked();
+      await expect(ready).toBeEnabled();
+      if (mode === 'selected') {
+        await dialog.getByRole('checkbox', { name: 'Finished (grouping option)', exact: true }).focus();
+        await page.keyboard.press('Space');
+        await dialog.getByRole('checkbox', { name: 'Empty (grouping option)', exact: true }).uncheck();
+      }
+      const unclassified = dialog.getByRole('checkbox', {
+        name: 'Unclassified',
+        exact: true,
+      });
+      await unclassified.setChecked(showUnclassified);
+      expect(api.writes).toEqual([]);
+      await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      const columnVisibility =
+        mode === 'all' ? { mode, showUnclassified } : { mode, optionIds: ['Option_Todo'], showUnclassified };
+      expect(api.writes).toHaveLength(1);
+      expect(api.writes[0]).toMatchObject({
+        expectedVersion: 1,
+        schemaId: 'schema_board',
+        schemaRevision: 1,
+        config: { columnVisibility, cardPropertyIds: ['type_field'] },
+      });
+      expect(api.writes[0].config.columnVisibility).toEqual(columnVisibility);
+      await trigger.click();
+      await expect(dialog.getByRole('radio')).toHaveCount(0);
+      await expect(unclassified).toBeChecked({ checked: showUnclassified });
+      await expect(ready).toBeChecked();
+      await expect(dialog.getByRole('checkbox', { name: 'Finished (grouping option)', exact: true })).toBeChecked({
+        checked: mode === 'all',
+      });
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      expect(api.writes).toHaveLength(1);
+    });
+
+test('checkboxes support zero columns and Unclassified-only without reset or count summaries', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  await page.goto(boardUrl);
+  const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  await trigger.click();
+  await expect(dialog.getByRole('status')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Reset to all columns', exact: true })).toHaveCount(0);
+  for (const label of ['Ready', 'Finished', 'Empty'])
+    await dialog.getByRole('checkbox', { name: `${label} (grouping option)`, exact: true }).uncheck();
+  const unclassified = dialog.getByRole('checkbox', { name: 'Unclassified', exact: true });
+  await unclassified.uncheck();
+  await expect(dialog.getByRole('status')).toHaveText('No columns selected — this Board will show no cards.');
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[0].config.columnVisibility).toEqual({ mode: 'selected', optionIds: [], showUnclassified: false });
+  await trigger.click();
+  await expect(dialog.getByRole('status')).toHaveText('No columns selected — this Board will show no cards.');
+  await unclassified.check();
+  await expect(unclassified).toBeChecked();
+  await expect(dialog.getByRole('status')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[1].config.columnVisibility).toEqual({ mode: 'selected', optionIds: [], showUnclassified: true });
+});
+
+test('rechecking every option stays Selected and future options remain unchecked without a reset action', async ({
+  page,
+}) => {
+  const api = await mockPropertyBoard(page);
+  await page.goto(boardUrl);
+  const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  await trigger.click();
+  const option = dialog.getByRole('checkbox', { name: 'Empty (grouping option)', exact: true });
+  await option.uncheck();
+  await option.check();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[0].config.columnVisibility).toEqual({
+    mode: 'selected',
+    optionIds: ['Option_Todo', 'Option_Done', 'Option_Empty'],
+    showUnclassified: true,
+  });
+  api.field.options.push({ id: 'Option_New', label: 'New option', archived: false });
+  api.changeSchema();
+  await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+  await trigger.click();
+  await expect(dialog.getByRole('checkbox', { name: 'New option (grouping option)', exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole('button', { name: 'Reset to all columns', exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole('status')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[1].config.columnVisibility).toEqual({
+    mode: 'selected',
+    optionIds: ['Option_Todo', 'Option_Done', 'Option_Empty'],
+    showUnclassified: true,
+  });
+  expect(api.writes).toHaveLength(2);
+});
+
+test('changing grouping and switching back discards unrelated real-option selections but keeps Unclassified intent', async ({
+  page,
+}) => {
+  const api = await mockPropertyBoard(page);
+  api.setColumnVisibility({ mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: false });
+  await page.goto(boardUrl);
+  await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  const grouping = dialog.getByLabel('Columns', { exact: true });
+  await expect(grouping).toBeEnabled();
+  await grouping.selectOption('type_field');
+  await expect(dialog.getByRole('radio')).toHaveCount(0);
+  await expect(
+    dialog.getByText('Grouping changed. Review the fresh column selection before saving.', { exact: true })
+  ).toBeVisible();
+  for (const label of ['Bug', 'Feature', 'Task'])
+    await expect(dialog.getByRole('checkbox', { name: `${label} (grouping option)`, exact: true })).not.toBeChecked();
+  await dialog.getByRole('checkbox', { name: 'Bug (grouping option)', exact: true }).check();
+  await grouping.selectOption('workflow_field');
+  await expect(dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true })).not.toBeChecked();
+  await grouping.selectOption('type_field');
+  await expect(dialog.getByRole('checkbox', { name: 'Bug (grouping option)', exact: true })).not.toBeChecked();
+  await dialog.getByRole('checkbox', { name: 'Feature (grouping option)', exact: true }).check();
+  await expect(dialog.getByRole('checkbox', { name: 'Unclassified', exact: true })).not.toBeChecked();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[0].config).toMatchObject({
+    grouping: { propertyId: 'type_field' },
+    columnVisibility: { mode: 'selected', optionIds: ['Type_Feature'], showUnclassified: false },
+    cardPropertyIds: ['type_field'],
+  });
+});
+
+test('unavailable column rows retain focus and undo until dismissal, with no silent removal', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  api.setColumnVisibility({ mode: 'selected', optionIds: ['Option_Todo', 'Option_Missing'], showUnclassified: false });
+  api.field.options[0].archived = true;
+  api.changeSchema();
+  await page.goto(boardUrl);
+  await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  const archived = dialog.getByRole('checkbox', { name: 'Ready (unavailable grouping option)', exact: true });
+  const unknown = dialog.getByRole('checkbox', {
+    name: 'Column Option_Missing (unavailable grouping option)',
+    exact: true,
+  });
+  await expect(archived).toBeChecked();
+  await expect(unknown).toBeChecked();
+  await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeDisabled();
+  await archived.focus();
+  await page.keyboard.press('Space');
+  await expect(archived).toBeFocused();
+  await expect(archived).not.toBeChecked();
+  await page.keyboard.press('Space');
+  await expect(archived).toBeChecked();
+  await archived.uncheck();
+  await unknown.uncheck();
+  await expect(unknown).toBeAttached();
+  await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeEnabled();
+  expect(api.writes).toEqual([]);
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[0].config.columnVisibility).toEqual({ mode: 'selected', optionIds: [], showUnclassified: false });
+});
+
+test('an unavailable column can be disabled or deliberately removed without a reset shortcut', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  api.setColumnVisibility({ mode: 'selected', optionIds: ['Option_Missing'], showUnclassified: false });
+  await page.goto(boardUrl);
+  const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  await trigger.click();
+  await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeDisabled();
+  await dialog.getByLabel('Enabled', { exact: true }).uncheck();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[0].config).toMatchObject({
+    enabled: false,
+    columnVisibility: { mode: 'selected', optionIds: ['Option_Missing'], showUnclassified: false },
+  });
+  await trigger.click();
+  await dialog.getByLabel('Enabled', { exact: true }).check();
+  await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeDisabled();
+  await dialog
+    .getByRole('checkbox', { name: 'Column Option_Missing (unavailable grouping option)', exact: true })
+    .uncheck();
+  for (const label of ['Ready', 'Finished', 'Empty'])
+    await dialog.getByRole('checkbox', { name: `${label} (grouping option)`, exact: true }).check();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[1].config).toMatchObject({
+    enabled: true,
+    columnVisibility: {
+      mode: 'selected',
+      optionIds: ['Option_Todo', 'Option_Done', 'Option_Empty'],
+      showUnclassified: false,
+    },
+  });
+});
+
+for (const width of [390, 1280])
+  for (const theme of ['catppuccin-latte', 'catppuccin-mocha'])
+    test(`real Unclassified and synthetic choice remain distinct by keyboard at ${width}px in ${theme}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.addInitScript((value) => localStorage.setItem('notes-theme', value), theme);
+      const api = await mockPropertyBoard(page);
+      api.field.options[0].label = 'A'.repeat(80);
+      api.field.options[2].label = 'Unclassified';
+      await page.goto(boardUrl);
+      await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+      const real = dialog.getByRole('checkbox', { name: 'Unclassified (grouping option)', exact: true });
+      const synthetic = dialog.getByRole('checkbox', { name: 'Unclassified', exact: true });
+      await real.focus();
+      await page.keyboard.press('Space');
+      await expect(real).not.toBeChecked();
+      await expect(synthetic).toBeChecked();
+      await synthetic.focus();
+      await page.keyboard.press('Space');
+      await expect(synthetic).not.toBeChecked();
+      await expect(real).not.toBeChecked();
+      expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: test.info().outputPath('visible-column-settings.png') });
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('button', { name: 'Board settings', exact: true })).toBeFocused();
+      expect(api.writes).toEqual([]);
+    });
+
+test('save failures keep choices and old tokens; conflicts require a complete explicit review before retry', async ({
+  page,
+}) => {
+  const api = await mockPropertyBoard(page);
+  api.setColumnVisibility({ mode: 'selected', optionIds: ['Option_Todo', 'Option_Done'], showUnclassified: false });
+  await page.goto(boardUrl);
+  await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  const save = dialog.getByRole('button', { name: 'Save board', exact: true });
+  const review = dialog.getByRole('button', { name: 'Refresh and review', exact: true });
+  const unclassified = dialog.getByRole('checkbox', { name: 'Unclassified', exact: true });
+  await unclassified.check();
+  api.controls.saveFailure = 500;
+  await save.click();
+  await expect(dialog.getByRole('alert')).toContainText('Save failed');
+  expect(api.writes).toHaveLength(1);
+  await expect(unclassified).toBeChecked();
+  api.field.options[0].label = 'Renamed';
+  api.field.options[1].archived = true;
+  api.field.options.push({ id: 'Option_New', label: 'New option', archived: false });
+  api.changeSchema();
+  api.changeConfig();
+  await page.locator('button[aria-label="Refresh board"]').evaluate((button: HTMLButtonElement) => button.click());
+  await expect(dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true })).toBeChecked();
+  api.controls.saveFailure = 0;
+  await save.click();
+  await expect(dialog.getByRole('alert')).toContainText('Snapshot changed');
+  expect(api.writes).toHaveLength(2);
+  for (const write of api.writes)
+    expect(write).toMatchObject({
+      expectedVersion: 1,
+      schemaRevision: 1,
+      config: {
+        columnVisibility: { mode: 'selected', optionIds: ['Option_Todo', 'Option_Done'], showUnclassified: true },
+      },
+    });
+  await expect(save).toBeDisabled();
+  await unclassified.focus();
+  await page.keyboard.press('Enter');
+  expect(api.writes).toHaveLength(2);
+  api.controls.schemaFailure = 500;
+  await review.click();
+  await expect(dialog.getByRole('alert')).toContainText('Schema read failed');
+  await expect(save).toBeDisabled();
+  await expect(dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true })).toBeChecked();
+  expect(api.writes).toHaveLength(2);
+  api.controls.schemaFailure = 0;
+  await review.click();
+  const archived = dialog.getByRole('checkbox', { name: 'Finished (unavailable grouping option)', exact: true });
+  await expect(archived).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Renamed (grouping option)', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'New option (grouping option)', exact: true })).not.toBeChecked();
+  await expect(unclassified).toBeChecked();
+  await expect(save).toBeDisabled();
+  await archived.uncheck();
+  await save.click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes).toHaveLength(3);
+  expect(api.writes[2]).toMatchObject({
+    expectedVersion: 2,
+    schemaRevision: 2,
+    config: { columnVisibility: { mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: true } },
+  });
+});
+
+test('failed initial definitions do not imply empty columns or prevent explicit disabled recovery', async ({
+  page,
+}) => {
+  const api = await mockPropertyBoard(page);
+  api.setColumnVisibility({ mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: false });
+  api.controls.schemaFailure = 500;
+  const schemaRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().endsWith('/properties')) schemaRequests.push(request.url());
+  });
+  await page.goto(boardUrl);
+  await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  await expect(dialog.getByRole('alert')).toContainText('Schema read failed');
+  await expect(dialog.getByRole('status')).toHaveText('Column definitions could not be loaded.');
+  await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeDisabled();
+  await expect(dialog.getByText('No columns selected — this Board will show no cards.', { exact: true })).toHaveCount(
+    0
+  );
+  await dialog.getByLabel('Enabled', { exact: true }).uncheck();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(schemaRequests).toHaveLength(1);
+  expect(api.writes).toHaveLength(1);
+  expect(api.writes[0].schemaId).toBeUndefined();
+  expect(api.writes[0].config).toMatchObject({
+    enabled: false,
+    columnVisibility: { mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: false },
+  });
+});
+
+test('a late definitions response from a dismissed opening cannot overwrite the reopened draft', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  const oldSchema = structuredClone(api.schema);
+  let release = () => {},
+    reached = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let reads = 0;
+  await page.route('**/internal/folders/*/properties', async (route) => {
+    if (++reads !== 1) return route.fallback();
+    reached();
+    await held;
+    await route.fulfill({ json: oldSchema });
+  });
+  await page.goto(boardUrl);
+  const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  try {
+    await trigger.click();
+    await started;
+    await expect(dialog.getByRole('button', { name: 'Save board', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    api.field.options[0].label = 'Current';
+    api.changeSchema();
+    await trigger.click();
+    await dialog.getByRole('checkbox', { name: 'Current (grouping option)', exact: true }).uncheck();
+    const response = page.waitForResponse('**/internal/folders/*/properties');
+    release();
+    await (await response).finished();
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    await expect(dialog.getByRole('checkbox', { name: 'Current (grouping option)', exact: true })).not.toBeChecked();
+    await expect(dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true })).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(api.writes[0]).toMatchObject({
+      schemaRevision: 2,
+      config: {
+        columnVisibility: { mode: 'selected', optionIds: ['Option_Done', 'Option_Empty'], showUnclassified: true },
+      },
+    });
+  } finally {
+    release();
+  }
+});
+
+test('a late explicit review cannot upgrade or downgrade tokens in a subsequent opening', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  await page.goto(boardUrl);
+  const trigger = page.getByRole('button', { name: 'Board settings', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Board settings', exact: true });
+  await trigger.click();
+  await expect(dialog.getByLabel('Columns', { exact: true })).toBeEnabled();
+  api.changeSchema();
+  api.changeConfig();
+  await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Snapshot changed');
+  let release = () => {},
+    reached = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let reads = 0;
+  await page.route('**/internal/folders/*/board/config', async (route) => {
+    if (route.request().method() !== 'GET' || ++reads !== 1) return route.fallback();
+    const oldBoard = structuredClone(api.snapshot());
+    reached();
+    await held;
+    await route.fulfill({ json: { board: oldBoard } });
+  });
+  try {
+    await dialog.getByRole('button', { name: 'Refresh and review', exact: true }).click();
+    await started;
+    await page.keyboard.press('Escape');
+    api.field.options[0].label = 'Newest';
+    api.changeSchema();
+    api.changeConfig();
+    const current = page.waitForResponse('**/internal/folders/*/board/config');
+    await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+    await current;
+    await trigger.click();
+    await dialog.getByRole('checkbox', { name: 'Unclassified', exact: true }).uncheck();
+    const oldResponse = page.waitForResponse('**/internal/folders/*/board/config');
+    release();
+    await (await oldResponse).finished();
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    await expect(dialog.getByRole('checkbox', { name: 'Newest (grouping option)', exact: true })).toBeChecked();
+    await dialog.getByRole('button', { name: 'Save board', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(api.writes).toHaveLength(2);
+    expect(api.writes[1]).toMatchObject({
+      expectedVersion: 3,
+      schemaRevision: 3,
+      config: {
+        columnVisibility: {
+          mode: 'selected',
+          optionIds: ['Option_Todo', 'Option_Done', 'Option_Empty'],
+          showUnclassified: false,
+        },
+      },
+    });
+  } finally {
+    release();
+  }
+});
+
+const visibilityCases: ColumnVisibility[] = [
+  { mode: 'all', showUnclassified: false },
+  { mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: true },
+  { mode: 'selected', optionIds: [], showUnclassified: false },
+];
+for (const columnVisibility of visibilityCases)
+  test(`settings save preserves v5 visibility ${JSON.stringify(columnVisibility)}`, async ({ page }) => {
+    const api = await mockPropertyBoard(page);
+    api.setColumnVisibility(columnVisibility);
+    await page.goto(boardUrl);
+    await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Board settings' });
+    await expect(dialog.getByLabel('Columns', { exact: true })).toBeEnabled();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(api.writes).toEqual([]);
+    await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+    await expect(dialog.getByLabel('Columns', { exact: true })).toBeEnabled();
+    await dialog.getByRole('button', { name: 'Save board' }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(api.writes[0].config).toMatchObject({ schemaVersion: 5, columnVisibility });
+    expect(api.snapshot().config.columnVisibility).toEqual(columnVisibility);
+  });
+test('a conflicted settings draft retains its visibility through explicit refresh and review', async ({ page }) => {
+  const api = await mockPropertyBoard(page);
+  const columnVisibility: ColumnVisibility = { mode: 'selected', optionIds: ['Option_Todo'], showUnclassified: false };
+  api.setColumnVisibility(columnVisibility);
+  await page.goto(boardUrl);
+  await page.getByRole('button', { name: 'Board settings', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Board settings' });
+  await expect(dialog.getByLabel('Columns', { exact: true })).toBeEnabled();
+  api.setColumnVisibility({ mode: 'all', showUnclassified: true });
+  api.changeConfig();
+  await dialog.getByRole('button', { name: 'Save board' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Your draft has been kept');
+  expect(api.writes[0]).toMatchObject({ expectedVersion: 1, config: { columnVisibility } });
+  await dialog.getByRole('button', { name: 'Refresh and review' }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save board' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(api.writes[1]).toMatchObject({ expectedVersion: 2, config: { schemaVersion: 5, columnVisibility } });
 });
 
 test('initial read shows loading, fails without empty-column claims and supports explicit retry', async ({ page }) => {

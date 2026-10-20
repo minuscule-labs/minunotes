@@ -9,7 +9,7 @@ export async function setupPropertyBoardTest() {
   const field = schema.definitions[0];
   const config: SelectBoardConfig = {
     ...DEFAULT_BOARD_CONFIG,
-    schemaVersion: 4,
+    schemaVersion: 5,
     grouping: { type: 'select', schemaId: schema.schemaId as string, propertyId: field.id },
   };
   const token = { schemaId: schema.schemaId as string, schemaRevision: schema.revision };

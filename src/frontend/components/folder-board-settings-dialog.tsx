@@ -1,9 +1,9 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, ListFilter, SlidersHorizontal, Type } from 'lucide-react';
-import { useId, useState } from 'react';
-import { type BoardConfig, DEFAULT_BOARD_CONFIG, validateBoardConfig } from '../../shared/board';
+import { useEffect, useId, useRef, useState } from 'react';
+import { type BoardConfig, type BoardSchemaToken, DEFAULT_BOARD_CONFIG, validateBoardConfig } from '../../shared/board';
 import type { PropertySchema } from '../../shared/properties';
-import { api, type SavedBoard } from '../lib/api';
+import { ApiError, api, type SavedBoard } from '../lib/api';
 import { Button } from './ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from './ui/dialog';
 import { QuickTooltip } from './ui/tooltip';
@@ -11,6 +11,13 @@ import { QuickTooltip } from './ui/tooltip';
 export function FolderBoardSettingsDialog({ folderId, board }: { folderId: string; board: SavedBoard | null }) {
   const [open, setOpen] = useState(false);
   const groupingId = useId();
+  const opening = useRef(0);
+  useEffect(
+    () => () => {
+      opening.current++;
+    },
+    []
+  );
   // Capture version together with draft. Query refreshes must never silently upgrade an open draft.
   const [draft, setDraft] = useState<BoardConfig>(DEFAULT_BOARD_CONFIG);
   const [expectedVersion, setExpectedVersion] = useState(0);
@@ -21,59 +28,99 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
   const [knownDisplayIds, setKnownDisplayIds] = useState<string[]>([]);
   const [schema, setSchema] = useState<PropertySchema | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const [needsReview, setNeedsReview] = useState(false);
+  const [knownColumnIds, setKnownColumnIds] = useState<string[]>([]);
+  const [groupingChanged, setGroupingChanged] = useState(false);
+  const visibility = draft.columnVisibility;
   const eligible = schema?.definitions.filter((d) => !d.archived && d.type === 'select') ?? [];
-  const selected = eligible.find((d) => d.id === propertyId);
+  const selected = schema?.schemaId === draft.grouping.schemaId ? eligible.find((d) => d.id === propertyId) : undefined;
+  const activeOptions = selected?.options.filter((o) => !o.archived) ?? [];
+  const unavailableColumnIds =
+    visibility.mode === 'selected' ? visibility.optionIds.filter((id) => !activeOptions.some((o) => o.id === id)) : [];
+  const hasVisibleOptions = activeOptions.some((o) => visibility.mode === 'all' || visibility.optionIds.includes(o.id));
   const displayFields =
     schema?.definitions.filter((d) => !d.archived && ['text', 'select', 'date'].includes(d.type)) ?? [];
   const unavailableIds = cardPropertyIds.filter((id) => !displayFields.some((d) => d.id === id));
-  const unavailableSelection = !reviewing && !!schema && ((!!propertyId && !selected) || unavailableIds.length > 0);
+  const unavailableSelection =
+    !reviewing &&
+    !!schema &&
+    ((!!propertyId && !selected) || unavailableIds.length > 0 || unavailableColumnIds.length > 0);
+  const chooseColumns = (ids: string[], showUnclassified?: boolean) => {
+    setKnownColumnIds((known) => [...new Set([...known, ...ids])]);
+    setDraft((previous) => ({
+      ...previous,
+      columnVisibility: {
+        mode: 'selected',
+        optionIds: ids,
+        showUnclassified: showUnclassified ?? previous.columnVisibility.showUnclassified,
+      },
+    }));
+  };
   const qc = useQueryClient();
   const save = useMutation({
-    mutationFn: (config: BoardConfig) =>
-      api.saveBoardConfig(
-        folderId,
-        config,
-        expectedVersion,
-        schema?.schemaId ? { schemaId: schema.schemaId, schemaRevision: schema.revision } : undefined
-      ),
-    onSuccess: async () => {
+    mutationFn: (input: { config: BoardConfig; version: number; schema?: BoardSchemaToken; opening: number }) =>
+      api.saveBoardConfig(folderId, input.config, input.version, input.schema),
+    retry: false,
+    onSuccess: async (_result, input) => {
       await qc.invalidateQueries({ queryKey: ['board', folderId] });
+      if (opening.current !== input.opening) return;
+      opening.current++;
       setOpen(false);
     },
-    onError: (error: Error) => setError(error.message),
+    onError: (error: Error, input) => {
+      if (opening.current !== input.opening) return;
+      setError(error.message);
+      if (error instanceof ApiError && error.status === 409) setNeedsReview(true);
+    },
   });
   const begin = () => {
+    const attempt = ++opening.current;
     const config = board?.config ?? DEFAULT_BOARD_CONFIG;
     setDraft(structuredClone(config));
+    setKnownColumnIds(config.columnVisibility.mode === 'selected' ? [...config.columnVisibility.optionIds] : []);
+    setGroupingChanged(false);
+    setNeedsReview(false);
     setPropertyId(config.grouping.propertyId);
     setCardPropertyIds([...config.cardPropertyIds]);
     setKnownDisplayIds([...config.cardPropertyIds]);
     setSchema(null);
     setReviewing(true);
-    void qc
-      .fetchQuery({
-        queryKey: ['folder-properties', folderId],
-        queryFn: () => api.folderProperties(folderId),
-        staleTime: 0,
-      })
+    // Each opening owns its read; do not reuse a previous opening's in-flight query or retry it.
+    void api
+      .folderProperties(folderId)
       .then((current) => {
+        if (opening.current !== attempt) return;
         setSchema(current);
         if (!board) {
           const active = current.definitions.filter((d) => !d.archived && d.type === 'select');
-          setPropertyId(active.find((d) => d.label.trim().toLowerCase() === 'status')?.id ?? '');
-          setCardPropertyIds([]);
+          const suggested = active.find((d) => d.label.trim().toLowerCase() === 'status')?.id ?? '';
+          setPropertyId(suggested);
+          setDraft((previous) => ({
+            ...previous,
+            grouping: { type: 'select', schemaId: current.schemaId ?? '', propertyId: suggested },
+          }));
         }
       })
-      .catch((error: Error) => setError(error.message))
-      .finally(() => setReviewing(false));
+      .catch((error: Error) => {
+        if (opening.current === attempt) setError(error.message);
+      })
+      .finally(() => {
+        if (opening.current === attempt) setReviewing(false);
+      });
     setExpectedVersion(board?.version ?? 0);
     setError('');
   };
+  const saveBlocked =
+    save.isPending ||
+    reviewing ||
+    needsReview ||
+    (draft.enabled && (!schema?.schemaId || !selected || unavailableIds.length > 0 || unavailableColumnIds.length > 0));
   return (
     <Dialog
       open={open}
       onOpenChange={(value) => {
         if (value) begin();
+        else opening.current++;
         setOpen(value);
       }}
     >
@@ -103,16 +150,23 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
           className="mt-4 space-y-4"
           onSubmit={(event) => {
             event.preventDefault();
+            if (saveBlocked) return;
             try {
               const config = validateBoardConfig({
-                schemaVersion: 4,
+                schemaVersion: 5,
                 mode: 'read-only',
                 enabled: draft.enabled,
-                grouping: { type: 'select', schemaId: schema?.schemaId ?? draft.grouping.schemaId, propertyId },
+                grouping: { ...draft.grouping, propertyId },
                 cardPropertyIds,
+                columnVisibility: draft.columnVisibility,
               });
               setError('');
-              save.mutate(config);
+              save.mutate({
+                config,
+                version: expectedVersion,
+                opening: opening.current,
+                schema: schema?.schemaId ? { schemaId: schema.schemaId, schemaRevision: schema.revision } : undefined,
+              });
             } catch (error) {
               setError(error instanceof Error ? error.message : 'Invalid settings');
             }
@@ -137,9 +191,28 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
                 <select
                   id={groupingId}
                   className="notes-input block w-full rounded px-2 py-1"
-                  disabled={reviewing}
+                  disabled={reviewing || !schema}
                   value={propertyId}
-                  onChange={(event) => setPropertyId(event.target.value)}
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    const changed = !!propertyId && id !== propertyId;
+                    setPropertyId(id);
+                    setDraft((previous) => ({
+                      ...previous,
+                      grouping: { type: 'select', schemaId: schema?.schemaId ?? '', propertyId: id },
+                      columnVisibility: changed
+                        ? {
+                            mode: 'selected',
+                            optionIds: [],
+                            showUnclassified: previous.columnVisibility.showUnclassified,
+                          }
+                        : previous.columnVisibility,
+                    }));
+                    if (changed) {
+                      setKnownColumnIds([]);
+                      setGroupingChanged(true);
+                    }
+                  }}
                 >
                   <option value="">Choose a Select property</option>
                   {propertyId && !selected ? <option value={propertyId}>Unavailable selection</option> : null}
@@ -157,9 +230,87 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
                 ) : null}
               </div>
             </div>
-            <fieldset disabled={reviewing} className="min-w-0 space-y-2 text-sm">
+            <fieldset disabled={reviewing || !schema} className="min-w-0 space-y-2 text-sm">
+              <legend className="mb-2">Visible columns</legend>
+              {groupingChanged ? (
+                <p className="notes-muted text-xs">
+                  Grouping changed. Review the fresh column selection before saving.
+                </p>
+              ) : null}
+              {activeOptions.map((option) => (
+                <label key={option.id} className="flex min-w-0 items-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 shrink-0"
+                    checked={visibility.mode === 'all' || visibility.optionIds.includes(option.id)}
+                    onChange={(event) => {
+                      const currentIds =
+                        visibility.mode === 'all' ? activeOptions.map((o) => o.id) : visibility.optionIds;
+                      chooseColumns(
+                        event.target.checked ? [...currentIds, option.id] : currentIds.filter((id) => id !== option.id)
+                      );
+                    }}
+                  />
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                    {option.label}
+                    <span className="sr-only"> (grouping option)</span>
+                  </span>
+                </label>
+              ))}
+              {visibility.mode === 'selected' && schema
+                ? knownColumnIds
+                    .filter((id) => !activeOptions.some((o) => o.id === id))
+                    .map((id) => (
+                      <label key={id} className="flex min-w-0 items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 shrink-0"
+                          checked={visibility.optionIds.includes(id)}
+                          onChange={(event) => {
+                            const ids = event.target.checked
+                              ? [...visibility.optionIds, id]
+                              : visibility.optionIds.filter((value) => value !== id);
+                            chooseColumns(ids);
+                          }}
+                        />
+                        <span className="min-w-0 [overflow-wrap:anywhere]">
+                          {schema.definitions.find((d) => d.id === propertyId)?.options.find((o) => o.id === id)
+                            ?.label ?? `Column ${id}`}{' '}
+                          (unavailable grouping option)
+                        </span>
+                      </label>
+                    ))
+                : null}
+              {!reviewing && schema && unavailableColumnIds.length > 0 ? (
+                <p role="alert">Visible columns unavailable. Remove them or disable the board.</p>
+              ) : null}
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={visibility.showUnclassified}
+                  onChange={(event) =>
+                    chooseColumns(
+                      visibility.mode === 'all' ? activeOptions.map((o) => o.id) : visibility.optionIds,
+                      event.target.checked
+                    )
+                  }
+                />
+                Unclassified
+              </label>
+              {reviewing || !schema || !selected || (!hasVisibleOptions && !visibility.showUnclassified) ? (
+                <p role="status" className="text-xs">
+                  {reviewing
+                    ? 'Loading column definitions…'
+                    : !schema
+                      ? 'Column definitions could not be loaded.'
+                      : !selected
+                        ? 'Choose a grouping property.'
+                        : 'No columns selected — this Board will show no cards.'}
+                </p>
+              ) : null}
+            </fieldset>
+            <fieldset disabled={reviewing || !schema} className="min-w-0 space-y-2 text-sm">
               <legend className="mb-2">Card properties</legend>
-              <p className="notes-muted text-xs">Shown on cards for everyone. Save board to apply.</p>
               {displayFields.map((field) => {
                 const Icon = field.type === 'select' ? ListFilter : field.type === 'date' ? CalendarDays : Type;
                 return (
@@ -207,26 +358,6 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
                 <p role="alert">Card properties unavailable. Remove them or disable the board.</p>
               ) : null}
             </fieldset>
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] items-start gap-3 text-sm">
-              <span>Columns</span>
-              {selected ? (
-                <ol aria-label="Select column preview" className="flex min-w-0 flex-wrap gap-1 text-xs">
-                  {selected.options
-                    .filter((o) => !o.archived)
-                    .map((o) => (
-                      <li
-                        key={o.id}
-                        className="rounded border border-[var(--notes-border)] px-1.5 py-1 [overflow-wrap:anywhere]"
-                      >
-                        {o.label}
-                      </li>
-                    ))}
-                  <li className="rounded border border-[var(--notes-border)] px-1.5 py-1">Unclassified</li>
-                </ol>
-              ) : (
-                <p className="notes-muted text-xs">Choose a grouping property.</p>
-              )}
-            </div>
           </fieldset>
           {error ? (
             <p role="alert" className="text-sm">
@@ -242,29 +373,35 @@ export function FolderBoardSettingsDialog({ folderId, board }: { folderId: strin
                 type="button"
                 disabled={save.isPending || reviewing}
                 onClick={async () => {
+                  const attempt = opening.current;
                   setReviewing(true);
                   try {
                     const [current, definitions] = await Promise.all([
                       api.boardConfig(folderId),
                       api.folderProperties(folderId),
                     ]);
+                    if (opening.current !== attempt) return;
                     setExpectedVersion(current.board?.version ?? 0);
                     setSchema(definitions);
+                    // A brand-new draft can recover a failed initial schema read without resetting choices.
+                    if (!draft.grouping.schemaId && !propertyId && !board)
+                      setDraft((previous) => ({
+                        ...previous,
+                        grouping: { ...previous.grouping, schemaId: definitions.schemaId ?? '' },
+                      }));
+                    setNeedsReview(false);
                     setError('');
                   } catch (error) {
-                    setError(error instanceof Error ? error.message : 'Review failed');
+                    if (opening.current === attempt) setError(error instanceof Error ? error.message : 'Review failed');
                   } finally {
-                    setReviewing(false);
+                    if (opening.current === attempt) setReviewing(false);
                   }
                 }}
               >
                 Refresh and review
               </Button>
             ) : null}
-            <Button
-              type="submit"
-              disabled={save.isPending || reviewing || (draft.enabled && (!selected || unavailableIds.length > 0))}
-            >
+            <Button type="submit" disabled={saveBlocked}>
               {save.isPending ? 'Saving…' : 'Save board'}
             </Button>
           </div>

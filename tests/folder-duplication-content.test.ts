@@ -7,6 +7,7 @@ import {
   copySchema,
   copyValues,
 } from '../src/api/folders/duplicate-content';
+import { DEFAULT_BOARD_CONFIG, validateBoardConfig } from '../src/shared/board';
 import { parseFolderDuplication } from '../src/shared/folder-duplication';
 
 const ctx = {
@@ -85,6 +86,63 @@ describe('folder duplication formats', () => {
     expect(() => copyValues('[]', schema)).toThrow();
     expect(() => copySchema('schema', '{}')).toThrow();
     expect(() => copySchema('schema', JSON.stringify([{ ...definitions[0], type: 'person' }]))).toThrow();
+  });
+  it.each([
+    { mode: 'all', showUnclassified: true },
+    { mode: 'all', showUnclassified: false },
+    { mode: 'selected', optionIds: ['active', 'archived', 'missing'], showUnclassified: true },
+    { mode: 'selected', optionIds: ['active', 'archived'], showUnclassified: false },
+    { mode: 'selected', optionIds: [], showUnclassified: true },
+    { mode: 'selected', optionIds: [], showUnclassified: false },
+  ])('copies v5 $mode / Unclassified $showUnclassified without widening or losing intent', (columnVisibility) => {
+    const schema = copySchema(
+      'schema_old',
+      JSON.stringify([
+        {
+          id: 'status',
+          label: 'Status',
+          type: 'select',
+          archived: false,
+          options: [
+            { id: 'active', label: 'Todo', archived: false },
+            { id: 'archived', label: 'Retired', archived: true },
+          ],
+        },
+        {
+          id: 'other',
+          label: 'Other',
+          type: 'select',
+          archived: false,
+          options: [{ id: 'active', label: 'Same historical ID in another property', archived: false }],
+        },
+      ])
+    );
+    const config = validateBoardConfig({
+      ...DEFAULT_BOARD_CONFIG,
+      grouping: { type: 'select', schemaId: 'schema_old', propertyId: 'status' },
+      columnVisibility,
+    });
+    const raw = JSON.stringify(config);
+    const copy = validateBoardConfig(JSON.parse(copyBoard(raw, schema)));
+    expect(copy.grouping).toEqual({
+      type: 'select',
+      schemaId: schema.schemaId,
+      propertyId: schema.fields.get('status'),
+    });
+    expect(copy.columnVisibility).toEqual(
+      columnVisibility.mode === 'selected'
+        ? {
+            ...columnVisibility,
+            optionIds: columnVisibility.optionIds?.map((id) => schema.options.get('status')?.get(id) ?? id),
+          }
+        : columnVisibility
+    );
+    expect(JSON.stringify(config)).toBe(raw);
+    expect(copyBoard(raw)).toBe(raw);
+    const foreign = { ...config, grouping: { ...config.grouping, schemaId: 'foreign' } };
+    expect(JSON.parse(copyBoard(JSON.stringify(foreign), schema))).toEqual(foreign);
+    const unavailable = { ...config, grouping: { ...config.grouping, propertyId: 'missing' } };
+    expect(JSON.parse(copyBoard(JSON.stringify(unavailable), schema)).columnVisibility).toEqual(columnVisibility);
   });
   it('rewrites actual Markdown destinations and resolved wikilinks, never code, foreign URLs, labels or unrelated text', () => {
     const source =

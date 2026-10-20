@@ -90,8 +90,16 @@ it('reads more than 100 lane cards with a single bounded query and no metadata m
   );
   const board = await f.boards.readBoardConfig('owner', 'board');
   if (!board) throw Error('Missing board');
+  const schemaSnapshot = await f.properties.readFolderProperties(f.actor, 'board');
   const spy = vi.spyOn(f.libsql, 'execute');
-  const input = { actorUserId: 'viewer', userId: 'owner', folderId: 'board', board, lane: f.field.options[0].id };
+  const input = {
+    actorUserId: 'viewer',
+    userId: 'owner',
+    folderId: 'board',
+    board,
+    schemaSnapshot,
+    lane: f.field.options[0].id,
+  };
   const first = await f.boards.readBoardLane({ ...input, page: { page: 1, limit: 100, offset: 0 } });
   expect(spy.mock.calls).toHaveLength(1);
   spy.mockClear();
