@@ -101,11 +101,12 @@ async function setup(full = false) {
       userId: 'owner',
       version: 7,
       config: JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         enabled: false,
         mode: 'read-only',
         grouping: { type: 'select', schemaId: 'schema_base', propertyId: 'status' },
         cardPropertyIds: ['text'],
+        columnVisibility: { mode: 'selected', optionIds: ['open', 'retired'], showUnclassified: false },
       }),
       createdAt: f.now,
       updatedAt: f.now,
@@ -241,6 +242,11 @@ describe('folder duplication', () => {
       enabled: false,
       grouping: { schemaId: schema.schemaId, propertyId: definitions[0].id },
       cardPropertyIds: [definitions[1].id],
+      columnVisibility: {
+        mode: 'selected',
+        optionIds: definitions[0].options.map((option: { id: string }) => option.id),
+        showUnclassified: false,
+      },
     });
     const assignments = (await f.db.select().from(f.schema.templateFolderAssignments)).filter(
       (row) => row.templateId === template.id

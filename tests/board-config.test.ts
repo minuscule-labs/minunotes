@@ -11,11 +11,12 @@ import { setupPropertyBoardTest } from './property-board-fixtures';
 afterEach(cleanupBoardTests);
 const disabled = { ...DEFAULT_BOARD_CONFIG, enabled: false };
 const selected = { ...DEFAULT_BOARD_CONFIG, grouping: { type: 'select', schemaId: 'schema_A', propertyId: 'field_A' } };
-const legacy = { ...selected, schemaVersion: 2, lanes: [], includeTags: [], excludeTags: [] };
+const { columnVisibility: _visibility, ...v4Base } = selected;
+const legacy = { ...v4Base, schemaVersion: 2, lanes: [], includeTags: [], excludeTags: [] };
 
 describe('property-only board contract', () => {
-  it('accepts zero through twelve unique v4 display IDs and rejects old writes without clearing visibility', () => {
-    const current = { ...selected, schemaVersion: 4, cardPropertyIds: [] };
+  it('accepts zero through twelve unique v5 display IDs and rejects old writes without clearing visibility', () => {
+    const current = { ...selected, schemaVersion: 5, cardPropertyIds: [] };
     for (const count of [0, 1, 12]) {
       const cardPropertyIds = Array.from({ length: count }, (_, i) => `field_${i}`);
       expect(validateBoardConfig({ ...current, cardPropertyIds })).toEqual({ ...current, cardPropertyIds });
@@ -35,7 +36,7 @@ describe('property-only board contract', () => {
     };
     const before = JSON.stringify(stored);
     expect(decodeStoredBoardConfig(stored)).toEqual({
-      config: { ...selected, schemaVersion: 4, cardPropertyIds: [selected.grouping.propertyId] },
+      config: { ...selected, cardPropertyIds: [selected.grouping.propertyId] },
       requiresReview: false,
     });
     expect(JSON.stringify(stored)).toBe(before);
@@ -83,6 +84,92 @@ describe('property-only board contract', () => {
       requiresReview: true,
     });
     expect(() => decodeStoredBoardConfig({ ...legacy, schemaVersion: 99 })).toThrow();
+  });
+});
+
+describe('visible column contract', () => {
+  const choices = [
+    { mode: 'all', showUnclassified: true },
+    { mode: 'all', showUnclassified: false },
+    { mode: 'selected', optionIds: ['option_todo'], showUnclassified: true },
+    { mode: 'selected', optionIds: ['option_todo'], showUnclassified: false },
+    { mode: 'selected', optionIds: [], showUnclassified: true },
+    { mode: 'selected', optionIds: [], showUnclassified: false },
+  ];
+  it.each(choices)('round trips $mode / Unclassified $showUnclassified without changing intent', (columnVisibility) => {
+    const config = { ...selected, columnVisibility };
+    expect(validateBoardConfig(config)).toEqual(config);
+    expect(decodeStoredBoardConfig(config)).toEqual({ config, requiresReview: false });
+    expect(validateBoardConfig({ ...disabled, columnVisibility })).toMatchObject({ columnVisibility });
+  });
+  it('keeps explicit selections, including unavailable IDs, independent of the input and defaults', () => {
+    for (const count of [0, 1, 8]) {
+      const optionIds = Array.from({ length: count }, (_, i) => `option_${i}`);
+      const config = { ...selected, columnVisibility: { mode: 'selected', optionIds, showUnclassified: false } };
+      const before = JSON.stringify(config);
+      const result = validateBoardConfig(config);
+      expect(result).toEqual(config);
+      expect(JSON.stringify(config)).toBe(before);
+      expect(result.columnVisibility).not.toBe(config.columnVisibility);
+      if (result.columnVisibility.mode === 'selected') {
+        result.columnVisibility.optionIds.push('option_unavailable');
+        expect(optionIds).toHaveLength(count);
+      }
+    }
+    const first = decodeStoredBoardConfig({ schemaVersion: 1, mode: 'read-only', enabled: true }).config;
+    first.columnVisibility.showUnclassified = false;
+    expect(DEFAULT_BOARD_CONFIG.columnVisibility.showUnclassified).toBe(true);
+  });
+  it.each([
+    undefined,
+    null,
+    [],
+    {},
+    'all',
+    { mode: 'all' },
+    { mode: 'all', showUnclassified: 'false' },
+    { mode: 'all', showUnclassified: true, optionIds: [] },
+    { mode: 'all', showUnclassified: true, extra: true },
+    { mode: 'unknown', showUnclassified: true },
+    { mode: ['all'], showUnclassified: true },
+    { mode: 'selected', showUnclassified: true },
+    { mode: 'selected', optionIds: null, showUnclassified: true },
+    { mode: 'selected', optionIds: 'option_a', showUnclassified: true },
+    { mode: 'selected', optionIds: [], showUnclassified: null },
+    { mode: 'selected', optionIds: ['a', 'a'], showUnclassified: true },
+    { mode: 'selected', optionIds: [42], showUnclassified: true },
+    { mode: 'selected', optionIds: [''], showUnclassified: true },
+    { mode: 'selected', optionIds: ['bad.path'], showUnclassified: true },
+    { mode: 'selected', optionIds: ['a'.repeat(101)], showUnclassified: true },
+    { mode: 'selected', optionIds: Array(1), showUnclassified: true },
+    { mode: 'selected', optionIds: Array.from({ length: 9 }, (_, i) => `o_${i}`), showUnclassified: true },
+    { mode: 'selected', optionIds: [], showUnclassified: true, extra: true },
+  ])('rejects malformed visibility %# on both writes and stored reads', (columnVisibility) => {
+    const config = { ...selected, columnVisibility };
+    expect(() => validateBoardConfig(config)).toThrow(BoardValidationError);
+    expect(() => decodeStoredBoardConfig(config)).toThrow(BoardValidationError);
+  });
+  it('strictly validates stored v4 before supplying fresh All defaults, without mutating it', () => {
+    const stored = { ...v4Base, schemaVersion: 4, cardPropertyIds: ['field_extra'] };
+    const before = JSON.stringify(stored);
+    const decoded = decodeStoredBoardConfig(stored);
+    expect(decoded).toEqual({
+      config: { ...selected, cardPropertyIds: ['field_extra'] },
+      requiresReview: false,
+    });
+    expect(JSON.stringify(stored)).toBe(before);
+    decoded.config.cardPropertyIds.push('another');
+    decoded.config.columnVisibility.showUnclassified = false;
+    expect(decodeStoredBoardConfig(stored).config).toEqual({ ...selected, cardPropertyIds: ['field_extra'] });
+    for (const invalid of [
+      { ...stored, columnVisibility: { mode: 'selected', optionIds: [], showUnclassified: false } },
+      { ...stored, extra: true },
+      { ...stored, cardPropertyIds: undefined },
+      { ...stored, cardPropertyIds: ['duplicate', 'duplicate'] },
+      { ...stored, grouping: { ...stored.grouping, extra: true } },
+    ])
+      expect(() => decodeStoredBoardConfig(invalid)).toThrow(BoardValidationError);
+    expect(() => validateBoardConfig(stored)).toThrow('Refresh');
   });
 });
 

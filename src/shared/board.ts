@@ -2,12 +2,16 @@ import { isCalendarDate } from './properties';
 
 export class BoardValidationError extends Error {}
 
+export type ColumnVisibility =
+  | { mode: 'all'; showUnclassified: boolean }
+  | { mode: 'selected'; optionIds: string[]; showUnclassified: boolean };
 export type BoardConfig = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   enabled: boolean;
   mode: 'read-only';
   grouping: { type: 'select'; schemaId: string; propertyId: string };
   cardPropertyIds: string[];
+  columnVisibility: ColumnVisibility;
 };
 export type SelectBoardConfig = BoardConfig;
 export type BoardSchemaToken = { schemaId: string; schemaRevision: number };
@@ -35,30 +39,37 @@ export type EffectiveBoard = {
 export type UnclassifiedReason = 'no-property-value' | 'unavailable-property-value';
 export const UNCLASSIFIED = 'unclassified';
 export const MAX_CARD_PROPERTIES = 12;
+export const MAX_SELECTED_BOARD_OPTIONS = 8;
 export const CARD_TEXT_PREVIEW_LENGTH = 160;
 // Empty grouping is a draft, never an enabled saved configuration.
 export const DEFAULT_BOARD_CONFIG: BoardConfig = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   enabled: true,
   mode: 'read-only',
   grouping: { type: 'select', schemaId: '', propertyId: '' },
   cardPropertyIds: [],
+  columnVisibility: { mode: 'all', showUnclassified: true },
 };
 const validId = (id: unknown) => typeof id === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 
 export function validateBoardConfig(input: unknown): BoardConfig {
+  return validateConfig(input, 5);
+}
+
+/** Stored v4 must pass its original strict shape before receiving read-only defaults. */
+function validateConfig(input: unknown, schemaVersion: 4 | 5): BoardConfig {
   if (new TextEncoder().encode(JSON.stringify(input) ?? '').length > 16384)
     throw new BoardValidationError('Configuration exceeds 16 KiB');
   if (!input || typeof input !== 'object' || Array.isArray(input))
     throw new BoardValidationError('Invalid configuration');
-  const value = input as Partial<BoardConfig>;
-  if (value.schemaVersion !== 4 || value.mode !== 'read-only' || typeof value.enabled !== 'boolean')
+  const value = input as Partial<Omit<BoardConfig, 'schemaVersion'>> & { schemaVersion?: unknown };
+  if (value.schemaVersion !== schemaVersion || value.mode !== 'read-only' || typeof value.enabled !== 'boolean')
     throw new BoardValidationError(
-      'Boards require version 4 Card properties settings. Refresh, review and save board settings.'
+      'Boards require version 5 Visible columns settings. Refresh, review and save board settings.'
     );
-  if (
-    Object.keys(value).some((key) => !['schemaVersion', 'enabled', 'mode', 'grouping', 'cardPropertyIds'].includes(key))
-  )
+  const keys = ['schemaVersion', 'enabled', 'mode', 'grouping', 'cardPropertyIds'];
+  if (schemaVersion === 5) keys.push('columnVisibility');
+  if (Object.keys(value).some((key) => !keys.includes(key)))
     throw new BoardValidationError('Retired settings and unknown board fields are no longer supported');
   const g = value.grouping;
   if (
@@ -78,12 +89,37 @@ export function validateBoardConfig(input: unknown): BoardConfig {
   )
     throw new BoardValidationError('Choose up to 12 unique valid Card properties');
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     enabled: value.enabled,
     mode: 'read-only',
     grouping: { type: 'select', schemaId: g.schemaId, propertyId: g.propertyId },
     cardPropertyIds: [...value.cardPropertyIds],
+    columnVisibility:
+      schemaVersion === 4 ? { mode: 'all', showUnclassified: true } : validateColumnVisibility(value.columnVisibility),
   };
+}
+
+function validateColumnVisibility(input: unknown): ColumnVisibility {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    throw new BoardValidationError('Choose All or Selected visible columns');
+  const value = input as Record<string, unknown>;
+  if (
+    (value.mode !== 'all' && value.mode !== 'selected') ||
+    typeof value.showUnclassified !== 'boolean' ||
+    Object.keys(value).some(
+      (key) => !['mode', 'showUnclassified', ...(value.mode === 'selected' ? ['optionIds'] : [])].includes(key)
+    )
+  )
+    throw new BoardValidationError('Invalid Visible columns settings');
+  if (value.mode === 'all') return { mode: 'all', showUnclassified: value.showUnclassified };
+  if (
+    !Array.isArray(value.optionIds) ||
+    value.optionIds.length > MAX_SELECTED_BOARD_OPTIONS ||
+    ![...value.optionIds].every(validId) ||
+    new Set(value.optionIds).size !== value.optionIds.length
+  )
+    throw new BoardValidationError('Choose up to 8 unique valid column option IDs');
+  return { mode: 'selected', optionIds: [...value.optionIds], showUnclassified: value.showUnclassified };
 }
 
 /** Read-only compatibility: never execute retired tag rules or rewrite stored configs on read. */
@@ -91,7 +127,8 @@ export function decodeStoredBoardConfig(input: unknown): { config: BoardConfig; 
   if (!input || typeof input !== 'object' || Array.isArray(input))
     throw new BoardValidationError('Invalid stored board configuration');
   const value = input as Record<string, unknown>;
-  if (value.schemaVersion === 4) return { config: validateBoardConfig(input), requiresReview: false };
+  if (value.schemaVersion === 5) return { config: validateBoardConfig(input), requiresReview: false };
+  if (value.schemaVersion === 4) return { config: validateConfig(input, 4), requiresReview: false };
   if (
     ![1, 2, 3].includes(value.schemaVersion as number) ||
     typeof value.enabled !== 'boolean' ||
@@ -99,7 +136,7 @@ export function decodeStoredBoardConfig(input: unknown): { config: BoardConfig; 
   )
     throw new BoardValidationError('Unsupported stored board configuration');
   if (value.schemaVersion === 1)
-    return { config: { ...DEFAULT_BOARD_CONFIG, enabled: value.enabled }, requiresReview: true };
+    return { config: { ...structuredClone(DEFAULT_BOARD_CONFIG), enabled: value.enabled }, requiresReview: true };
   if (
     value.schemaVersion === 3 &&
     Object.keys(value).some(
@@ -108,11 +145,12 @@ export function decodeStoredBoardConfig(input: unknown): { config: BoardConfig; 
   )
     throw new BoardValidationError('Invalid stored version 3 configuration');
   const config = validateBoardConfig({
-    schemaVersion: 4,
+    schemaVersion: 5,
     enabled: value.enabled,
     mode: value.mode,
     grouping: value.grouping,
     cardPropertyIds: value.cardTypePropertyId === undefined ? [] : [value.cardTypePropertyId],
+    columnVisibility: { mode: 'all', showUnclassified: true },
   });
   // Missing/malformed constraints fail closed too. Empty inactive mappings have no effect on Select grouping.
   const requiresReview =

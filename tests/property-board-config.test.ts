@@ -6,6 +6,105 @@ import { cleanupPropertyBoardTests, setupPropertyBoardTest } from './property-bo
 afterEach(cleanupPropertyBoardTests);
 
 describe('Select board configuration', () => {
+  it('projects All/Selected and Unclassified independently in schema order without changing other data', async () => {
+    const f = await setupPropertyBoardTest();
+    await f.addNote('hidden', 'Hidden', ['ordinary']);
+    await f.patch('hidden', { [f.field.id]: f.field.options[1].id });
+    const tables = [
+      'notes',
+      'note_property_state',
+      'note_tags',
+      'note_events',
+      'folder_property_schemas',
+      'collaboration_grants',
+    ];
+    const snapshot = () =>
+      Promise.all(tables.map(async (table) => (await f.libsql.execute(`select * from ${table}`)).rows));
+    const before = await snapshot();
+    let version = 0;
+    for (const mode of ['all', 'selected'] as const) {
+      for (const showUnclassified of [false, true]) {
+        // Deliberately reverse the selected IDs: schema order must win.
+        const columnVisibility =
+          mode === 'all'
+            ? { mode, showUnclassified }
+            : { mode, optionIds: [f.field.options[2].id, f.field.options[0].id], showUnclassified };
+        const config = { ...f.config, columnVisibility };
+        const response = await f.saveSelect(config, version++);
+        expect(response.status).toBe(200);
+        const { board } = await response.json();
+        expect(board.config).toEqual(config);
+        expect(board.groupingState.available).toBe(true);
+        expect(board.columns.map((c: { key: string }) => c.key)).toEqual([
+          ...(mode === 'all' ? f.field.options : [f.field.options[0], f.field.options[2]]).map((o) => o.id),
+          ...(showUnclassified ? ['unclassified'] : []),
+        ]);
+        expect(board).not.toHaveProperty('schemaSnapshot');
+        expect(board).not.toHaveProperty('activeIds');
+        expect(await snapshot()).toEqual(before);
+      }
+    }
+    for (const showUnclassified of [false, true]) {
+      const response = await f.saveSelect(
+        {
+          ...f.config,
+          columnVisibility: { mode: 'selected', optionIds: [], showUnclassified },
+        },
+        version++
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).board).toMatchObject({
+        columns: showUnclassified ? [{ key: 'unclassified', label: 'Unclassified' }] : [],
+        groupingState: { available: true },
+      });
+    }
+    expect(await snapshot()).toEqual(before);
+    const list = await (await f.request('/internal/folders/board/notes', 'viewer')).json();
+    expect(list.notes.map((n: { id: string }) => n.id)).toContain('hidden');
+    expect((await f.app.request('/internal/notes/hidden', { headers: { 'x-user': 'viewer' } })).status).toBe(200);
+  });
+  it('rejects unavailable and foreign selections atomically but permits disabled recovery', async () => {
+    const f = await setupPropertyBoardTest();
+    const t = await f.addType();
+    const current = await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 2,
+      mutation: { type: 'archive_option', propertyId: f.field.id, optionId: f.field.options[3].id },
+    });
+    const token = { schemaId: current.schemaId as string, schemaRevision: current.revision };
+    const selected = (optionIds: string[]) => ({
+      ...f.config,
+      columnVisibility: { mode: 'selected' as const, optionIds, showUnclassified: false },
+    });
+    expect((await f.saveSelect(selected([f.field.options[0].id]), 0, 'owner', token)).status).toBe(200);
+    const tables = [
+      'folder_board_views',
+      'folder_property_schemas',
+      'notes',
+      'note_property_state',
+      'collaboration_grants',
+    ];
+    const snapshot = () =>
+      Promise.all(tables.map(async (table) => (await f.libsql.execute(`select * from ${table}`)).rows));
+    const before = await snapshot();
+    for (const id of ['unknown', 'unclassified', f.field.options[3].id, t.typeField.options[0].id]) {
+      const response = await f.saveSelect(selected([f.field.options[0].id, id]), 1, 'owner', token);
+      expect(response.status).toBe(400);
+      expect(await response.text()).toContain('remove unavailable selections');
+      expect(await snapshot()).toEqual(before);
+    }
+    for (const actor of ['viewer', 'commenter', 'editor'])
+      expect((await f.saveSelect(selected([]), 1, actor, token)).status).toBe(403);
+    expect((await f.saveSelect(selected([]), 1, 'owner', t.token)).status).toBe(409);
+    expect((await f.saveSelect(selected([]), 0, 'owner', token)).status).toBe(409);
+    expect(await snapshot()).toEqual(before);
+    // Disabled configs retain unavailable choices without a live-schema token.
+    expect((await f.save({ ...selected(['unknown']), enabled: false }, 1)).status).toBe(200);
+    expect((await f.boards.readBoardConfig('owner', 'board'))?.config.columnVisibility).toEqual({
+      mode: 'selected',
+      optionIds: ['unknown'],
+      showUnclassified: false,
+    });
+  });
   it('round trips all twelve active fields, including grouping, with owner-only CAS and no value writes', async () => {
     const f = await setupPropertyBoardTest();
     let current = f.propertySchema;
@@ -35,7 +134,7 @@ describe('Select board configuration', () => {
   it('reads stored v3 choices without rewriting and rejects old-client writes with actionable guidance', async () => {
     const f = await setupPropertyBoardTest();
     const t = await f.addType();
-    const { cardPropertyIds: _ids, ...base } = t.config;
+    const { cardPropertyIds: _ids, columnVisibility: _visibility, ...base } = t.config;
     const stored = { ...base, schemaVersion: 3, cardTypePropertyId: t.typeField.id };
     await f.db.insert(f.schema.folderBoardViews).values({
       userId: 'owner',
@@ -54,11 +153,56 @@ describe('Select board configuration', () => {
     expect((await f.libsql.execute('select * from folder_board_views')).rows).toEqual(before);
     expect((await f.saveSelect(t.config, 9, 'owner', t.token)).status).toBe(200);
   });
+  it('reads stored v4 without mutation and rejects all older writers without erasing v5 visibility', async () => {
+    const f = await setupPropertyBoardTest();
+    const { columnVisibility: _visibility, ...base } = f.config;
+    const stored = { ...base, schemaVersion: 4 };
+    await f.addNote('n', 'N', ['ordinary-tag']);
+    await f.patch('n', { [f.field.id]: f.field.options[0].id });
+    await f.db.insert(f.schema.folderBoardViews).values({
+      userId: 'owner',
+      folderId: 'board',
+      config: JSON.stringify(stored),
+      version: 9,
+      createdAt: f.now,
+      updatedAt: f.now,
+    });
+    const tables = [
+      'folder_board_views',
+      'folder_property_schemas',
+      'notes',
+      'note_property_state',
+      'note_tags',
+      'note_events',
+    ];
+    const snapshot = () =>
+      Promise.all(tables.map(async (table) => (await f.libsql.execute(`select * from ${table}`)).rows));
+    const before = await snapshot();
+    const read = await f.request('/internal/folders/board/board/config');
+    expect(read.status).toBe(200);
+    expect((await read.json()).board).toMatchObject({ version: 9, config: f.config });
+    expect(await snapshot()).toEqual(before);
+
+    const visibility = { mode: 'selected' as const, optionIds: [f.field.options[0].id], showUnclassified: false };
+    const config = { ...f.config, columnVisibility: visibility };
+    expect((await f.saveSelect(config, 9)).status).toBe(200);
+    expect((await f.boards.readBoardConfig('owner', 'board'))?.config).toEqual(config);
+    const saved = await snapshot();
+    for (const schemaVersion of [1, 2, 3, 4]) {
+      const rejected = await f.saveSelect({ ...stored, schemaVersion }, 10);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).toContain('Refresh');
+      expect(await snapshot()).toEqual(saved);
+    }
+    expect((await f.saveSelect(config, 9)).status).toBe(409);
+    expect(await snapshot()).toEqual(saved);
+    expect(saved.slice(1)).toEqual(before.slice(1));
+  });
   it('validates property-only settings without copied options', () => {
     expect(() => validateBoardConfig(DEFAULT_BOARD_CONFIG)).toThrow();
     const config = {
       ...DEFAULT_BOARD_CONFIG,
-      schemaVersion: 4,
+      schemaVersion: 5,
       grouping: { type: 'select', schemaId: 'schema_A', propertyId: 'property_A' },
     };
     expect(validateBoardConfig(config)).toEqual(config);

@@ -353,6 +353,15 @@ export function NotesBoard({
             ? 'Use Board settings to configure it.'
             : 'The folder owner can enable it.'}
         </p>
+      ) : !query.error && state?.type === 'select' && state.available && board.columns?.length === 0 ? (
+        <div className="rounded-md border border-[var(--notes-border)] p-5 text-sm">
+          <p role="status">No columns selected</p>
+          <p className="notes-muted mt-2">
+            {query.data.access?.role === 'owner'
+              ? 'Choose visible columns in Board settings to show cards.'
+              : 'The folder owner can choose which columns appear.'}
+          </p>
+        </div>
       ) : (
         <>
           <p id={scrollHintId} className="sr-only">

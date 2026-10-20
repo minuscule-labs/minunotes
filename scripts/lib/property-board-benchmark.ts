@@ -286,7 +286,7 @@ export async function runPropertyBoardBenchmark(
     diagnostic({ phase: 'seed', state: 'complete' });
     const config = {
       ...DEFAULT_BOARD_CONFIG,
-      schemaVersion: 4,
+      schemaVersion: 5,
       grouping: { type: 'select', schemaId: 'schema_benchmark', propertyId: field.id },
       cardPropertyIds: [typeField.id],
     };

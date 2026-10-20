@@ -6,6 +6,103 @@ import { cleanupPropertyBoardTests, setupPropertyBoardTest } from './property-bo
 afterEach(cleanupPropertyBoardTests);
 
 describe('whole Select board snapshots', () => {
+  it('preserves selected IDs across schema changes without replacing archived choices or admitting new options', async () => {
+    const f = await setupPropertyBoardTest();
+    const [todo, done] = f.field.options;
+    const config = {
+      ...f.config,
+      columnVisibility: {
+        mode: 'selected' as const,
+        optionIds: [todo.id, done.id],
+        showUnclassified: true,
+      },
+    };
+    await f.addNote('n', 'N');
+    await f.patch('n', { [f.field.id]: todo.id });
+    expect((await f.saveSelect(config)).status).toBe(200);
+    const valuesBefore = (await f.libsql.execute('select * from note_property_state')).rows;
+    const configBefore = (await f.libsql.execute('select * from folder_board_views')).rows;
+    const columns = async () => {
+      const response = await f.request('/internal/folders/board/board/config');
+      expect(response.status).toBe(200);
+      const { board } = await response.json();
+      expect(board.config).toEqual(config);
+      return board.columns;
+    };
+    await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 1,
+      mutation: { type: 'rename_option', propertyId: f.field.id, optionId: todo.id, label: 'Ready' },
+    });
+    expect(await columns()).toEqual([
+      { key: todo.id, label: 'Ready' },
+      { key: done.id, label: 'Done' },
+      { key: 'unclassified', label: 'Unclassified' },
+    ]);
+    await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 2,
+      mutation: {
+        type: 'reorder_options',
+        propertyId: f.field.id,
+        optionIds: f.field.options.map((o) => o.id).reverse(),
+      },
+    });
+    expect(await columns()).toEqual([
+      { key: done.id, label: 'Done' },
+      { key: todo.id, label: 'Ready' },
+      { key: 'unclassified', label: 'Unclassified' },
+    ]);
+    await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 3,
+      mutation: { type: 'archive_option', propertyId: f.field.id, optionId: todo.id },
+    });
+    const current = await f.properties.mutateFolderProperties(f.actor, 'board', {
+      expectedRevision: 4,
+      mutation: { type: 'add_option', propertyId: f.field.id, label: 'Ready' },
+    });
+    const added = current.definitions[0].options.at(-1);
+    if (!added) throw new Error('Missing added option');
+    expect(added.id).not.toBe(todo.id);
+    expect(await columns()).toEqual([
+      { key: done.id, label: 'Done' },
+      { key: 'unclassified', label: 'Unclassified' },
+    ]);
+    for (const revision of [1, 2, 3, 4]) {
+      for (const lane of [todo.id, done.id, 'unclassified']) {
+        for (const page of [1, 2])
+          expect((await f.request(f.laneUrl(lane, revision, 1, `&page=${page}`))).status).toBe(409);
+      }
+    }
+    for (const lane of [todo.id, added.id]) expect((await f.request(f.laneUrl(lane, 5))).status).toBe(400);
+    expect((await (await f.request(f.laneUrl('unclassified', 5))).json()).cards).toMatchObject([
+      { id: 'n', unclassifiedReason: 'unavailable-property-value' },
+    ]);
+    expect((await f.libsql.execute('select * from folder_board_views')).rows).toEqual(configBefore);
+    const reviewed = { ...f.token, schemaRevision: 5 };
+    expect((await f.saveSelect(config, 1, 'owner', reviewed)).status).toBe(400);
+    expect((await f.libsql.execute('select * from folder_board_views')).rows).toEqual(configBefore);
+    const cleared = {
+      ...config,
+      columnVisibility: { mode: 'selected' as const, optionIds: [], showUnclassified: false },
+    };
+    expect((await f.saveSelect(cleared, 1, 'owner', reviewed)).status).toBe(200);
+    expect((await f.boards.readBoardConfig('owner', 'board'))?.columns).toEqual([]);
+    for (const page of [1, 2]) expect((await f.request(f.laneUrl(done.id, 5, 1, `&page=${page}`))).status).toBe(409);
+    expect((await f.request(f.laneUrl('unclassified', 5, 2))).status).toBe(400);
+    expect(
+      (
+        await f.saveSelect(
+          { ...f.config, columnVisibility: { mode: 'all', showUnclassified: false } },
+          2,
+          'owner',
+          reviewed
+        )
+      ).status
+    ).toBe(200);
+    expect((await f.boards.readBoardConfig('owner', 'board'))?.columns.map((c) => c.key)).toEqual(
+      current.definitions[0].options.filter((o) => !o.archived).map((o) => o.id)
+    );
+    expect((await f.libsql.execute('select * from note_property_state')).rows).toEqual(valuesBefore);
+  });
   it('invalidates visibility/config and reordered/renamed/archived display generations without changing values', async () => {
     const f = await setupPropertyBoardTest();
     const t = await f.addType();

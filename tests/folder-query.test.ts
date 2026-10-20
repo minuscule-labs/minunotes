@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanupPropertyBoardTests, setupPropertyBoardTest } from './property-board-fixtures';
 
 afterEach(cleanupPropertyBoardTests);
@@ -60,6 +60,119 @@ async function setup() {
   return { ...f, ...t, schemaSnapshot: schema, text, date, ref, url, collect, seed };
 }
 describe('authorized shared folder queries', () => {
+  it('filters and property-sorts visible lanes before paging without changing hidden notes in List', async () => {
+    const f = await setup();
+    for (let i = 0; i < 10; i++) {
+      const id = `n${String(i).padStart(2, '0')}`;
+      await f.seed(id, 'Keep', {
+        [f.field.id]: f.field.options[i % 2].id,
+        [f.typeField.id]: f.typeField.options[i === 4 ? 1 : 0].id,
+        [f.text.id]: String(10 - i).padStart(2, '0'),
+      });
+    }
+    await f.seed('other_title', 'Other', { [f.typeField.id]: f.typeField.options[0].id, [f.text.id]: '00' });
+    expect(
+      (
+        await f.saveSelect(
+          {
+            ...f.config,
+            columnVisibility: {
+              mode: 'selected',
+              optionIds: [f.field.options[0].id],
+              showUnclassified: false,
+            },
+          },
+          1,
+          'owner',
+          { ...f.token, schemaRevision: 4 }
+        )
+      ).status
+    ).toBe(200);
+    const query = {
+      q: 'Keep',
+      filters: encoded([f.ref(f.typeField.id, 'select', { operator: 'is', optionId: f.typeField.options[0].id })]),
+      sort: JSON.stringify({
+        version: 1,
+        schemaId: f.schemaSnapshot.schemaId,
+        propertyId: f.text.id,
+        type: 'text',
+        direction: 'asc',
+      }),
+    };
+    const metadata = await import('../src/api/notes/metadata-access');
+    const readSchema = vi.spyOn(metadata, 'metadataSchema');
+    const pages = [];
+    for (const page of [1, 2, 3]) {
+      readSchema.mockClear();
+      const response = await f.request(
+        f.url('board', query, f.field.options[0].id, page).replace('version=1', 'version=2'),
+        'viewer'
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.queryIdentity).toBeTypeOf('string');
+      expect(JSON.parse(body.sortIdentity)).toEqual(JSON.parse(query.sort));
+      expect(body.querySchema).toEqual({ schemaId: f.schemaSnapshot.schemaId, schemaRevision: 4 });
+      expect(readSchema).toHaveBeenCalledTimes(1);
+      pages.push(body);
+    }
+    readSchema.mockRestore();
+    expect(pages.map((p) => p.cards.map((c: { id: string }) => c.id))).toEqual([['n08', 'n06'], ['n02', 'n00'], []]);
+    expect(pages.map((p) => p.hasMore)).toEqual([true, false, false]);
+    expect(await f.collect('list', query)).toEqual(['n00', 'n01', 'n02', 'n03', 'n05', 'n06', 'n07', 'n08', 'n09']);
+    for (const lane of [f.field.options[1].id, 'unclassified'])
+      expect((await f.request(f.url('board', query, lane).replace('version=1', 'version=2'))).status).toBe(400);
+  });
+  it('keeps grouping Empty narrower than Unclassified when valid statuses are hidden', async () => {
+    const f = await setup();
+    for (const [id, value] of Object.entries({
+      missing: undefined,
+      null: null,
+      blank: ' \t',
+      unknown: 'unknown',
+      number: 1,
+      array: [],
+      hidden: f.field.options[1].id,
+    }))
+      await f.seed(id, id, { [f.field.id]: value });
+    const config = {
+      ...f.config,
+      columnVisibility: {
+        mode: 'selected' as const,
+        optionIds: [f.field.options[0].id],
+        showUnclassified: true,
+      },
+    };
+    const reviewed = { ...f.token, schemaRevision: 4 };
+    expect((await f.saveSelect(config, 1, 'owner', reviewed)).status).toBe(200);
+    const empty = { filters: encoded([f.ref(f.field.id, 'select', { operator: 'empty' })]) };
+    const collectLane = async (query: Record<string, string>) => {
+      const ids: string[] = [];
+      for (let page = 1; page <= 4; page++) {
+        const response = await f.request(f.url('board', query, 'unclassified', page).replace('version=1', 'version=2'));
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        ids.push(...body.cards.map((c: { id: string }) => c.id));
+        if (!body.hasMore) break;
+      }
+      return ids.sort();
+    };
+    expect(await collectLane({})).toEqual(['array', 'blank', 'missing', 'null', 'number', 'unknown']);
+    expect(await collectLane(empty)).toEqual(['blank', 'missing', 'null']);
+    expect(await f.collect('list', empty)).toEqual(['blank', 'missing', 'null']);
+    expect(
+      (
+        await f.saveSelect(
+          { ...config, columnVisibility: { ...config.columnVisibility, showUnclassified: false } },
+          2,
+          'owner',
+          reviewed
+        )
+      ).status
+    ).toBe(200);
+    expect((await f.request(f.url('board', empty, 'unclassified').replace('version=1', 'version=3'))).status).toBe(400);
+    expect(await f.collect('list', empty)).toEqual(['blank', 'missing', 'null']);
+  });
   it('sorts full Text, real Dates and configured Select ranks before paging, invalid values last in BOTH directions', async () => {
     for (const type of ['text', 'date', 'select'] as const) {
       const f = await setup();

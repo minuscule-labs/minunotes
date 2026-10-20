@@ -98,7 +98,7 @@ describe('disposable Board Lite demo', () => {
   it('fresh demo selects Status and optional Type without tag gating and uses explicit retained template values', async () => {
     const sandbox = await setup();
     expect(DEMO_CONFIG).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       grouping: { propertyId: DEMO_PROPERTY_DEFINITIONS[0].id },
       cardPropertyIds: [DEMO_TYPE_DEFINITION.id],
     });

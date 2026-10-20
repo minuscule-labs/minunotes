@@ -135,7 +135,7 @@ for (const width of [390, 1280])
         await expect(
           dialog.getByRole('group', { name: 'Card properties', exact: true }).getByRole('checkbox')
         ).toHaveCount(12);
-        await expect(dialog.getByRole('list', { name: 'Select column preview' })).toContainText('Unclassified');
+        await expect(dialog.getByRole('checkbox', { name: 'Unclassified', exact: true })).toBeChecked();
         await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
         await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
         await page.screenshot({ path: testInfo.outputPath('card-properties-settings.png') });
@@ -295,7 +295,7 @@ test('any Select defines ordered empty columns and compact reasons without tag c
   expect(api.requests.filter((r) => r.method !== 'GET')).toEqual([]);
 });
 
-test('only active Select properties are available; choosing a property previews columns without saving', async ({
+test('only active Select properties are available; changing grouping shows fresh choices without saving', async ({
   page,
 }) => {
   const api = await mockPropertyBoard(page);
@@ -308,9 +308,9 @@ test('only active Select properties are available; choosing a property previews 
     'Type',
   ]);
   await dialog.getByLabel('Columns', { exact: true }).selectOption('type_field');
-  await expect(dialog.getByRole('list', { name: 'Select column preview' })).toContainText('Bug');
+  await expect(dialog.getByRole('checkbox', { name: 'Bug (grouping option)', exact: true })).not.toBeChecked();
   await dialog.getByLabel('Columns', { exact: true }).selectOption('workflow_field');
-  await expect(dialog.getByRole('list', { name: 'Select column preview' })).toContainText('Ready');
+  await expect(dialog.getByRole('checkbox', { name: 'Ready (grouping option)', exact: true })).not.toBeChecked();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   expect(api.writes).toEqual([]);
 });
@@ -327,12 +327,10 @@ test('quiet settings preserve edits made during explicit error recovery and neve
     dialog.getByRole('checkbox', { name: /^(Type|Kind|Category)( select| \(unavailable\))$/ })
   ).toBeChecked();
   await expect(dialog.getByRole('button', { name: 'Refresh and review', exact: true })).toHaveCount(0);
-  await expect(dialog.getByRole('list', { name: 'Select column preview' }).getByRole('listitem')).toHaveText([
-    'Ready',
-    'Finished',
-    'Empty',
-    'Unclassified',
-  ]);
+  await expect(dialog.getByRole('radio')).toHaveCount(0);
+  for (const label of ['Ready', 'Finished', 'Empty'])
+    await expect(dialog.getByRole('checkbox', { name: `${label} (grouping option)`, exact: true })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'Unclassified', exact: true })).toBeChecked();
   await dialog.getByRole('checkbox', { name: /^(Type|Kind|Category)( select| \(unavailable\))$/ }).uncheck();
   api.controls.saveFailure = 500;
   await dialog.getByRole('button', { name: 'Save board', exact: true }).click();

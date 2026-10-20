@@ -28,6 +28,16 @@ export async function readBoardConfig(
   executor: MetadataExecutor = db,
   schemaSnapshot?: PropertySchema
 ): Promise<EffectiveBoard | null> {
+  return (await readBoardContext(userId, folderId, executor, schemaSnapshot))?.board ?? null;
+}
+
+/** Keep the classification snapshot private; disabled/retired boards need no live schema. */
+async function readBoardContext(
+  userId: string,
+  folderId: string,
+  executor: MetadataExecutor,
+  schemaSnapshot?: PropertySchema
+): Promise<{ board: EffectiveBoard; schemaSnapshot?: PropertySchema } | null> {
   const [row] = await executor
     .select()
     .from(folderBoardViews)
@@ -37,25 +47,29 @@ export async function readBoardConfig(
   const { config, requiresReview } = decodeStoredBoardConfig(JSON.parse(row.config));
   if (requiresReview)
     return {
-      config,
-      version: row.version,
-      columns: [],
-      reconfigurationRequired: true,
-      groupingState: {
-        type: 'select',
-        available: false,
-        reason: 'This board uses retired tag settings. The owner must review and save property-only board settings.',
+      board: {
+        config,
+        version: row.version,
+        columns: [],
+        reconfigurationRequired: true,
+        groupingState: {
+          type: 'select',
+          available: false,
+          reason: 'This board uses retired tag settings. The owner must review and save property-only board settings.',
+        },
       },
     };
   if (!config.enabled)
     return {
-      config,
-      version: row.version,
-      columns: [],
-      groupingState: {
-        type: 'select',
-        available: false,
-        reason: 'Board is not enabled. The owner can enable it in Board settings.',
+      board: {
+        config,
+        version: row.version,
+        columns: [],
+        groupingState: {
+          type: 'select',
+          available: false,
+          reason: 'Board is not enabled. The owner can enable it in Board settings.',
+        },
       },
     };
   const schema = schemaSnapshot ?? (await metadataSchema(executor as MetadataTx, userId, folderId));
@@ -64,24 +78,28 @@ export async function readBoardConfig(
   );
   if (schema.schemaId !== config.grouping.schemaId || !field)
     return {
-      config,
-      version: row.version,
-      columns: [],
-      groupingState: {
-        type: 'select',
-        available: false,
-        reason: 'Grouping property is unavailable; disable or switch the board.',
+      board: {
+        config,
+        version: row.version,
+        columns: [],
+        groupingState: {
+          type: 'select',
+          available: false,
+          reason: 'Grouping property is unavailable; disable or switch the board.',
+        },
       },
     };
   if (!(await boardJsonCapability(executor)))
     return {
-      config,
-      version: row.version,
-      columns: [],
-      groupingState: {
-        type: 'select',
-        available: false,
-        reason: 'This database does not support Select grouping JSON queries.',
+      board: {
+        config,
+        version: row.version,
+        columns: [],
+        groupingState: {
+          type: 'select',
+          available: false,
+          reason: 'This database does not support Select grouping JSON queries.',
+        },
       },
     };
   const cardProperties: BoardDisplayProperty[] = schema.definitions
@@ -98,21 +116,30 @@ export async function readBoardConfig(
         }) as BoardDisplayProperty
     );
   return {
-    config,
-    version: row.version,
-    cardProperties,
-    columns: [
-      ...field.options.filter((o) => !o.archived).map((o) => ({ key: o.id, label: o.label })),
-      { key: UNCLASSIFIED, label: 'Unclassified' },
-    ],
-    groupingState: {
-      type: 'select',
-      available: true,
-      schemaId: schema.schemaId,
-      schemaRevision: schema.revision,
-      propertyId: field.id,
-      label: field.label,
+    board: {
+      config,
+      version: row.version,
+      cardProperties,
+      columns: [
+        ...field.options
+          .filter(
+            (o) =>
+              !o.archived &&
+              (config.columnVisibility.mode === 'all' || config.columnVisibility.optionIds.includes(o.id))
+          )
+          .map((o) => ({ key: o.id, label: o.label })),
+        ...(config.columnVisibility.showUnclassified ? [{ key: UNCLASSIFIED, label: 'Unclassified' }] : []),
+      ],
+      groupingState: {
+        type: 'select',
+        available: true,
+        schemaId: schema.schemaId,
+        schemaRevision: schema.revision,
+        propertyId: field.id,
+        label: field.label,
+      },
     },
+    schemaSnapshot: schema,
   };
 }
 
@@ -176,11 +203,18 @@ export async function saveBoardConfig(
         reviewedSchema.schemaRevision !== schema.revision
       )
         throw new PropertyError('Schema changed; refresh and review before saving', 409);
-      if (
-        config.grouping.schemaId !== schema.schemaId ||
-        !schema.definitions.some((d) => d.id === config.grouping.propertyId && !d.archived && d.type === 'select')
-      )
+      const field = schema.definitions.find(
+        (d) => d.id === config.grouping.propertyId && !d.archived && d.type === 'select'
+      );
+      if (config.grouping.schemaId !== schema.schemaId || !field)
         throw new BoardValidationError('Choose an active Select property from this folder');
+      if (
+        config.columnVisibility.mode === 'selected' &&
+        config.columnVisibility.optionIds.some((id) => !field.options.some((o) => o.id === id && !o.archived))
+      )
+        throw new BoardValidationError(
+          'Choose active Visible columns from the grouping property or remove unavailable selections'
+        );
       if (
         config.cardPropertyIds.some(
           (id) =>
@@ -218,15 +252,13 @@ export async function saveBoardConfig(
 
 /** Bind ACL, config, definitions and classification to one DB snapshot. */
 export async function readAuthorizedBoardLane(
-  input: Omit<LaneInput, 'board' | 'queryContext'> & FolderQueryInput & { version?: number }
+  input: Omit<LaneInput, 'board' | 'queryContext' | 'schemaSnapshot'> & FolderQueryInput & { version?: number }
 ) {
   return metadataTransaction(async (tx) => {
     await authorizeMetadata(tx, { actorUserId: input.actorUserId }, input.folderId, input.userId, null, 'read');
-    const schemaSnapshot =
-      input.query?.filters.all.length || isPropertySort(input.sort)
-        ? await metadataSchema(tx, input.userId, input.folderId)
-        : undefined;
-    const board = await readBoardConfig(input.userId, input.folderId, tx, schemaSnapshot);
+    const context = await readBoardContext(input.userId, input.folderId, tx);
+    const board = context?.board;
+    const schemaSnapshot = context?.schemaSnapshot;
     if (!board?.config.enabled) throw new PropertyError('Board is not enabled', 404);
     if (input.version !== undefined && input.version !== board.version)
       throw new PropertyError('Board configuration changed. Refresh the board.', 409);
@@ -234,6 +266,7 @@ export async function readAuthorizedBoardLane(
       throw new BoardValidationError('Select lanes require board and schema snapshot tokens');
     const state = board.groupingState;
     if (
+      !schemaSnapshot ||
       !state.available ||
       state.type !== 'select' ||
       state.schemaId !== input.schemaId ||
@@ -245,7 +278,7 @@ export async function readAuthorizedBoardLane(
       (input.query && hasNoteQuery(input.query)) || isPropertySort(input.sort)
         ? await folderQueryContext(tx, input.userId, input.folderId, input, schemaSnapshot)
         : undefined;
-    return readBoardLane({ ...input, board, queryContext }, tx);
+    return readBoardLane({ ...input, board, schemaSnapshot, queryContext }, tx);
   });
 }
 
@@ -258,11 +291,24 @@ async function readSelectLane(input: LaneInput, executor: MetadataExecutor) {
   const values = sql`case when json_valid(${notePropertyState.values}) then ${notePropertyState.values} else ${'{}'} end`;
   const kind = sql`json_type(${values}, ${path})`;
   const value = sql`json_extract(${values}, ${path})`;
-  const activeIds = input.board.columns.filter((c) => c.key !== UNCLASSIFIED).map((c) => c.key);
-  const available = sql`(${kind} = 'text' and ${value} in (${sql.join(
-    activeIds.map((id) => sql`${id}`),
-    sql`, `
-  )}))`;
+  const field = input.schemaSnapshot.definitions.find(
+    (d) => d.id === config.grouping.propertyId && d.type === 'select' && !d.archived
+  );
+  if (
+    !field ||
+    input.schemaSnapshot.schemaId !== config.grouping.schemaId ||
+    input.schemaSnapshot.schemaId !== state.schemaId ||
+    input.schemaSnapshot.revision !== state.schemaRevision
+  )
+    throw new PropertyError('Grouping schema changed or is unavailable. Refresh the board.', 409);
+  // Hidden active values remain classified; displayed columns are only a projection.
+  const activeIds = field.options.filter((o) => !o.archived).map((o) => o.id);
+  const available = activeIds.length
+    ? sql`(${kind} = 'text' and ${value} in (${sql.join(
+        activeIds.map((id) => sql`${id}`),
+        sql`, `
+      )}))`
+    : sql`0`;
   const display = input.board.cardProperties ?? [];
   const projections = Object.fromEntries(
     display.map((definition, index) => {
@@ -351,6 +397,7 @@ type LaneInput = {
   queryContext?: Awaited<ReturnType<typeof folderQueryContext>>;
   folderId: string;
   board: NonNullable<Awaited<ReturnType<typeof readBoardConfig>>>;
+  schemaSnapshot: PropertySchema;
   lane: string;
   page: PageRequest;
 };
