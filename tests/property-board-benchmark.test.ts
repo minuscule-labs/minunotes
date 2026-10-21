@@ -48,7 +48,9 @@ describe('owned local property board benchmark', () => {
       { phase: 'cleanup-sandbox', state: 'complete' },
     ]);
   });
-  it('runs real SQL with JSON capability, bounded exact pages, actual plans/counts/payload and no ambient remote target', async () => {
+  it('runs real SQL with JSON capability, bounded exact pages, actual plans/counts/payload and no ambient remote target', async (context) => {
+    // Keep the heavy benchmark opt-in without skipping the lightweight fixture and safety tests.
+    if (process.env.RUN_PROPERTY_BOARD_BENCHMARK !== '1') context.skip();
     const { stdout, stderr } = await execNode(['--import', 'tsx', 'scripts/benchmark-property-board.ts'], {
       ...process.env,
       TURSO_DB_URL: 'libsql://must-not-use.invalid',

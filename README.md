@@ -42,6 +42,7 @@ https://api.notes.minusculelabs.com/mcp/.well-known/oauth-protected-resource
 ## Local verification
 
 - `pnpm ci:local`: typecheck, unit/API tests, build, and focused Board/properties browser coverage.
+- `pnpm test:benchmark:board`: opt-in 1,000-note SQL benchmark using a disposable local database. Regular tests and releases skip this heavy benchmark unless explicitly opted in; its lightweight fixture, diagnostics, and safety checks still run.
 - `pnpm test:browser`: all ordinary browser tests, without the Board demo.
 - `pnpm board:demo`: manual disposable Board sandbox (unchanged).
 - `pnpm test:demo`: opt-in demo startup/shutdown and port-conflict tests.
