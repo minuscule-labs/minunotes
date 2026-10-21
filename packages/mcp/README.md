@@ -75,7 +75,7 @@ Prefer defined folder properties for structured Status/Type labels. Read the aut
 
 Read properties first. Pass `schema.schemaId` as `schemaId`, `schema.revision` as `schemaRevision`, and independent note-properties `revision` as `expectedRevision`. Patch supplied active IDs only; `null` clears and empty Text clears. Select values are option IDs, Date values are real YYYY-MM-DD dates. On conflict preserve the draft, reload and review; do not blindly replay.
 
-Properties use existing note read/edit scopes, folder privacy/read-only policy and API-editability. Note-only grants cannot enumerate folder schemas. Public shares omit metadata. Body/hash/tags and body-only restores stay independent. Property-only Boards regroup by the owner's selected Select field on refresh. Board v4 has up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge; display choices add no archive guard. Tags never determine placement or synchronize with properties. Retired tag configurations require explicit owner recovery in the web UI; reads never migrate or widen settings. Disable or switch an enabled board before archiving its grouping field. Retained template-default references block archiving their fields/choices until explicitly cleared or their assignment removed.
+Properties use existing note read/edit scopes, folder privacy/read-only policy and API-editability. Note-only grants cannot enumerate folder schemas. Public note reads omit property metadata; shared Boards can show owner-selected Card properties. Body/hash/tags and body-only restores stay independent. Property-only Boards regroup by the owner's selected Select field on refresh. Boards have up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge; display choices add no archive guard. Tags never determine placement or synchronize with properties. Retired tag configurations require explicit owner recovery in the web UI; reads never migrate or widen settings. Disable or switch an enabled board before archiving its grouping field. Retained template-default references block archiving their fields/choices until explicitly cleared or their assignment removed.
 
 Reviewed templates:
 
@@ -172,6 +172,8 @@ Syntax creation and replacement compile the source into JSON Canvas. Syntax repl
 Canvas replacement and node-link mutations require a current `baseHash`. Setting a node note link creates or changes the target while preserving `node.url` and unrelated metadata. Removing the internal link also preserves the external URL.
 
 ## Tool boundaries
+
+Column visibility is presentation only and is configured by the owner in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
 Board configuration, personal folder filters/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive and does not delete option values. Existing comments, tags and authorized MCP Trash remain available.
 
