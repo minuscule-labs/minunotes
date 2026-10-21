@@ -200,7 +200,9 @@ For template creation, list destination assignments → preview the selected ass
 
 ## Web-only boundaries
 
-Boards group only by an owner-selected Select field. Version 4 Card properties show up to 12 fields as stacked values-only rows (Select pills, plain Text/Date), with no special Type badge. Tags never determine placement. Retired tag settings need explicit owner recovery; reads never migrate them.
+Boards group only by an owner-selected Select field. Card properties show up to 12 fields as stacked values-only rows (Select pills, plain Text/Date), with no special Type badge. Tags never determine placement. Retired tag settings need explicit owner recovery; reads never migrate them.
+
+Column visibility is presentation only and is configured by the owner in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
 Board configuration, personal folder filtering/sorting, folder duplication, template-default administration and destructive Delete option remain web-only on agent surfaces. Schema archive is non-destructive. Do not emulate unsupported actions through body/tag writes; existing comments, ordinary tags and authorized MCP Trash remain independent. Pi provides no move/Trash tools.
 

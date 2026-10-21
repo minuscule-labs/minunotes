@@ -83,7 +83,7 @@ Read note properties before patching. Copy `schema.schemaId` into `schemaId`, `s
 }
 ```
 
-Values are optional Text (up to 1,000 characters), Select (one active option ID), or real YYYY-MM-DD Date. Patch only intended active IDs; null clears and empty Text clears. Untouched retained values are preserved. Metadata does not use `contentHash`/`baseHash` and does not change body bytes/hash/tags/versions. Preserve drafts on `409` and review current definitions/values before retrying; stop on `403`/`404` without probing another surface. Direct-note grants allow applicable note metadata, never hidden folder-schema enumeration. Public shares omit properties.
+Values are optional Text (up to 1,000 characters), Select (one active option ID), or real YYYY-MM-DD Date. Patch only intended active IDs; null clears and empty Text clears. Untouched retained values are preserved. Metadata does not use `contentHash`/`baseHash` and does not change body bytes/hash/tags/versions. Preserve drafts on `409` and review current definitions/values before retrying; stop on `403`/`404` without probing another surface. Direct-note grants allow applicable note metadata, never hidden folder-schema enumeration. Public note reads omit property metadata; shared Boards can show owner-selected Card properties.
 
 ## Reviewed template creation
 
@@ -118,7 +118,9 @@ The result is an ordinary destination-owned note with authenticated provenance: 
 
 ## Web-only agent boundaries
 
-Boards group only by the owner's selected Select property; property writes can regroup cards on refresh. Board v4 shows up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge. Tags never determine placement or synchronize with properties. Retired tag configurations require explicit owner recovery; reads never migrate settings.
+Boards group only by the owner's selected Select property; property writes can regroup cards on refresh. Boards show up to 12 stacked values-only Card properties (Select pills, plain Text/Date), not a special Type badge. Tags never determine placement or synchronize with properties. Retired tag configurations require explicit owner recovery; reads never migrate settings.
+
+Owners configure [Board column visibility](/resources/folders-and-notes) in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
 Board configuration, personal folder filtering/sorting, folder duplication, owner template-default administration and destructive option deletion have no Harness/MCP/Pi operations. Existing non-destructive archive, comments, tags and authorized Trash operations remain independent. Source support, installed adapters, registered tools and deployed availability are distinct; do not assume deployment or switch surfaces after denial.
 

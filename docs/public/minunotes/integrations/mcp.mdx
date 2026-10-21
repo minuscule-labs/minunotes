@@ -139,6 +139,8 @@ Canvas replacement and node-link mutations require a current `baseHash`. Setting
 
 Boards are property-only: owner-selected Select columns and up to 12 stacked values-only Card properties (Select pills, plain Text/Date), with no special Type badge or tag-driven placement. Retired tag configurations require explicit owner recovery in the web UI; reads never migrate them.
 
+Owners configure [Board column visibility](/resources/folders-and-notes) in the web UI. A successful property edit can place a card in a hidden column without changing note access.
+
 Board configuration, personal folder filtering/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on agent surfaces. Existing non-destructive schema archive, ordinary tags, comments and authorized MCP Trash are separate capabilities.
 
 Hosted and local MCP expose active content only. Trashed notes, templates, and folder subtrees disappear from list, search, read, metadata, and attachment operations. MCP provides explicitly confirmed destructive tools to move eligible creator-owned notes and folders to the owner’s Trash. MCP cannot list Trash, restore, or permanently delete content; those owner-only actions remain in the authenticated MinuNotes web interface.
