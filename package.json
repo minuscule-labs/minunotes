@@ -24,6 +24,7 @@
     "docs:validate": "tsx scripts/validate-public-docs.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:benchmark:board": "RUN_PROPERTY_BOARD_BENCHMARK=1 vitest run tests/property-board-benchmark.test.ts",
     "test:browser": "playwright test",
     "test:browser:ci": "playwright test tests/browser/notes-board.spec.ts tests/browser/board-visibility.spec.ts tests/browser/property-board.spec.ts tests/browser/board-subfolders.spec.ts tests/browser/note-properties.spec.ts",
     "test:demo": "vitest run --config vitest.demo.config.ts",
