@@ -104,12 +104,12 @@ export function FolderQueryControls({
     );
     const label = field?.label ?? 'Unavailable property';
     const values = filter.operator === 'is' ? [filter.optionId] : filter.operator === 'anyOf' ? filter.optionIds : [];
-    const value = values.length
-      ? values
-          .map(
-            (id) => field?.options.find((option) => option.id === id && !option.archived)?.label ?? 'Unavailable option'
-          )
-          .join(', ')
+    const selectedLabels = values.map(
+      (id) => field?.options.find((option) => option.id === id && !option.archived)?.label ?? 'Unavailable option'
+    );
+    if (filter.operator === 'anyOf' && filter.includeEmpty) selectedLabels.push('Not set');
+    const value = selectedLabels.length
+      ? selectedLabels.join(', ')
       : 'value' in filter
         ? filter.value
         : 'from' in filter

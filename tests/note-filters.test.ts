@@ -64,6 +64,33 @@ describe('folder-owned note query contract', () => {
     { filters: filters(Array.from({ length: 13 }, (_, i) => ({ ...field, propertyId: `p${i}` }))) },
   ])('rejects invalid query %# without broadening', (input) =>
     expect(() => parseNoteQuery(input)).toThrow(NoteQueryError));
+  it('combines Select values with Not set and preserves canonical legacy URLs', () => {
+    const base = { schemaId: 's', propertyId: 'p', type: 'select', operator: 'anyOf' };
+    const parse = (extra: Record<string, unknown>) => parseNoteQuery({ filters: filters([{ ...base, ...extra }]) });
+    const mixed = parse({ optionIds: ['b', 'a'], includeEmpty: true });
+    expect(mixed.filters.all).toEqual([{ ...base, optionIds: ['a', 'b'], includeEmpty: true }]);
+    expect(parseNoteQuery(noteQuerySearch(mixed))).toEqual(mixed);
+    expect(parse({ optionIds: ['a'], includeEmpty: false })).toEqual(parse({ optionIds: ['a'] }));
+    const empty = parse({ optionIds: [], includeEmpty: true });
+    expect(empty.filters.all).toEqual([{ schemaId: 's', propertyId: 'p', type: 'select', operator: 'empty' }]);
+    expect(parseNoteQuery(noteQuerySearch(empty))).toEqual(empty);
+    expect(
+      parse({ optionIds: Array.from({ length: 8 }, (_, i) => `o${i}`), includeEmpty: true }).filters.all
+    ).toHaveLength(1);
+  });
+  it('rejects invalid Not set flags without dropping selected values or broadening a filter', () => {
+    const base = { schemaId: 's', propertyId: 'p', type: 'select', operator: 'anyOf', optionIds: ['a'] };
+    for (const includeEmpty of [null, 0, 1, 'true'])
+      expect(() => parseNoteQuery({ filters: filters([{ ...base, includeEmpty }]) })).toThrow(NoteQueryError);
+    for (const extra of [
+      { optionIds: [], includeEmpty: false },
+      { optionIds: ['a', 'a'], includeEmpty: true },
+      { optionIds: Array.from({ length: 9 }, (_, i) => `o${i}`), includeEmpty: true },
+      { operator: 'is', optionId: 'a', optionIds: undefined, includeEmpty: true },
+      { operator: 'empty', optionIds: undefined, includeEmpty: true },
+    ])
+      expect(() => parseNoteQuery({ filters: filters([{ ...base, ...extra }]) })).toThrow(NoteQueryError);
+  });
   it('validates typed operators, calendar dates and inclusive ordered ranges', () => {
     const date = {
       schemaId: 'schema_A',

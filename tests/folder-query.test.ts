@@ -496,6 +496,51 @@ describe('authorized shared folder queries', () => {
         'valid',
       ]);
   });
+  it('matches Select values OR Not set before pagination, while retaining other filters and excluding invalid values', async () => {
+    const f = await setup();
+    const values = {
+      backlog: f.typeField.options[0].id,
+      other: f.typeField.options[1].id,
+      missing: undefined,
+      null: null,
+      blank: ' \t\n\u00a0',
+      unknown: 'unknown',
+      number: 42,
+      array: [],
+      nul: '\0',
+    };
+    for (const [id, value] of Object.entries(values))
+      await f.seed(id, id, { [f.typeField.id]: value, [f.text.id]: 'Keep' });
+    await f.addNote('no_state', 'No state');
+    await f.seed('other_backlog', 'Other backlog', {
+      [f.typeField.id]: f.typeField.options[0].id,
+      [f.text.id]: 'Other',
+    });
+    await f.seed('other_empty', 'Other empty', { [f.text.id]: 'Other' });
+    const mixed = f.ref(f.typeField.id, 'select', {
+      operator: 'anyOf',
+      optionIds: [f.typeField.options[0].id],
+      includeEmpty: true,
+    });
+    for (const kind of ['list', 'board'] as const) {
+      expect(await f.collect(kind, { filters: encoded([mixed]) })).toEqual([
+        'backlog',
+        'blank',
+        'missing',
+        'no_state',
+        'null',
+        'other_backlog',
+        'other_empty',
+      ]);
+      expect(
+        await f.collect(kind, {
+          filters: encoded([mixed, f.ref(f.text.id, 'text', { operator: 'contains', value: 'Keep' })]),
+        })
+      ).toEqual(['backlog', 'blank', 'missing', 'null']);
+      const stale = await f.request(f.url(kind, { filters: encoded([{ ...mixed, optionIds: ['unavailable'] }]) }));
+      expect(stale.status).toBe(409);
+    }
+  });
   it('compares only real calendar dates, with exclusive endpoints and inclusive ordered ranges', async () => {
     const f = await setup();
     for (const [id, value] of [

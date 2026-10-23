@@ -195,6 +195,38 @@ it('uses the same rotation, expiry, revocation and active-folder checks for both
   for (const url of currentUrls) expect((await f.read(url)).status).toBe(404);
 });
 
+it('public Board filters combine selected values with Not set without widening stale options', async () => {
+  const f = await setupSharedBoard();
+  for (const [id, type] of [
+    ['backlog', f.typeField.options[0].id],
+    ['empty', null],
+    ['other', f.typeField.options[1].id],
+  ] as const) {
+    await f.addNote(id, id);
+    await f.patch(id, { [f.field.id]: f.field.options[0].id, [f.typeField.id]: type });
+  }
+  const filtered = (optionIds: string[]) =>
+    `${f.laneUrl}&filters=${encodeURIComponent(
+      JSON.stringify({
+        version: 1,
+        all: [
+          {
+            schemaId: f.config.grouping.schemaId,
+            propertyId: f.typeField.id,
+            type: 'select',
+            operator: 'anyOf',
+            optionIds,
+            includeEmpty: true,
+          },
+        ],
+      })
+    )}`;
+  const response = await f.read(filtered([f.typeField.options[0].id]));
+  expect(response.status).toBe(200);
+  expect((await response.json()).cards.map((card: { id: string }) => card.id).sort()).toEqual(['backlog', 'empty']);
+  expect((await f.read(filtered(['unavailable']))).status).toBe(409);
+});
+
 it('reuses board pagination, validation and snapshot checks', async () => {
   const f = await setupSharedBoard();
   for (let i = 0; i < 26; i++) {

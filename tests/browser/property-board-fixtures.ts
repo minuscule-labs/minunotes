@@ -277,13 +277,13 @@ export async function mockPropertyBoard(
     if (query.q && !fold(card.title).includes(fold(query.q))) return false;
     return query.filters.all.every((filter) => {
       const value = rawValue(card, filter.propertyId);
-      if (filter.operator === 'empty')
-        return (
-          value == null ||
-          (typeof value === 'string' &&
-            !value.includes('\0') &&
-            [...value].every((character) => NOTE_FILTER_WHITESPACE.includes(character)))
-        );
+      const empty =
+        value == null ||
+        (typeof value === 'string' &&
+          !value.includes('\0') &&
+          [...value].every((character) => NOTE_FILTER_WHITESPACE.includes(character)));
+      if (filter.operator === 'empty') return empty;
+      if (filter.operator === 'anyOf' && filter.includeEmpty && empty) return true;
       if (typeof value !== 'string' || value.includes('\0')) return false;
       if (filter.operator === 'contains') return fold(value).includes(fold(filter.value));
       if (filter.operator === 'is') return value === filter.optionId;
