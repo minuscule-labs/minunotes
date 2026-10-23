@@ -9,7 +9,7 @@ export type NoteFilter = Field &
   (
     | { type: 'text'; operator: 'contains'; value: string }
     | { type: 'select'; operator: 'is'; optionId: string }
-    | { type: 'select'; operator: 'anyOf'; optionIds: string[] }
+    | { type: 'select'; operator: 'anyOf'; optionIds: string[]; includeEmpty?: true }
     | { type: 'date'; operator: 'before' | 'after'; value: string }
     | { type: 'date'; operator: 'between'; from: string; to: string }
     | { type: 'text' | 'select' | 'date'; operator: 'empty' }
@@ -55,17 +55,27 @@ function clause(input: unknown): NoteFilter {
     return { ...base, type: 'select', operator: 'is', optionId: value.optionId as string };
   }
   if (value.type === 'select' && value.operator === 'anyOf') {
-    keys(value, [...common, 'optionIds']);
+    keys(value, [...common, 'optionIds', 'includeEmpty']);
+    if (value.includeEmpty !== undefined && typeof value.includeEmpty !== 'boolean') fail();
+    const includeEmpty = value.includeEmpty === true;
     const options = value.optionIds;
     if (
       !Array.isArray(options) ||
-      options.length < 1 ||
+      (!options.length && !includeEmpty) ||
       options.length > 8 ||
       !options.every(id) ||
       new Set(options).size !== options.length
     )
       fail('Choose one to eight distinct Select options.');
-    return { ...base, type: 'select', operator: 'anyOf', optionIds: [...(options as string[])].sort() };
+    const optionIds = [...(options as string[])].sort();
+    if (!optionIds.length) return { ...base, type: 'select', operator: 'empty' };
+    return {
+      ...base,
+      type: 'select',
+      operator: 'anyOf',
+      optionIds,
+      ...(includeEmpty ? { includeEmpty: true } : {}),
+    };
   }
   if (value.type === 'date' && (value.operator === 'before' || value.operator === 'after')) {
     keys(value, [...common, 'value']);

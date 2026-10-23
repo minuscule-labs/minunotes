@@ -27,21 +27,21 @@ export function propertyFilterSql(query: NoteQuery, schema?: PropertySchema): SQ
     const kind = sql`json_type(${values}, ${path})`;
     const value = sql`json_extract(${values}, ${path})`;
     const scalar = sql`(${kind} = 'text' and instr(${value}, char(0)) = 0)`;
+    const empty = sql`(${kind} is null or ${kind} = 'null' or (${scalar} and trim(${value}, ${NOTE_FILTER_WHITESPACE}) = ''))`;
     if (filter.operator === 'empty') {
-      predicates.push(
-        sql`(${kind} is null or ${kind} = 'null' or (${scalar} and trim(${value}, ${NOTE_FILTER_WHITESPACE}) = ''))`
-      );
+      predicates.push(empty);
     } else if (filter.type === 'text' && filter.operator === 'contains') {
       predicates.push(sql`(${scalar} and ${value} like ${literal(filter.value)} escape ${'\\'})`);
     } else if (filter.type === 'select') {
       const options = filter.operator === 'is' ? [filter.optionId] : filter.optionIds;
       if (options.some((id) => !field.options.some((o) => o.id === id && !o.archived))) return stale();
-      predicates.push(
-        sql`(${scalar} and ${value} in (${sql.join(
-          options.map((id) => sql`${id}`),
-          sql`, `
-        )}))`
-      );
+      const selected = options.length
+        ? sql`(${scalar} and ${value} in (${sql.join(
+            options.map((id) => sql`${id}`),
+            sql`, `
+          )}))`
+        : sql`0`;
+      predicates.push(filter.operator === 'anyOf' && filter.includeEmpty ? sql`(${selected} or ${empty})` : selected);
     } else if (filter.type === 'date') {
       // Match isCalendarDate: SQLite normalizes invalid days but also accepts year zero, which we reject.
       // Shape and NUL guards prevent prefix coercion.

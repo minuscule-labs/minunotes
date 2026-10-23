@@ -485,7 +485,7 @@ test('property counts are draft-local; option search preserves hidden selections
   await expect(main(page).getByRole('link', { name: browserFixture.source.title, exact: true })).toBeVisible();
   const panel = await openFilters(page);
   await addProperty(panel, 'type_field');
-  await expect(panel.getByLabel('Match for Type', { exact: true })).toBeFocused();
+  await expect(panel.getByLabel('Search options for Type', { exact: true })).toBeFocused();
   const reads = api.listRequests.length;
   await panel.getByRole('checkbox', { name: 'Bug', exact: true }).check();
   await panel.getByLabel('Search options for Type').fill('Feature');
@@ -599,6 +599,83 @@ test('legacy single choice stays unchanged until Apply; unchecking its last opti
   expect(api.writes).toEqual([]);
 });
 
+for (const view of ['list', 'board'] as const)
+  test(`${view}: Not set checkbox combines with values, survives reload/view switches and clears explicitly`, async ({
+    page,
+  }) => {
+    const api = await mockPropertyBoard(page, { extraCards: 4 });
+    api.typeField.options[0].label = 'Backlog';
+    const values = ['Type_Bug', undefined, null, ' \t', 'Type_Feature', 42];
+    api.cards.forEach((card, index) => {
+      card.title = `Filter candidate ${index}`;
+      card.typeValue = index < values.length ? values[index] : 'Type_Feature';
+    });
+    await page.goto(`${folder}${view === 'board' ? '?view=board' : ''}`);
+    let panel = await openFilters(page);
+    await addProperty(panel, 'type_field');
+    await expect(panel.getByLabel('Match for Type', { exact: true })).toHaveCount(0);
+    const notSet = () => panel.getByRole('checkbox', { name: 'Not set (empty value)', exact: true });
+    await panel.getByRole('checkbox', { name: 'Backlog', exact: true }).check();
+    await notSet().check();
+    await panel.getByLabel('Search options for Type').fill('no matching status');
+    await expect(notSet()).toBeChecked();
+    await expect(panel.getByRole('button', { name: 'Edit Type', exact: true })).toHaveAccessibleDescription(
+      '2 selected'
+    );
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    const query = () => parseNoteQuery({ filters: new URL(page.url()).searchParams.get('filters') ?? undefined });
+    expect(query().filters.all).toEqual([
+      {
+        schemaId: 'schema_board',
+        propertyId: 'type_field',
+        type: 'select',
+        operator: 'anyOf',
+        optionIds: ['Type_Bug'],
+        includeEmpty: true,
+      },
+    ]);
+    await expect(main(page).getByRole('list', { name: 'Applied filters' })).toContainText('Backlog, Not set');
+    for (let index = 0; index < values.length; index++)
+      await expect(main(page).getByRole('link', { name: `Filter candidate ${index}`, exact: true })).toHaveCount(
+        index < 4 ? 1 : 0
+      );
+    await switchView(page, view === 'list' ? 'board' : 'list');
+    expect(query().filters.all[0]).toMatchObject({ includeEmpty: true, optionIds: ['Type_Bug'] });
+    await page.reload();
+    panel = await openFilters(page);
+    await expect(notSet()).toBeChecked();
+    await expect(panel.getByRole('checkbox', { name: 'Backlog', exact: true })).toBeChecked();
+    await panel.getByRole('checkbox', { name: 'Backlog', exact: true }).uncheck();
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(query().filters.all).toEqual([
+      {
+        schemaId: 'schema_board',
+        propertyId: 'type_field',
+        type: 'select',
+        operator: 'empty',
+      },
+    ]);
+    panel = await openFilters(page);
+    await expect(notSet()).toBeChecked();
+    await panel.getByRole('checkbox', { name: 'Backlog', exact: true }).check();
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(query().filters.all[0]).toMatchObject({ includeEmpty: true, optionIds: ['Type_Bug'] });
+    panel = await openFilters(page);
+    await notSet().uncheck();
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    expect(query().filters.all[0]).toMatchObject({ includeEmpty: true });
+    panel = await openFilters(page);
+    await notSet().uncheck();
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(query().filters.all[0]).toMatchObject({ operator: 'anyOf', optionIds: ['Type_Bug'] });
+    expect(query().filters.all[0]).not.toHaveProperty('includeEmpty');
+    panel = await openFilters(page);
+    await panel.getByRole('checkbox', { name: 'Backlog', exact: true }).uncheck();
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    expect(query().filters.all).toEqual([]);
+    expect(api.writes).toEqual([]);
+  });
+
 test('unavailable selected options remain visible and block Apply until explicitly removed', async ({ page }) => {
   const api = await mockPropertyBoard(page);
   const query = parseNoteQuery({
@@ -611,6 +688,7 @@ test('unavailable selected options remain visible and block Apply until explicit
           type: 'select',
           operator: 'anyOf',
           optionIds: ['Type_Bug', 'missing_option'],
+          includeEmpty: true,
         },
       ],
     }),
@@ -642,7 +720,7 @@ test('empty Select/Text/Date modes remain supported and incomplete Text cannot s
   expect(new URL(page.url()).searchParams.has('filters')).toBeFalsy();
   await panel.getByLabel('Operator for Summary').selectOption('empty');
   await addProperty(panel, 'type_field');
-  await panel.getByLabel('Match for Type').selectOption('empty');
+  await panel.getByRole('checkbox', { name: 'Not set (empty value)', exact: true }).check();
   await addProperty(panel, 'date_field');
   await panel.getByLabel('Operator for Due date').selectOption('empty');
   await panel.getByRole('button', { name: 'Apply', exact: true }).click();
@@ -673,7 +751,6 @@ for (const width of [390, 1280])
       await page.goto(folder);
       const panel = await openFilters(page);
       await addProperty(panel, 'type_field');
-      await panel.getByLabel('Match for Type').press('Tab');
       await expect(panel.getByLabel('Search options for Type')).toBeFocused();
       await panel.getByLabel('Search options for Type').press('Tab');
       await page.keyboard.press('Space');

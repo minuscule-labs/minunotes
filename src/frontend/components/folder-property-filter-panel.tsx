@@ -18,6 +18,9 @@ function condition(schemaId: string, field: PropertyDefinition, operator: string
 function selectedIds(filter: NoteFilter): string[] {
   return filter.operator === 'is' ? [filter.optionId] : filter.operator === 'anyOf' ? filter.optionIds : [];
 }
+function includesEmpty(filter: NoteFilter): boolean {
+  return filter.operator === 'empty' || (filter.operator === 'anyOf' && filter.includeEmpty === true);
+}
 export function FolderPropertyFilterPanel({
   filters,
   schema,
@@ -43,10 +46,12 @@ export function FolderPropertyFilterPanel({
   const addRef = useRef<HTMLButtonElement>(null);
   const clearAllRef = useRef<HTMLButtonElement>(null);
   const operatorRef = useRef<HTMLSelectElement>(null);
+  const selectSearchRef = useRef<HTMLInputElement>(null);
   const pendingFocus = useRef<'add' | 'editor' | null>(null);
   useEffect(() => {
     if (!pendingFocus.current) return;
-    const target = pendingFocus.current === 'editor' ? operatorRef.current : addRef.current;
+    const target =
+      pendingFocus.current === 'editor' ? (operatorRef.current ?? selectSearchRef.current) : addRef.current;
     pendingFocus.current = null;
     (target && !target.disabled ? target : clearAllRef.current)?.focus();
   }, [draft]);
@@ -65,6 +70,18 @@ export function FolderPropertyFilterPanel({
   const update = (filter: NoteFilter) =>
     setDraft((items) => items.map((item) => (item.propertyId === filter.propertyId ? filter : item)));
   const ids = current ? selectedIds(current) : [];
+  const emptySelected = current ? includesEmpty(current) : false;
+  const chooseValues = (optionIds: string[], includeEmpty: boolean) => {
+    if (!current) return;
+    update({
+      schemaId: current.schemaId,
+      propertyId: current.propertyId,
+      type: 'select',
+      operator: 'anyOf',
+      optionIds,
+      ...(includeEmpty ? { includeEmpty: true as const } : {}),
+    });
+  };
   const options = field?.options.filter((option) => !option.archived) ?? [];
   const missing = ids.filter((id) => !options.some((option) => option.id === id));
   const visible = options.filter((option) => option.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
@@ -93,7 +110,7 @@ export function FolderPropertyFilterPanel({
           >
             {ordered.map((filter) => {
               const label = fieldFor(filter)?.label ?? 'Unavailable property';
-              const count = filter.type === 'select' && filter.operator !== 'empty' ? selectedIds(filter).length : 1;
+              const count = filter.type === 'select' ? selectedIds(filter).length + Number(includesEmpty(filter)) : 1;
               return (
                 <button
                   key={filter.propertyId}
@@ -178,37 +195,35 @@ export function FolderPropertyFilterPanel({
                 </p>
               ) : (
                 <div className="space-y-3">
-                  <label className="flex min-w-0 flex-col gap-1 text-xs">
-                    {field.type === 'select' ? 'Match' : field.type === 'date' ? 'Date match' : 'Text match'}
-                    <select
-                      ref={operatorRef}
-                      aria-label={`${field.type === 'select' ? 'Match' : 'Operator'} for ${field.label}`}
-                      className={inputClass}
-                      value={current.operator === 'is' ? 'anyOf' : current.operator}
-                      onChange={(event) => update(condition(current.schemaId, field, event.target.value))}
-                    >
-                      {(field.type === 'select'
-                        ? ['anyOf', 'empty']
-                        : field.type === 'text'
-                          ? ['contains', 'empty']
-                          : ['before', 'after', 'between', 'empty']
-                      ).map((operator) => (
-                        <option key={operator} value={operator}>
-                          {
-                            {
-                              anyOf: 'Selected values',
-                              empty: 'Is empty',
-                              contains: 'Contains',
-                              before: 'Before',
-                              after: 'After',
-                              between: 'Between',
-                            }[operator]
-                          }
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {current.type === 'select' && current.operator !== 'empty' ? (
+                  {field.type !== 'select' ? (
+                    <label className="flex min-w-0 flex-col gap-1 text-xs">
+                      {field.type === 'date' ? 'Date match' : 'Text match'}
+                      <select
+                        ref={operatorRef}
+                        aria-label={`Operator for ${field.label}`}
+                        className={inputClass}
+                        value={current.operator}
+                        onChange={(event) => update(condition(current.schemaId, field, event.target.value))}
+                      >
+                        {(field.type === 'text' ? ['contains', 'empty'] : ['before', 'after', 'between', 'empty']).map(
+                          (operator) => (
+                            <option key={operator} value={operator}>
+                              {
+                                {
+                                  empty: 'Is empty',
+                                  contains: 'Contains',
+                                  before: 'Before',
+                                  after: 'After',
+                                  between: 'Between',
+                                }[operator]
+                              }
+                            </option>
+                          )
+                        )}
+                      </select>
+                    </label>
+                  ) : null}
+                  {current.type === 'select' ? (
                     <>
                       <label className="relative block">
                         <span className="sr-only">Search options for {field.label}</span>
@@ -219,6 +234,7 @@ export function FolderPropertyFilterPanel({
                         <input
                           type="search"
                           placeholder="Search options…"
+                          ref={selectSearchRef}
                           className={`${inputClass} pl-8!`}
                           value={search}
                           onChange={(event) => setSearch(event.target.value)}
@@ -235,13 +251,10 @@ export function FolderPropertyFilterPanel({
                               className="mt-0.5 shrink-0 accent-[var(--notes-blue)]"
                               checked={ids.includes(option.id)}
                               onChange={(event) =>
-                                update({
-                                  ...current,
-                                  operator: 'anyOf',
-                                  optionIds: event.target.checked
-                                    ? [...ids, option.id]
-                                    : ids.filter((id) => id !== option.id),
-                                })
+                                chooseValues(
+                                  event.target.checked ? [...ids, option.id] : ids.filter((id) => id !== option.id),
+                                  emptySelected
+                                )
                               }
                             />
                             <span className="min-w-0 [overflow-wrap:anywhere]">{option.label}</span>
@@ -256,16 +269,25 @@ export function FolderPropertyFilterPanel({
                               type="checkbox"
                               checked
                               onChange={() =>
-                                update({
-                                  ...current,
-                                  operator: 'anyOf',
-                                  optionIds: ids.filter((value) => value !== id),
-                                })
+                                chooseValues(
+                                  ids.filter((value) => value !== id),
+                                  emptySelected
+                                )
                               }
                             />
                             <span>Unavailable option</span>
                           </label>
                         ))}
+                        <label className="flex min-w-0 cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            aria-label="Not set (empty value)"
+                            className="mt-0.5 shrink-0 accent-[var(--notes-blue)]"
+                            checked={emptySelected}
+                            onChange={(event) => chooseValues(ids, event.target.checked)}
+                          />
+                          <span>Not set</span>
+                        </label>
                       </fieldset>
                       {missing.length ? (
                         <p role="alert" className="text-sm">
@@ -273,7 +295,8 @@ export function FolderPropertyFilterPanel({
                         </p>
                       ) : null}
                       <p className="text-[var(--notes-muted)] text-xs">
-                        {ids.length} selected · {visible.length} of {options.length} options
+                        {ids.length + Number(emptySelected)} selected · {visible.length + 1} of {options.length + 1}{' '}
+                        options
                       </p>
                     </>
                   ) : null}
@@ -355,7 +378,13 @@ export function FolderPropertyFilterPanel({
               onClick={() =>
                 onApply(
                   draft.filter(
-                    (filter) => !(filter.type === 'select' && filter.operator === 'anyOf' && !filter.optionIds.length)
+                    (filter) =>
+                      !(
+                        filter.type === 'select' &&
+                        filter.operator === 'anyOf' &&
+                        !filter.optionIds.length &&
+                        !filter.includeEmpty
+                      )
                   )
                 )
               }
