@@ -669,7 +669,7 @@ function FolderViewContent({
   const canCreate = accessRole === 'owner' || accessRole === 'editor';
   const isOwner = accessRole === 'owner';
   const notes = queryIssue || error || boardView ? [] : (data?.notes ?? []);
-  const folderItems: FolderItem[] = childFolders
+  const folderItems: FolderItem[] = (applied && !hasNoteQuery(applied) && !queryIssue && !error ? childFolders : [])
     .map((child) => ({
       kind: 'folder' as const,
       folder: child,
@@ -910,16 +910,6 @@ function FolderViewContent({
             Retry notes
           </Button>
         </div>
-      ) : null}
-      {!boardView &&
-      childFolders.length > 0 &&
-      !isLoading &&
-      !error &&
-      !queryIssue &&
-      !notes.length &&
-      applied &&
-      hasNoteQuery(applied) ? (
-        <p className="mt-3 text-sm">No matching notes.</p>
       ) : null}
       {!boardView && !queryIssue && !error ? (
         <PaginationControls page={data?.page ?? page} hasMore={data?.hasMore ?? false} onPageChange={setPage} />

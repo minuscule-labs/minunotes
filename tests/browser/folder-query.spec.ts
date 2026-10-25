@@ -22,6 +22,211 @@ async function addProperty(panel: ReturnType<Page['getByRole']>, id: string) {
   await panel.getByRole('button', { name: 'Add property', exact: true }).click();
   await panel.getByLabel('Add property', { exact: true }).selectOption(id);
 }
+const resultFolders = (page: Page) => main(page).locator('table a[href^="/folders/"]');
+
+for (const [property, option] of [
+  ['workflow_field', 'Ready'],
+  ['type_field', 'Bug'],
+] as const) {
+  test(`List result folders: ${property} drafts leave browsing intact until Apply and Clear restores it`, async ({
+    page,
+  }) => {
+    const api = await mockPropertyBoard(page);
+    await page.goto(folder);
+    await expect(resultFolders(page)).toHaveCount(1);
+    let panel = await openFilters(page);
+    await addProperty(panel, property);
+    await panel.getByRole('checkbox', { name: option, exact: true }).check();
+    await expect(resultFolders(page)).toHaveCount(1);
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(resultFolders(page)).toHaveCount(1);
+    panel = await openFilters(page);
+    await addProperty(panel, property);
+    await panel.getByRole('checkbox', { name: option, exact: true }).check();
+    await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(resultFolders(page)).toHaveCount(0);
+    await expect.poll(() => noteIds(page)).toEqual([browserFixture.source.id]);
+    await titleInput(page).fill('Source');
+    await titleInput(page).press('Enter');
+    await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+    await expect(resultFolders(page)).toHaveCount(0);
+    await expect.poll(() => noteIds(page)).toEqual([browserFixture.source.id]);
+    await page.getByRole('button', { name: 'Clear search', exact: true }).click();
+    await expect(resultFolders(page)).toHaveCount(1);
+    await resultFolders(page).click();
+    await expect(page).toHaveURL(`/folders/${browserFixture.childFolder.id}`);
+    expect(api.writes).toEqual([]);
+  });
+}
+
+test('List result folders: an applied title hides even same-title folders, not pending title input', async ({
+  page,
+}) => {
+  const api = await mockPropertyBoard(page);
+  api.cards[0].title = browserFixture.childFolder.title;
+  await page.goto(folder);
+  await expect(resultFolders(page)).toHaveCount(1);
+  await titleInput(page).dispatchEvent('compositionstart');
+  await titleInput(page).fill(browserFixture.childFolder.title);
+  await titleInput(page).press('Enter');
+  await expect(resultFolders(page)).toHaveCount(1);
+  expect(api.listRequests.some((url) => url.searchParams.has('q'))).toBeFalsy();
+  await titleInput(page).dispatchEvent('compositionend');
+  await titleInput(page).press('Enter');
+  await expect.poll(() => noteIds(page)).toEqual([browserFixture.source.id]);
+  await expect(resultFolders(page)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Clear search', exact: true }).click();
+  await expect(resultFolders(page)).toHaveCount(1);
+  expect(api.writes).toEqual([]);
+});
+
+for (const kind of ['title', 'property'] as const) {
+  test(`List result folders: zero ${kind} matches show one empty state with child folders present`, async ({
+    page,
+  }) => {
+    const api = await mockPropertyBoard(page);
+    await page.goto(folder);
+    await expect(resultFolders(page)).toHaveCount(1);
+    if (kind === 'title') {
+      await titleInput(page).fill('No such note');
+      await titleInput(page).press('Enter');
+    } else {
+      const panel = await openFilters(page);
+      await addProperty(panel, 'type_field');
+      await panel.getByRole('checkbox', { name: 'Task', exact: true }).check();
+      await panel.getByRole('button', { name: 'Apply', exact: true }).click();
+    }
+    await expect(main(page).getByText('No matching notes.', { exact: true })).toHaveCount(1);
+    await expect(main(page).getByRole('table')).toHaveCount(0);
+    await expect(resultFolders(page)).toHaveCount(0);
+    await page.getByRole('button', { name: kind === 'title' ? 'Clear search' : 'Clear filters', exact: true }).click();
+    await expect(resultFolders(page)).toHaveCount(1);
+    await expect(main(page).getByText('No matching notes.', { exact: true })).toHaveCount(0);
+    expect(api.writes).toEqual([]);
+  });
+}
+
+const propertySort = JSON.stringify({
+  version: 1,
+  schemaId: 'schema_board',
+  propertyId: 'text_field',
+  type: 'text',
+  direction: 'asc',
+});
+for (const kind of ['title', 'property'] as const) {
+  for (const sort of [null, 'updated-asc', 'title-asc', 'title-desc', 'created-asc', 'created-desc', propertySort]) {
+    test(`List result folders: ${kind} query preserves global pagination and ${sort ?? 'default'} sort`, async ({
+      page,
+    }) => {
+      const api = await mockPropertyBoard(page, { extraCards: 111 });
+      api.cards[0].typeValue = 'Type_Feature';
+      const matches = api.cards.slice(3);
+      matches.forEach((card, index) => {
+        card.title = `Match ${String(index).padStart(3, '0')}`;
+        card.createdAt = card.updatedAt = new Date(Date.UTC(2028, 0, 1, 0, 0, index)).toISOString();
+        card.displayValues = { text_field: card.title };
+      });
+      const params = new URLSearchParams();
+      if (sort) params.set('sort', sort);
+      await page.goto(`${folder}?${params}`);
+      await expect(resultFolders(page)).toHaveCount(1);
+      const query = parseNoteQuery(
+        kind === 'title'
+          ? { q: 'Match' }
+          : {
+              filters: JSON.stringify({
+                version: 1,
+                all: [
+                  {
+                    schemaId: 'schema_board',
+                    propertyId: 'type_field',
+                    type: 'select',
+                    operator: 'is',
+                    optionId: 'Type_Bug',
+                  },
+                ],
+              }),
+            }
+      );
+      for (const [key, value] of Object.entries(noteQuerySearch(query))) params.set(key, value);
+      await page.goto(`${folder}?${params}`);
+      const expected = matches.map((card) => card.id);
+      if (!sort || sort.endsWith('desc')) expected.reverse();
+      for (let index = 0; index < 3; index++) {
+        await expect(main(page).getByText(`Page ${index + 1}`, { exact: true })).toBeVisible();
+        await expect.poll(() => noteIds(page)).toEqual(expected.slice(index * 50, (index + 1) * 50));
+        await expect(resultFolders(page)).toHaveCount(0);
+        if (index < 2) await page.getByRole('button', { name: 'Next', exact: true }).click();
+      }
+      const reads = api.listRequests.filter((url) => url.searchParams.has(kind === 'title' ? 'q' : 'filters'));
+      expect(reads.map((url) => url.searchParams.get('page'))).toEqual(['1', '2', '3']);
+      expect(reads.every((url) => url.searchParams.get('sort') === sort)).toBeTruthy();
+      if (kind === 'property')
+        expect(reads.every((url) => url.searchParams.get('schemaId') === 'schema_board')).toBeTruthy();
+      await page
+        .getByRole('button', { name: kind === 'title' ? 'Clear search' : 'Clear filters', exact: true })
+        .click();
+      await expect(resultFolders(page)).toHaveCount(1);
+      await expect(main(page).getByText('Page 1', { exact: true })).toBeVisible();
+      expect(api.writes).toEqual([]);
+    });
+  }
+}
+
+for (const failure of [
+  'malformed',
+  'stale field',
+  'stale option',
+  'definitions',
+  'conflict',
+  'read',
+  'unfiltered read',
+  'invalid sort',
+] as const) {
+  test(`List result folders: ${failure} failure never becomes a successful folder-results table`, async ({ page }) => {
+    const api = await mockPropertyBoard(page);
+    await page.goto(folder);
+    await expect(resultFolders(page)).toHaveCount(1);
+    const params = new URLSearchParams({ q: 'Source' });
+    const filters = JSON.stringify({
+      version: 1,
+      all: [
+        { schemaId: 'schema_board', propertyId: 'type_field', type: 'select', operator: 'is', optionId: 'Type_Bug' },
+      ],
+    });
+    if (failure === 'malformed') params.append('q', 'Repeated');
+    if (failure.startsWith('stale') || failure === 'definitions') {
+      params.set('filters', filters);
+      if (failure === 'stale field') api.schema.definitions[3].archived = true;
+      if (failure === 'stale option') api.schema.definitions[3].options[0].archived = true;
+      if (failure === 'definitions')
+        await page.route('**/internal/folders/*/properties', (route) =>
+          route.fulfill({ status: 500, json: { error: 'Definitions failed' } })
+        );
+    }
+    if (failure === 'conflict') api.controls.listFailure = 409;
+    if (failure === 'read' || failure === 'unfiltered read') api.controls.listFailure = 500;
+    if (failure === 'unfiltered read') {
+      params.delete('q');
+      params.set('sort', 'title-asc');
+    }
+    if (failure === 'invalid sort') {
+      params.delete('q');
+      params.set('sort', 'not-a-sort');
+    }
+    const before = api.listRequests.length;
+    await page.goto(`${folder}?${params}`);
+    await expect(main(page).getByRole('alert')).toBeVisible();
+    await expect(main(page).getByRole('table')).toHaveCount(0);
+    await expect(main(page).getByText('No matching notes.', { exact: true })).toHaveCount(0);
+    await expect(resultFolders(page)).toHaveCount(0);
+    if (!['unfiltered read', 'invalid sort'].includes(failure)) {
+      expect(api.listRequests.slice(before).every((url) => url.searchParams.get('q') === 'Source')).toBeTruthy();
+    }
+    expect(api.writes).toEqual([]);
+  });
+}
+
 for (const view of ['list', 'board'] as const) {
   const url = `${folder}${view === 'board' ? '?view=board' : ''}`;
   test(`${view}: debounce finds unloaded note, Enter preserves focus, clear resets pagination`, async ({ page }) => {
@@ -354,7 +559,11 @@ test('composition and pending title callbacks do not cross folder navigation; pa
   await page.waitForTimeout(350);
   expect(api.listRequests.some((request) => request.searchParams.get('q') === 'unfinished-composition')).toBeFalsy();
   await titleInput(page).dispatchEvent('compositionend');
-  await main(page).getByRole('link', { name: 'Child folder', exact: true }).click();
+  await page.getByRole('button', { name: 'Expand Browser tests', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Primary' })
+    .getByRole('link', { name: 'Child folder', exact: true })
+    .click();
   await expect(titleInput(page)).toHaveValue('');
   await page.waitForTimeout(350);
   expect(new URL(page.url()).searchParams.has('q')).toBeFalsy();
@@ -849,7 +1058,7 @@ test('empty hint and wrapped property counts are vertically centered', async ({ 
 });
 
 async function chooseSort(page: Page, label: string) {
-  await page.getByRole('button', { name: /^Sort by ·/ }).click();
+  await page.getByRole('button', { name: /^Sort ·/ }).click();
   const panel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
   const chooseField = panel.getByRole('button', { name: 'Choose sort field', exact: true });
   if (await chooseField.count()) await chooseField.click();
@@ -899,7 +1108,7 @@ for (const view of ['list', 'board'] as const) {
       await chooseSort(page, label);
       await expect.poll(() => noteIds(page)).toEqual([...expected]);
       expect(new URL(page.url()).searchParams.get('sort')).toBe(token === 'updated-desc' ? null : token);
-      await expect(page.getByRole('button', { name: `Sort by · ${label}`, exact: true })).toBeFocused();
+      await expect(page.getByRole('button', { name: `Sort · ${label}`, exact: true })).toBeFocused();
     }
     expect(api.writes).toEqual([]);
     expect(api.cards).toEqual(before);
@@ -990,7 +1199,7 @@ for (const view of ['list', 'board'] as const) {
     expect(api.laneRequests).toEqual([]);
     expect(new URL(page.url()).searchParams.getAll('sort')).toHaveLength(2);
     await page.getByRole('button', { name: 'Reset sort', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Sort by · Updated · Newest first', exact: true })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Sort · Updated · Newest first', exact: true })).toBeFocused();
     await expect(main(page).getByRole('link', { name: '[1]', exact: true })).toBeVisible();
     expect(new URL(page.url()).searchParams.get('q')).toBe('[1]');
     expect(new URL(page.url()).searchParams.has('filters')).toBeTruthy();
@@ -1015,7 +1224,7 @@ test('personal sort survives query/filter clears, view switches, reload and hist
   const first = page.url();
   await switchView(page, 'board');
   await page.reload();
-  await expect(page.getByRole('button', { name: 'Sort by · Title · Z–A', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Title · Z–A', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('sort')).toBe('title-desc');
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
   expect(new URL(page.url()).searchParams.get('sort')).toBe('title-desc');
@@ -1023,18 +1232,18 @@ test('personal sort survives query/filter clears, view switches, reload and hist
   expect(new URL(page.url()).searchParams.get('sort')).toBe('title-desc');
   await chooseSort(page, 'Created · Oldest first');
   await page.goBack();
-  await expect(page.getByRole('button', { name: 'Sort by · Created · Newest first', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Created · Newest first', exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('button', { name: 'Sort by · Title · Z–A', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Title · Z–A', exact: true })).toBeVisible();
   await page.goForward();
-  await expect(page.getByRole('button', { name: 'Sort by · Created · Newest first', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Created · Newest first', exact: true })).toBeVisible();
   await page.goForward();
-  await expect(page.getByRole('button', { name: 'Sort by · Created · Oldest first', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Created · Oldest first', exact: true })).toBeVisible();
   await switchView(page, 'list');
   await main(page).getByRole('link', { name: 'Child folder', exact: true }).click();
   expect(new URL(page.url()).searchParams.has('sort')).toBeFalsy();
   await page.goBack();
-  await expect(page.getByRole('button', { name: 'Sort by · Created · Oldest first', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Created · Oldest first', exact: true })).toBeVisible();
   expect(new URL(first).searchParams.get('filters')).toBeTruthy();
   const stored = await page.evaluate(() => ({ ...localStorage }));
   expect(
@@ -1064,7 +1273,7 @@ for (const width of [390, 1280])
       await page.addInitScript((value) => localStorage.setItem('notes-theme', value), theme);
       const api = await mockPropertyBoard(page);
       await page.goto(`${folder}?view=board`);
-      const button = page.getByRole('button', { name: 'Sort by · Updated · Newest first', exact: true });
+      const button = page.getByRole('button', { name: 'Sort · Updated · Newest first', exact: true });
       await button.focus();
       await page.keyboard.press('Enter');
       const panel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
@@ -1081,7 +1290,7 @@ for (const width of [390, 1280])
       await expect(panel.getByLabel('Sort direction', { exact: true }).locator('option')).toHaveCount(2);
       await page.screenshot({ path: testInfo.outputPath('personal-sort-editor.png'), fullPage: true });
       await panel.press('Escape');
-      await expect(page.getByRole('button', { name: 'Sort by · Title · Z–A', exact: true })).toBeFocused();
+      await expect(page.getByRole('button', { name: 'Sort · Title · Z–A', exact: true })).toBeFocused();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
       await expect(page.getByRole('button', { name: 'Board settings', exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath('personal-sort-applied.png'), fullPage: true });
@@ -1164,7 +1373,7 @@ test('field-first sort search stays local; field/direction edit in place and rem
   const api = await mockPropertyBoard(page);
   await page.goto(folder);
   await expect(main(page).getByRole('link', { name: browserFixture.source.title, exact: true })).toBeVisible();
-  await page.getByRole('button', { name: /^Sort by ·/ }).click();
+  await page.getByRole('button', { name: /^Sort ·/ }).click();
   const panel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
   const before = page.url();
   const reads = api.listRequests.length;
@@ -1180,7 +1389,7 @@ test('field-first sort search stays local; field/direction edit in place and rem
   await expect(panel.getByLabel('Sort direction')).toHaveValue('desc');
   await expect(panel.getByRole('button', { name: 'Choose sort field' })).toBeFocused();
   expect(new URL(page.url()).searchParams.get('sort')).toBe('created-desc');
-  await expect(page.getByRole('button', { name: 'Sort by · Created · Newest first' })).toHaveText('Created');
+  await expect(page.getByRole('button', { name: 'Sort · Created · Newest first' })).toHaveText('Created');
   await panel.getByLabel('Sort direction').selectOption('asc');
   await expect(panel).toBeVisible();
   expect(new URL(page.url()).searchParams.get('sort')).toBe('created-asc');
@@ -1192,9 +1401,9 @@ test('field-first sort search stays local; field/direction edit in place and rem
   await expect(panel.getByRole('button', { name: 'Add sort', exact: true })).toHaveCount(0);
   await panel.getByRole('button', { name: 'Remove sort', exact: true }).click();
   await expect(panel).toHaveCount(0);
-  const trigger = page.getByRole('button', { name: 'Sort by · Updated · Newest first', exact: true });
+  const trigger = page.getByRole('button', { name: 'Sort · Updated · Newest first', exact: true });
   await expect(trigger).toBeFocused();
-  await expect(trigger).toHaveText('Sort by');
+  await expect(trigger).toHaveText('Sort');
   expect(new URL(page.url()).searchParams.has('sort')).toBeFalsy();
   await trigger.click();
   await expect(panel.getByLabel('Search sort fields')).toHaveValue('');
@@ -1206,19 +1415,19 @@ test('external sort history closes the field picker without applying its search'
   const api = await mockPropertyBoard(page);
   await page.goto(folder);
   await chooseSort(page, 'Title · A–Z');
-  await page.getByRole('button', { name: /^Sort by ·/ }).click();
+  await page.getByRole('button', { name: /^Sort ·/ }).click();
   const panel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
   await panel.getByRole('button', { name: 'Choose sort field' }).click();
   await panel.getByLabel('Search sort fields').fill('Created');
   await page.goBack();
   await expect(panel).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Sort by · Updated · Newest first' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sort · Updated · Newest first' })).toBeVisible();
   expect(new URL(page.url()).searchParams.has('sort')).toBeFalsy();
   expect(api.writes).toEqual([]);
 });
 
 async function choosePropertySort(page: Page, label: string, type: string, direction: 'asc' | 'desc') {
-  await page.getByRole('button', { name: /^Sort by ·/ }).click();
+  await page.getByRole('button', { name: /^Sort ·/ }).click();
   const panel = page.getByRole('dialog', { name: 'Sort notes', exact: true });
   const field = panel.getByRole('button', { name: 'Choose sort field', exact: true });
   if (await field.count()) await field.click();
@@ -1282,7 +1491,7 @@ for (const view of ['list', 'board'] as const)
           )
         ).toBeTruthy();
       }
-      await page.getByRole('button', { name: /^Sort by ·/ }).click();
+      await page.getByRole('button', { name: /^Sort ·/ }).click();
       await page.screenshot({ path: testInfo.outputPath('property-sort-editor.png'), fullPage: true });
       await page.getByRole('dialog', { name: 'Sort notes' }).press('Escape');
       const saved = new URL(page.url()).searchParams.get('sort');
@@ -1324,8 +1533,8 @@ test('property sort: schema echo is required without filters; refresh re-ranks r
   field.label = 'Priority';
   field.options.reverse();
   api.schema.revision++;
-  await page.getByRole('button', { name: /^Sort by ·/ }).click();
-  await expect(page.getByRole('button', { name: 'Sort by · Priority · Ascending', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^Sort ·/ }).click();
+  await expect(page.getByRole('button', { name: 'Sort · Priority · Ascending', exact: true })).toBeVisible();
   await expect.poll(() => noteIds(page)).toEqual([api.cards[0].id, api.cards[1].id, api.cards[2].id]);
   expect(page.url()).toBe(before);
   expect(api.listRequests.at(-1)?.searchParams.get('schemaRevision')).toBe('2');
