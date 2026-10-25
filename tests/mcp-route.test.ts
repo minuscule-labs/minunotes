@@ -29,6 +29,83 @@ function oauthAuthorization() {
 }
 
 describe('hosted MCP route', () => {
+  it('creates and lists general discussion through actual MCP schemas, OAuth scopes and Harness serialization', async () => {
+    const f = await setupPropertiesTest();
+    const { runBoardMigrations } = await import('./board-fixtures');
+    await runBoardMigrations(f.libsql, 44, 45);
+    await f.addNote('note_general', 'Discussion', [], { content: 'Alpha beta', isApiEditable: false });
+    const auth = {
+      id: 'authorization',
+      userId: 'owner',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: true,
+      accessMode: 'all' as const,
+      sharedAccessMode: 'none' as const,
+      createdAt: f.now,
+      updatedAt: f.now,
+    };
+    await f.db.insert(f.schema.integrationAuthorizations).values(auth);
+    let canComment = true;
+    const scopedApp = new Hono();
+    scopedApp.use('*', async (c, next) => {
+      c.set('user', { id: 'owner' });
+      c.set('session', null);
+      c.set('apiKey', null);
+      c.set('oauthAuthorization', {
+        ...auth,
+        id: 'oauth-general',
+        integrationAuthorizationId: auth.id,
+        clientId: 'client',
+        scope: 'notes.read notes.comment',
+        canComment,
+      });
+      await next();
+    });
+    scopedApp.route('/mcp', (await import('../src/api/routes/mcp')).mcpRoutes);
+    const call = async (name: string, args: unknown) =>
+      (
+        await scopedApp.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer synthetic',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        })
+      ).json();
+    const input = { noteId: 'note_general', target: 'note', body: 'Whole-note decision' };
+    const created = await call('notes_create_comment', input);
+    expect(created.result.structuredContent.result.thread).toMatchObject({
+      target: 'note',
+      anchor: null,
+      messages: [{ body: 'Whole-note decision' }],
+    });
+    expect(JSON.stringify(created)).not.toMatch(/authorization|folderId|actorId|userId/);
+    const list = await call('notes_list_comments', { noteId: 'note_general' });
+    expect(list.result.structuredContent.result.threads).toHaveLength(1);
+    for (const invalid of [
+      { ...input, anchor: {} },
+      { noteId: 'note_general', body: 'Missing target' },
+      { ...input, documentHash: 'fake' },
+    ]) {
+      const result = await call('notes_create_comment', invalid);
+      expect(result.error || result.result?.isError).toBeTruthy();
+    }
+    expect((await f.libsql.execute('select * from note_comment_threads')).rows).toHaveLength(1);
+    canComment = false;
+    expect((await call('notes_create_comment', input)).result).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: expect.stringContaining('(403)') }],
+    });
+    expect((await call('notes_list_comments', { noteId: 'note_general' })).result.isError).toBe(true);
+    expect((await f.libsql.execute("select content from notes where id='note_general'")).rows[0].content).toBe(
+      'Alpha beta'
+    );
+  });
+
   it('hosted template tools share reviewed creation, frozen receipts and OAuth create ceiling', async () => {
     const f = await setupPropertiesTest();
     await f.addNote('template', 'Feature', [], {

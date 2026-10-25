@@ -148,7 +148,7 @@ function createHostedMcpClient(authState: {
         }),
     },
     comments: {
-      list: (noteId) => request(`/notes/${encodeURIComponent(noteId)}/comments`),
+      list: (noteId) => request(`/notes/${encodeURIComponent(noteId)}/comments?includeNoteComments=true`),
       create: (noteId, input) =>
         request(`/notes/${encodeURIComponent(noteId)}/comments`, {
           method: 'POST',

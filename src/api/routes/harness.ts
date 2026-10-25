@@ -80,6 +80,7 @@ import {
   deleteCommentMessage,
   deleteCommentThread,
   listCommentThreads,
+  parseCommentTarget,
   setCommentThreadStatus,
   toggleCommentReaction,
   updateCommentAnchor,
@@ -1212,6 +1213,7 @@ harnessRoutes.get('/notes/:noteId/comments', async (c) => {
     noteId: access.note.id,
     userId: access.resourceOwnerUserId,
     actor: getCommentActor(c),
+    includeNoteComments: c.req.query('includeNoteComments') === 'true',
   });
   if (!result.ok) return commentErrorResponse(c, result);
   return c.json(result.value);
@@ -1224,17 +1226,19 @@ harnessRoutes.post('/notes/:noteId/comments', async (c) => {
   if (!access.ok) return c.json({ error: access.error }, access.status);
   const body = (await c.req.json().catch(() => null)) as {
     body?: string;
+    target?: unknown;
     anchor?: CommentAnchorInput;
   } | null;
   if (!body) return c.json({ error: 'Invalid JSON' }, 400);
   if (typeof body.body !== 'string') return c.json({ error: 'Comment body is required' }, 400);
-  if (!body.anchor) return c.json({ error: 'Comment anchor is required' }, 400);
+  const target = parseCommentTarget(body);
+  if (!target.ok) return commentErrorResponse(c, target);
   const result = await createCommentThread({
     noteId: access.note.id,
     userId: access.resourceOwnerUserId,
     actor: getCommentActor(c),
     body: body.body,
-    anchor: body.anchor,
+    ...target.value,
   });
   if (!result.ok) return commentErrorResponse(c, result);
   return c.json(result.value, 201);

@@ -207,7 +207,7 @@ describe('config', () => {
     await client.comments.deleteThread('note/1', 'thread/1');
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      'https://example.com/v1/harness/notes/note%2F1/comments',
+      'https://example.com/v1/harness/notes/note%2F1/comments?includeNoteComments=true',
       'https://example.com/v1/harness/notes/note%2F1/comments',
       'https://example.com/v1/harness/notes/note%2F1/comments/thread%2F1/replies',
       'https://example.com/v1/harness/notes/note%2F1/comments/thread%2F1/anchor',
@@ -220,6 +220,24 @@ describe('config', () => {
       2,
       'https://example.com/v1/harness/notes/note%2F1/comments',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ body: 'Review', anchor }) })
+    );
+  });
+
+  it('forwards general discussion without reading a body or adding an anchor', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ thread: { target: 'note', anchor: null } }), {
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'synthetic' });
+    const result = await client.comments.create('note/1', { body: 'Decision', target: 'note' });
+    expect(result).toMatchObject({ thread: { target: 'note', anchor: null } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example.com/v1/harness/notes/note%2F1/comments',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ body: 'Decision', target: 'note' }) })
     );
   });
 

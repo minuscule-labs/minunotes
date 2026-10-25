@@ -140,18 +140,35 @@ Harness and API-key clients cannot list Trash, restore, or permanently delete co
 
 Create and update responses return compact note metadata plus `contentHash`; they do not include full note `content`. Use the read-note endpoint only when content is needed.
 
-## Review comments
+## Discussion and Review comments
 
-Anchored Review threads are available on active Markdown notes. Comment messages are plain text (Markdown syntax is not rendered), remain external metadata, and never change canonical Markdown.
+Active Markdown notes support general discussion (`target: "note"`, `anchor: null` in responses) and anchored Review (`target: "text"`, a range/line anchor). Both reuse existing threads/messages/reactions. Plain-text comments never rewrite canonical Markdown or workflow properties.
 
-List threads:
+List both targets with `?includeNoteComments=true`. Legacy list requests without the opt-in continue returning anchored Review only. Updated readers must handle null anchors:
+
+```bash
+curl -s -H "X-API-Key: ntak_..." \
+  "$API/v1/harness/notes/note_xxx/comments?includeNoteComments=true"
+```
+
+Create general discussion without a quote, offsets or content hash:
+
+```bash
+curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
+  -X POST "$API/v1/harness/notes/note_xxx/comments" \
+  -d '{"body":"Blocked until API delivery.","target":"note"}'
+```
+
+General discussion survives body edits and renames without detaching; it needs neither a body read solely for a hash nor a body save. Missing targets/anchors, unknown targets, and note targets mixed with anchor fields are rejected. Anchor updates apply only to text targets; converting targets is not supported.
+
+List anchored Review only:
 
 ```bash
 curl -s -H "X-API-Key: ntak_..." \
   "$API/v1/harness/notes/note_xxx/comments"
 ```
 
-Create a thread with zero-based offsets, the exact Markdown quote, and the current `contentHash`:
+Create anchored Review with zero-based offsets, the exact Markdown quote, and the current `contentHash`:
 
 ```bash
 curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
@@ -161,7 +178,7 @@ curl -s -H "X-API-Key: ntak_..." -H "Content-Type: application/json" \
 
 Toggle a reaction on one message by posting `{"emoji":"🎉"}` to `/v1/harness/notes/{noteId}/comments/{threadId}/messages/{messageId}/reactions`. Posting the same reaction again removes it. Message responses group reaction counts and identify whether the current actor reacted. The API accepts one standard Unicode emoji, including joined and skin-tone emoji; `👍`, `❤️`, `😂`, `🎉`, `👀`, and `🚀` are quick defaults in the human UI.
 
-Every comment operation requires explicit **Comment** permission plus folder read access. Review-only integrations do not need note edit permission, and `isApiEditable` applies to canonical note edits rather than comments. Existing and new credentials have Comment disabled until the owner grants it. Message edits/deletes are author-only. Stale anchors return `409`; ambiguous anchors are returned as detached rather than moved speculatively. Canvas notes, templates, Trash, and public shares do not expose comments.
+Every comment operation requires explicit **Comment** permission plus current note read access, including supported direct-note grants without folder disclosure. Review-only integrations do not need note edit permission, and `isApiEditable` applies to canonical note edits rather than comments. Existing and new credentials have Comment disabled until the owner grants it. Message edits/deletes are author-only. Stale anchors return `409`; ambiguous anchors are returned as detached rather than moved speculatively. Canvas notes, templates, Trash, and public shares do not expose comments. Do not automatically retry creates, replies or reaction toggles after uncertain results; verify whether the mutation succeeded before another intentional submission.
 
 ## Canvas notes
 

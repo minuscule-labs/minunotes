@@ -257,3 +257,183 @@ test('opens Review with the same responsive drawer geometry as Backlinks', async
   expect(mobileBox?.width).toBe(390);
   expect(mobileBox?.y).toBeGreaterThan(100);
 });
+
+for (const viewport of [
+  { width: 1280, height: 720 },
+  { width: 390, height: 844 },
+]) {
+  test(`discusses the note below its body without editor anchors at width ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const theme = viewport.width === 1280 ? 'catppuccin-latte' : 'catppuccin-mocha';
+    await page.addInitScript((value) => localStorage.setItem('notes-theme', value), theme);
+    const api = await mockBrowserApi(page, { noteAccessRole: 'commenter' });
+    await page.goto(`/notes/${browserFixture.source.id}`);
+    const discussion = page.getByRole('region', { name: 'Discussion', exact: true });
+    await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+    const composer = discussion.getByRole('textbox', { name: 'New discussion comment' });
+    await expect(composer).toBeFocused();
+    const bodyBox = await page.locator('.cm-content').boundingBox();
+    const sectionBox = await discussion.boundingBox();
+    if (!bodyBox || !sectionBox) throw new Error('Expected note body and Discussion bounds');
+    expect(sectionBox.y).toBeGreaterThan(bodyBox.y + bodyBox.height);
+    await composer.fill('A whole-note decision.');
+    await discussion.getByRole('button', { name: 'Post', exact: true }).click();
+    await expect(discussion.getByText('A whole-note decision.', { exact: true })).toHaveCount(1);
+    expect(api.commentRequests[0].body).toEqual({ body: 'A whole-note decision.', target: 'note' });
+    expect(api.saveRequests).toHaveLength(0);
+    await expect(page.locator('.me-comment-anchor')).toHaveCount(0);
+    await expect(discussion.locator('blockquote')).toHaveCount(0);
+    await expect(discussion.getByText(/Detached|reattached/)).toHaveCount(0);
+    await discussion.getByPlaceholder('Reply…').fill('A follow-up.');
+    await discussion.getByRole('button', { name: 'Reply', exact: true }).click();
+    await expect(discussion.getByText('A follow-up.', { exact: true })).toBeVisible();
+    await discussion.getByRole('button', { name: 'Add reaction' }).first().click();
+    await page.getByRole('button', { name: 'React with 👍' }).click();
+    await expect(discussion.getByRole('button', { name: '👍 reaction, 1' })).toBeVisible();
+    await discussion.getByRole('button', { name: 'More comment actions' }).first().click();
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await discussion.getByRole('textbox', { name: 'Edit comment' }).fill('Updated whole-note decision.');
+    await discussion.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(discussion.getByText('Updated whole-note decision.', { exact: true })).toBeVisible();
+    await discussion.getByRole('button', { name: 'Resolve comment' }).click();
+    await expect(discussion.getByRole('button', { name: 'Reopen comment' })).toBeVisible();
+    await discussion.getByRole('button', { name: 'Reopen comment' }).click();
+    api.externalUpdate(browserFixture.source.id, { content: 'Entirely rewritten body', title: 'Renamed note' });
+    await page.reload();
+    await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+    await expect(discussion.getByText('Updated whole-note decision.', { exact: true })).toHaveCount(1);
+    await expect(discussion.getByText('A follow-up.', { exact: true })).toBeVisible();
+    await expect(page.locator('.me-comment-anchor')).toHaveCount(0);
+    expect(api.commentRequests.filter((request) => request.path.endsWith('/anchor'))).toHaveLength(0);
+    await page.getByRole('button', { name: 'Open Review' }).click();
+    await expect(
+      page
+        .getByRole('dialog', { name: 'Review', exact: true })
+        .getByText('Updated whole-note decision.', { exact: true })
+    ).toHaveCount(0);
+    await page.getByRole('button', { name: 'Close Review' }).click();
+    await discussion.getByRole('button', { name: 'More discussion actions' }).click();
+    await page.getByRole('button', { name: 'Delete discussion', exact: true }).click();
+    await expect(discussion.getByText('Updated whole-note decision.', { exact: true })).toHaveCount(0);
+    await expect(discussion.getByText('A follow-up.', { exact: true })).toHaveCount(0);
+  });
+}
+
+test('posting general discussion does not force-save dirty body changes', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  // Stop the clock before creating dirty content, so autosave cannot make this a false positive.
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1_000));
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Unsaved');
+  await expect(page.locator('.cm-content')).toContainText('Unsaved');
+  const before = api.saveRequests.length;
+  expect(before).toBe(0);
+  await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  const discussion = page.getByRole('region', { name: 'Discussion', exact: true });
+  await discussion.getByRole('textbox', { name: 'New discussion comment' }).fill('Independent discussion');
+  await discussion.getByRole('button', { name: 'Post', exact: true }).click();
+  await expect(discussion.getByText('Independent discussion', { exact: true })).toBeVisible();
+  expect(api.saveRequests).toHaveLength(before);
+  expect(api.commentRequests[0].body).toEqual({ target: 'note', body: 'Independent discussion' });
+});
+
+test('hides Discussion and Review after role downgrade or comment-read denial', async ({ page }) => {
+  const api = await mockBrowserApi(page, { noteAccessRole: 'commenter' });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  await expect(page.getByRole('button', { name: 'Discussion', exact: true })).toBeVisible();
+  api.setNoteAccessRole('viewer');
+  await page.reload();
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+  await expect(page.getByRole('button', { name: 'Discussion', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Discussion', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open Review' })).toHaveCount(0);
+  api.setNoteAccessRole('commenter');
+  await page.route(/\/internal\/notes\/[^/]+\/comments\?includeNoteComments=true$/, (route) =>
+    route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'Forbidden' }) })
+  );
+  await page.reload();
+  await expect(page.locator('.cm-content')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Discussion', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Open Review' })).toHaveCount(0);
+});
+
+test('keeps a late general-comment response scoped to its original note after navigation', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  const source = api.notes.get(browserFixture.source.id);
+  if (!source) throw new Error('Missing source fixture');
+  source.content = `[[${browserFixture.target.id}|${browserFixture.target.title}]]`;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = false;
+  await page.route(/\/internal\/notes\/note_source\/comments$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    started = true;
+    await held;
+    return route.fallback();
+  });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  await page.getByRole('textbox', { name: 'New discussion comment' }).fill('Source-only decision');
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  try {
+    await page.locator('.cm-content').getByText(browserFixture.target.title, { exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/notes/${browserFixture.target.id}$`));
+  } finally {
+    release();
+  }
+  await expect.poll(() => api.commentThreads.get(browserFixture.source.id)?.length).toBe(1);
+  const discussion = page.getByRole('region', { name: 'Discussion', exact: true });
+  await expect(discussion.getByText('Source-only decision', { exact: true })).toHaveCount(0);
+  await expect(discussion.getByRole('textbox', { name: 'New discussion comment' })).toHaveValue('');
+  await expect(page.getByRole('dialog', { name: 'Comment thread', exact: true })).toHaveCount(0);
+  await page.goBack();
+  await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  await expect(discussion.getByText('Source-only decision', { exact: true })).toHaveCount(1);
+});
+
+test('retains the draft on failure and prevents a duplicate pending general submission', async ({ page }) => {
+  const api = await mockBrowserApi(page);
+  let calls = 0;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(/\/internal\/notes\/[^/]+\/comments$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    calls += 1;
+    if (calls === 1)
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Discussion unavailable' }),
+      });
+    await held;
+    return route.fallback();
+  });
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  const discussion = page.getByRole('region', { name: 'Discussion', exact: true });
+  const composer = discussion.getByRole('textbox', { name: 'New discussion comment' });
+  await composer.fill('Keep my draft');
+  await discussion.getByRole('button', { name: 'Post', exact: true }).click();
+  await expect(discussion.getByText('Discussion unavailable')).toBeVisible();
+  await expect(composer).toHaveValue('Keep my draft');
+  expect(calls).toBe(1);
+  await discussion.getByRole('button', { name: 'Post', exact: true }).click();
+  try {
+    await expect(discussion.getByRole('button', { name: 'Post', exact: true })).toBeDisabled();
+    await composer.press('ControlOrMeta+Enter');
+    expect(calls).toBe(2);
+  } finally {
+    release();
+  }
+  await expect(discussion.getByText('Keep my draft', { exact: true })).toHaveCount(1);
+  await expect(composer).toHaveValue('');
+  expect(api.commentRequests.filter((request) => request.method === 'POST')).toHaveLength(1);
+});

@@ -63,7 +63,7 @@ Do not read every search result automatically. Rank candidates by title, folder,
 - Syntax replacement is whole-document regeneration. Read the latest canvas and obtain approval before replacing a manually arranged or metadata-rich canvas.
 - Canvas note link: `minunotes_read_note` → `minunotes_link_canvas_node_to_note` or `minunotes_unlink_canvas_node` with the latest `contentHash` as `baseHash`.
 - Organization/links: prefer defined properties for structured labels; use tag tools for explicitly requested legacy tags and backlink/link tools for wikilinks.
-- Review comments: read the note and current `contentHash` before creating or remapping an anchor. Anchors use zero-based Markdown offsets and an exact quote. Comment message bodies are plain text, not Markdown. List a thread before editing its messages; message edits/deletes are author-only, and reactions are actor-specific toggles.
+- Comments: use whole-note discussion for decisions/progress/questions about the entire note, anchored Review for feedback on specific wording. When the actually registered adapter supports it, create general discussion with `target: "note"` and no anchor; do not read the body solely to obtain a hash. Anchored Review still requires a fresh note read, `contentHash`, exact zero-based Markdown offsets and quote. Messages are plain text. List a thread before editing messages; agent edits/deletes are author-only and reactions are actor-specific toggles. Never retry comment mutations automatically.
 
 ## Properties
 
@@ -104,7 +104,7 @@ On uncertain/network/busy results retry the **same request ID and exact frozen p
 Treat canonical edits and Review comments as different collaboration modes:
 
 - If the user explicitly requests a narrow edit, read the current note, capture a fresh `contentHash`, make only the requested change, and summarize the changed sections afterward. No additional approval or pre-edit diff is required.
-- If the user asks for feedback, review, or suggestions—or the connection can comment but not edit—use Review comments instead of changing canonical content.
+- For discussion or feedback—or when the connection can comment but not edit—use comments instead of changing canonical content: whole-note discussion for general decisions/questions; anchored Review for source-specific feedback. Do not invent an anchor to compensate for an adapter that lacks whole-note targets.
 - Before a broad rewrite, substantial deletion, structural reorganization, or change whose intent is ambiguous, present a concise plan or proposed diff and request approval.
 - Do not resolve another collaborator's ambiguity by silently rewriting their work. Prefer an anchored comment or ask the user when preserving intent is uncertain.
 - On a `409` conflict, do not overwrite or automatically replay the old patch. Read the latest note, rebase the proposed change, and request approval if the rebased diff is materially different.
@@ -112,13 +112,13 @@ Treat canonical edits and Review comments as different collaboration modes:
 - Treat returned role/source as descriptive context, not a guarantee that mutation is allowed; credential scope and owner policy are still enforced by the edit request.
 - After a routine edit, provide a concise summary rather than dumping a full diff. Show a full diff when requested or when the change was broad enough to require approval.
 
-## Review workflow
+## Comment workflow
 
-1. Read the active Markdown note and capture `contentHash`.
-2. Compute an exact range or whole-line anchor in the returned Markdown.
-3. Create a thread with the quote, offsets, context, and current hash.
-4. Use plain-text replies for discussion and resolve/reopen for lifecycle state.
-5. If the note changes, list comments again and respect `detached: true`; never move an ambiguous anchor speculatively.
+1. Identify the intended active Markdown note and verify the actually registered tool contract. Installed Pi adapter/test/skill changes are deferred from the repository feature; the current session may still require anchors. Report that gap rather than using an unsupported payload or fake anchor.
+2. For a supported whole-note target, create with `noteId`, `body`, and `target: "note"`, without quote, offsets or hash. General threads remain attached through body edits and renames.
+3. For anchored Review, read the note, capture fresh `contentHash`, and compute exact range/line offsets and quote. Create with the anchor (explicit `target: "text"` where supported; legacy anchor-only clients remain valid).
+4. Updated MCP lists opt into both targets; raw HTTP clients use `includeNoteComments=true`. General threads have `anchor: null`. Legacy lists without opt-in return anchored Review only. Reject mixed/missing targets; never convert general discussion into an anchor.
+5. Reuse replies, reactions and resolve/reopen. Only text targets can be remapped; respect `detached: true` and never guess an ambiguous anchor. Preserve drafts and verify uncertain results before another intentional submission; no automatic mutation retries.
 
 Review tools require explicit Comment permission plus read scope for every operation. Note edit permission and API editability are not required. Comments are unavailable on canvases, templates, Trash, and public shares.
 

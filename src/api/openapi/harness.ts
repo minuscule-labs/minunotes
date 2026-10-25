@@ -410,10 +410,18 @@ export const harnessOpenApiSpec = {
       get: {
         tags: ['Review'],
         operationId: 'listCommentThreads',
-        summary: 'List anchored comment threads',
+        summary: 'List note comment threads',
         description:
-          'Lists Review threads on an active markdown note. Explicit Comment permission and read access to the note folder are required.',
-        parameters: [{ $ref: '#/components/parameters/NoteId' }],
+          'Lists anchored Review by default. Opt in with includeNoteComments=true for both general discussion and Review with explicit note/text targets. Requires explicit Comment permission and current note read access; direct-note grants do not disclose folder ancestry.',
+        parameters: [
+          { $ref: '#/components/parameters/NoteId' },
+          {
+            name: 'includeNoteComments',
+            in: 'query',
+            schema: { type: 'boolean', default: false },
+            description: 'Include whole-note discussion; clients must handle target note with anchor null.',
+          },
+        ],
         responses: {
           '200': {
             description: 'Comment threads and ordered messages',
@@ -428,9 +436,9 @@ export const harnessOpenApiSpec = {
       post: {
         tags: ['Review'],
         operationId: 'createCommentThread',
-        summary: 'Create an anchored comment thread',
+        summary: 'Create a general discussion or anchored Review thread',
         description:
-          'Creates a thread and first message. Explicit Comment permission, read access, a current document hash, and an exact markdown anchor are required. Note edit permission is not required.',
+          'Creates a thread and first message atomically. Use target note without anchor data for general discussion; no document hash or content-edit permission is required. Text-specific Review uses target text and a current exact anchor; legacy body+anchor requests remain valid. Missing/mixed/unknown targets are rejected. Explicit Comment permission and current read access are required for both; never retry mutations automatically.',
         parameters: [{ $ref: '#/components/parameters/NoteId' }],
         requestBody: {
           required: true,
@@ -1289,6 +1297,7 @@ export const harnessOpenApiSpec = {
           'id',
           'noteId',
           'status',
+          'target',
           'anchor',
           'createdBy',
           'resolvedBy',
@@ -1297,11 +1306,16 @@ export const harnessOpenApiSpec = {
           'updatedAt',
           'messages',
         ],
+        oneOf: [
+          { properties: { target: { const: 'note' }, anchor: { type: 'null' } } },
+          { properties: { target: { const: 'text' }, anchor: { $ref: '#/components/schemas/CommentAnchor' } } },
+        ],
         properties: {
           id: { type: 'string' },
           noteId: { type: 'string' },
           status: { type: 'string', enum: ['open', 'resolved'] },
-          anchor: { $ref: '#/components/schemas/CommentAnchor' },
+          target: { type: 'string', enum: ['note', 'text'] },
+          anchor: { oneOf: [{ $ref: '#/components/schemas/CommentAnchor' }, { type: 'null' }] },
           createdBy: { $ref: '#/components/schemas/CommentActor' },
           resolvedBy: { oneOf: [{ $ref: '#/components/schemas/CommentActor' }, { type: 'null' }] },
           resolvedAt: { type: ['string', 'null'] },
@@ -1331,6 +1345,7 @@ export const harnessOpenApiSpec = {
       },
       CommentAnchorInput: {
         type: 'object',
+        additionalProperties: false,
         required: ['anchorType', 'from', 'to', 'quote', 'documentHash'],
         properties: {
           anchorType: { type: 'string', enum: ['range', 'line'] },
@@ -1344,12 +1359,27 @@ export const harnessOpenApiSpec = {
         },
       },
       CreateCommentThreadRequest: {
-        type: 'object',
-        required: ['body', 'anchor'],
-        properties: {
-          body: { type: 'string', maxLength: 10000 },
-          anchor: { $ref: '#/components/schemas/CommentAnchorInput' },
-        },
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['body', 'target'],
+            properties: {
+              body: { type: 'string', minLength: 1, maxLength: 10000 },
+              target: { type: 'string', enum: ['note'] },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            required: ['body', 'anchor'],
+            properties: {
+              body: { type: 'string', minLength: 1, maxLength: 10000 },
+              target: { type: 'string', enum: ['text'] },
+              anchor: { $ref: '#/components/schemas/CommentAnchorInput' },
+            },
+          },
+        ],
       },
       UpdateCommentAnchorRequest: {
         type: 'object',

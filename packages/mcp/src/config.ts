@@ -129,7 +129,7 @@ export function createClient(env: NodeJS.ProcessEnv = process.env): NotesMcpClie
         }),
     },
     comments: {
-      list: (noteId) => request(`/harness/notes/${encodeURIComponent(noteId)}/comments`),
+      list: (noteId) => request(`/harness/notes/${encodeURIComponent(noteId)}/comments?includeNoteComments=true`),
       create: (noteId, input) =>
         request(`/harness/notes/${encodeURIComponent(noteId)}/comments`, {
           method: 'POST',

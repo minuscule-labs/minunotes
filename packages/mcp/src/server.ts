@@ -14,18 +14,37 @@ const canvasDocumentSchema = z
   })
   .passthrough();
 const canvasDocumentTypeSchema = z.enum(['canvas.default', 'canvas.mindmap']);
-const commentAnchorSchema = z.object({
-  anchorType: z.enum(['range', 'line']),
-  from: z.number().int().nonnegative(),
-  to: z.number().int().nonnegative(),
-  quote: z.string().max(20_000),
-  prefix: z.string().optional(),
-  suffix: z.string().optional(),
-  documentHash: z.string().min(1),
-  detached: z.boolean().optional(),
-});
+const commentAnchorSchema = z
+  .object({
+    anchorType: z.enum(['range', 'line']),
+    from: z.number().int().nonnegative(),
+    to: z.number().int().nonnegative(),
+    quote: z.string().max(20_000),
+    prefix: z.string().optional(),
+    suffix: z.string().optional(),
+    documentHash: z.string().min(1),
+    detached: z.boolean().optional(),
+  })
+  .strict();
 
 export type CommentAnchor = z.infer<typeof commentAnchorSchema>;
+export type CommentCreateInput = { body: string } & (
+  | { target: 'note'; anchor?: never }
+  | { target?: 'text'; anchor: CommentAnchor }
+);
+
+const commentCreateSchema = z
+  .object({
+    noteId: z.string(),
+    body: z.string().min(1).max(10_000),
+    target: z.enum(['note', 'text']).optional(),
+    anchor: commentAnchorSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) => (value.target === 'note' ? value.anchor === undefined : value.anchor !== undefined),
+    'Use target note without an anchor, or a text target with an anchor'
+  );
 
 export type CanvasDocument = {
   nodes: unknown[];
@@ -129,7 +148,7 @@ export type NotesMcpClient = {
   };
   comments: {
     list: (noteId: string) => Promise<unknown>;
-    create: (noteId: string, input: { body: string; anchor: CommentAnchor }) => Promise<unknown>;
+    create: (noteId: string, input: CommentCreateInput) => Promise<unknown>;
     reply: (noteId: string, threadId: string, body: string) => Promise<unknown>;
     updateAnchor: (noteId: string, threadId: string, anchor: CommentAnchor) => Promise<unknown>;
     setStatus: (noteId: string, threadId: string, status: 'open' | 'resolved') => Promise<unknown>;
@@ -312,7 +331,8 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     'notes_list_comments',
     {
       title: 'List note comments',
-      description: 'List anchored Review threads and ordered messages for an active markdown note.',
+      description:
+        'List general discussion and anchored Review threads with explicit note/text targets and ordered messages for an active Markdown note.',
       inputSchema: { noteId: z.string() },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -325,19 +345,23 @@ export function createNotesMcpServer(client: NotesMcpClient) {
     {
       title: 'Create note comment',
       description:
-        'Create an anchored Review thread with a plain-text first message. Use the current contentHash and exact markdown offsets from notes_get_note.',
-      inputSchema: { noteId: z.string(), body: z.string().min(1).max(10_000), anchor: commentAnchorSchema },
+        'Create a plain-text discussion thread. Use target note without an anchor for general discussion; no body hash is needed. For text-specific Review, use target text (or legacy omission) with the current contentHash and exact offsets from notes_get_note. Requires explicit Comment permission; never retry automatically.',
+      inputSchema: commentCreateSchema,
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ noteId, body, anchor }) => toolResult(await client.comments.create(noteId, { body, anchor }))
+    async ({ noteId, body, target, anchor }) => {
+      const input: CommentCreateInput =
+        target === 'note' ? { body, target } : { body, ...(target ? { target } : {}), anchor: anchor as CommentAnchor };
+      return toolResult(await client.comments.create(noteId, input));
+    }
   );
 
   server.registerTool(
     'notes_reply_to_comment',
     {
       title: 'Reply to note comment',
-      description: 'Add a plain-text message to an existing Review thread.',
+      description: 'Add a plain-text message to an existing general discussion or Review thread.',
       inputSchema: { noteId: z.string(), threadId: z.string(), body: z.string().min(1).max(10_000) },
       outputSchema: jsonObjectSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

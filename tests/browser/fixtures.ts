@@ -35,7 +35,8 @@ type BrowserCommentThread = {
   id: string;
   noteId: string;
   status: 'open' | 'resolved';
-  anchor: BrowserCommentAnchor;
+  target: 'note' | 'text';
+  anchor: BrowserCommentAnchor | null;
   createdBy: BrowserIdentity;
   resolvedBy: BrowserIdentity | null;
   resolvedAt: string | null;
@@ -1145,22 +1146,33 @@ export async function mockBrowserApi(
       const noteId = commentsMatch[1];
       if (!notes.has(noteId)) return json({ error: 'Note not found' }, 404);
       if (method === 'GET')
-        return json({ noteId, documentHash: `hash_${hashVersion}`, threads: commentThreads.get(noteId) ?? [] });
+        return json({
+          noteId,
+          documentHash: `hash_${hashVersion}`,
+          threads: (commentThreads.get(noteId) ?? []).filter(
+            (thread) => url.searchParams.get('includeNoteComments') === 'true' || thread.target === 'text'
+          ),
+        });
       if (method === 'POST') {
         const body = request.postDataJSON() as {
           body: string;
-          anchor: Omit<BrowserCommentAnchor, 'detached'> & { detached?: boolean };
+          target?: 'note' | 'text';
+          anchor?: Omit<BrowserCommentAnchor, 'detached'> & { detached?: boolean };
         };
         commentRequests.push({ method, path, body });
         const currentHash = `hash_${hashVersion}`;
-        if (body.anchor.documentHash !== currentHash)
+        if (body.target !== 'note' && body.anchor?.documentHash !== currentHash)
           return json({ error: 'Document has changed since the comment anchor was created', currentHash }, 409);
         const threadId = `comment_thread_${++commentId}`;
         const thread: BrowserCommentThread = {
           id: threadId,
           noteId,
           status: 'open',
-          anchor: { ...body.anchor, detached: body.anchor.detached ?? false },
+          target: body.target === 'note' ? 'note' : 'text',
+          anchor:
+            body.target === 'note'
+              ? null
+              : { ...(body.anchor as BrowserCommentAnchor), detached: body.anchor?.detached ?? false },
           createdBy: browserUserIdentity,
           resolvedBy: null,
           resolvedAt: null,

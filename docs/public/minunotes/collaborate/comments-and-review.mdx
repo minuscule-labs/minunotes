@@ -1,33 +1,31 @@
 ---
 title: Comments and Review
-description: Discuss selected text, reply in threads, and resolve completed conversations.
+description: Discuss a whole note or review specific text without changing its body.
 sidebar:
   order: 2
 ---
-Review comments keep discussion anchored to the text it concerns. Use them for questions, suggestions, approvals, and follow-up work without placing the conversation inside the note body.
+Discussion concerns the whole note. Anchored Review concerns specific wording. Both use the same note-owned threads and plain-text messages; the note body remains the current source of truth.
 
-## Start a discussion
+## Discuss the note
 
-Select text in an editable or reviewable Markdown note and choose the comment action. Enter a plain-text message to create a thread anchored to that selection.
+Discussion appears below the body of an active Markdown note. Choose **Discussion** in the header to jump to the section and focus its composer, then enter a comment and choose **Post**. No text selection or content-edit access is needed, and posting does not force-save unrelated body edits.
 
-The Review panel shows open discussions and their location in the note.
+Opening the same note from a list or Board reaches the same discussion. General comments remain attached after body edits and renames; they have no text anchor and never become detached.
 
-## Reply and react
+## Review specific text
 
-Open a thread to add a reply. Reactions are useful for lightweight acknowledgement when a full reply is unnecessary.
+Select text or use a line comment action to create an anchored Review thread. Open **Review** to see these threads in the existing responsive drawer. Selecting an anchored thread focuses its source; general discussion does not create editor highlights or gutter markers.
 
-Comment messages are plain text so discussions stay predictable across the app and agent integrations.
+MinuNotes maps Review anchors as the note changes. If the original text can no longer be mapped safely, the thread appears detached rather than attaching to unrelated content.
 
-## Resolve completed work
+## Reply, react and resolve
 
-Resolve a thread when the question or requested change is complete. Resolved threads can be reopened if the discussion needs to continue.
+Select a thread to reply. Add or remove your own emoji reactions, edit your own messages, and resolve or reopen threads within your permissions. Resolving discussion does not change workflow properties or Board placement.
 
-## When text changes
-
-MinuNotes maps anchors as the note changes. If the original text can no longer be mapped safely, the discussion may appear detached rather than being attached to the wrong content.
+Deleting a reply removes that message; deleting the root message or discussion removes the entire thread and its replies. Note owners can moderate deletion; message editing remains author-only.
 
 ## Permission required
 
-Owners and eligible editors can comment. A collaborator with the Commenter role can participate without receiving general edit access. Connected agents need explicit Comment permission in the relevant scope.
+Owners, Editors and Commenters can discuss notes without broadening their existing permissions. Viewers and public-share visitors do not gain comment access. Connected agents need explicit Comment plus read access and remain subject to their authorization scope and author-only mutation rules. Comments are not available for templates, canvases or Trash.
 
 Read [Share notes and folders](/resources/sharing-and-collaboration) for collaboration setup.

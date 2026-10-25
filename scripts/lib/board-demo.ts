@@ -62,9 +62,9 @@ export async function createDemoSandbox(large = false) {
     const journal = JSON.parse(await readFile(path.join(PROJECT_ROOT, 'drizzle/meta/_journal.json'), 'utf8')) as {
       entries: Array<{ idx: number; tag: string; when: number }>;
     };
-    const entries = journal.entries.filter((entry) => entry.idx <= 44);
-    if (entries.at(-1)?.tag !== '0044_folder_duplication_requests')
-      throw new Error('Expected Folder Duplication migration 0044');
+    const entries = journal.entries.filter((entry) => entry.idx <= 45);
+    if (entries.at(-1)?.tag !== '0045_general_note_comments')
+      throw new Error('Expected general note comments migration 0045');
     for (const entry of entries) {
       const sql = await readFile(path.join(PROJECT_ROOT, `drizzle/${entry.tag}.sql`), 'utf8');
       const migration: Migration = {

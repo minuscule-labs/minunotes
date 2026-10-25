@@ -60,6 +60,7 @@ export function NoteEditor({
   wikiLinks,
   comments,
   reviewPanel,
+  discussionPanel,
   reviewFocus,
   onCommentAnchorPosition,
   readOnly = false,
@@ -80,6 +81,7 @@ export function NoteEditor({
   wikiLinks?: WikiLinksProp;
   comments?: CommentsProp;
   reviewPanel?: ReactNode;
+  discussionPanel?: ReactNode;
   reviewFocus?: { from: number; to: number; detached?: boolean; requestId: number } | null;
   onCommentAnchorPosition?: (position: { top: number; left: number; placement: 'above' | 'below' }) => void;
   readOnly?: boolean;
@@ -477,6 +479,7 @@ export function NoteEditor({
             className={`notes-minu-editor ${editorMode === 'source' ? 'notes-minu-editor--source' : ''}`}
           />
         </div>
+        {discussionPanel}
       </div>
       {reviewPanel}
       {imagePickerOpen ? (
