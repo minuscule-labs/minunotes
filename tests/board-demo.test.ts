@@ -63,7 +63,7 @@ describe('disposable Board Lite demo', () => {
   it('migrates and seeds only a new owned database, with real grants and valid FKs', async () => {
     const sandbox = await setup();
     expect(sandbox.counts).toEqual({ notes: 22, visibleCards: 17, todoCards: 8 });
-    expect(Number((await sandbox.client.execute('SELECT count(*) AS n FROM __drizzle_migrations')).rows[0].n)).toBe(45);
+    expect(Number((await sandbox.client.execute('SELECT count(*) AS n FROM __drizzle_migrations')).rows[0].n)).toBe(46);
     expect((await sandbox.client.execute('SELECT * FROM folder_duplication_requests')).rows).toEqual([]);
     const receiptIndexes = await sandbox.client.execute('PRAGMA index_list(folder_duplication_requests)');
     expect(receiptIndexes.rows.find((row) => row.name === 'folder_duplication_actor_request_idx')).toMatchObject({

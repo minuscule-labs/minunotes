@@ -87,7 +87,7 @@ Use only destination-assigned previews, not unrelated template/library reads. Bo
 
 Creation is one atomic ordinary note, initial version and create event with tags/properties/references/receipt. Retry uncertain/network/busy responses using the SAME request ID and exact frozen payload. Never replace it with a fresh clock or another ID before resolution. Different payload with the same actor/destination/key conflicts. Stale review requires explicit re-review; completed receipts ignore newer defaults but check current access. Inaccessible, trashed or deleted notes are unavailable, never recreated. Snapshots/defaults are not access grants. Boards use their owner's selected Select property on refresh, never tags. Adapters do not automatically retry, generate request IDs/clocks, refresh a preview or rewrite the frozen payload.
 
-Review comments:
+General discussion and anchored Review:
 
 - `notes_list_comments`
 - `notes_create_comment`
@@ -185,7 +185,9 @@ For net-new content, resolve the target folder from folder metadata and create d
 
 MCP tools expose active content only. Trashed notes, templates, and folder subtrees are omitted from lists and search and return not found on direct reads. Hosted and local MCP provide destructive, explicitly confirmed tools to move eligible notes and folders to the owner’s Trash. They do not list Trash, restore, or permanently delete content. Owners perform those lifecycle operations through the authenticated MinuNotes web interface.
 
-Review comments are available only on active Markdown notes, and message bodies are plain text rather than rendered Markdown. Every comment operation requires explicit **Comment** permission plus folder read access; note edit permission and API editability are not required. Existing and new credentials have Comment disabled until explicitly granted. Message edits/deletes are author-only, reactions are actor-specific toggles accepting one standard Unicode emoji, and anchor creation or remapping requires the current note content hash.
+Comments are available only on active Markdown notes. Create general discussion with `notes_create_comment({noteId, body, target: "note"})` without an anchor or body-hash read. For text-specific Review, use `target: "text"` and the current exact anchor; legacy `{noteId, body, anchor}` remains valid. Missing/mixed/unknown targets are rejected. `notes_list_comments` opts into `includeNoteComments=true` and returns both explicit targets; general threads have `anchor: null`, never detach and cannot be remapped. Direct legacy HTTP lists remain anchored-only without that opt-in.
+
+Message bodies are plain text. Every operation requires explicit **Comment** plus current note read access; note edit permission and API editability are not required. Existing/new credentials default Comment off. Agent message edits/deletes remain author-only; reactions toggle only the current actor's emoji. Only anchored creation/remapping requires the current content hash. Never retry mutations automatically after an uncertain result. Installed Pi adapter/skill updates are deferred separately; source support is not proof of installed, registered or deployed availability.
 
 Tags are available because they already have user-facing Note Details behavior. Broader graph inspection—including outgoing links, backlinks, and orphan discovery—is intentionally not exposed through MCP yet; those product and UI semantics are deferred.
 

@@ -199,7 +199,6 @@ export type CommentThread = {
   id: string;
   noteId: string;
   status: 'open' | 'resolved';
-  anchor: CommentAnchor;
   createdBy: CommentActor;
   authoredByCurrentActor: boolean;
   resolvedBy: CommentActor | null;
@@ -207,7 +206,7 @@ export type CommentThread = {
   createdAt: string;
   updatedAt: string;
   messages: CommentMessage[];
-};
+} & ({ target: 'note'; anchor: null } | { target: 'text'; anchor: CommentAnchor });
 export type NoteCommentsResponse = { noteId: string; documentHash: string; threads: CommentThread[] };
 export type CommentAnchorInput = Omit<CommentAnchor, 'detached'> & { detached?: boolean };
 export type NoteShareLink = {
@@ -931,8 +930,11 @@ export const api = {
   ) => request<{ note: Note }>(`/folders/${folderId}/notes`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
   note: (noteId: string) => request<NoteResponse>(`/notes/${noteId}`),
   noteStatus: (noteId: string) => request<NoteStatus>(`/notes/${noteId}/status`),
-  noteComments: (noteId: string) => request<NoteCommentsResponse>(`/notes/${noteId}/comments`),
-  createCommentThread: (noteId: string, data: { body: string; anchor: CommentAnchorInput }) =>
+  noteComments: (noteId: string) => request<NoteCommentsResponse>(`/notes/${noteId}/comments?includeNoteComments=true`),
+  createCommentThread: (
+    noteId: string,
+    data: { body: string } & ({ target: 'note' } | { target?: 'text'; anchor: CommentAnchorInput })
+  ) =>
     request<{ thread: CommentThread }>(`/notes/${noteId}/comments`, {
       method: 'POST',
       body: JSON.stringify(data),

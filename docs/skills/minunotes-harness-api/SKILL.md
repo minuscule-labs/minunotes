@@ -129,7 +129,7 @@ The generated Postman Templates group captures preview tokens/defaults/frozen va
 Treat canonical edits and Review comments as different collaboration modes:
 
 - For an explicit, narrow edit request, read the current note, capture a fresh `contentHash`, make only the requested change, and summarize the changed sections afterward. Do not require another approval or pre-edit diff.
-- For feedback, review, or suggestion requests—or when the connection can comment but cannot edit—use Review comments rather than changing canonical content.
+- For discussion or feedback—or when the connection can comment but cannot edit—use comments rather than changing canonical content. Use whole-note discussion for general decisions/questions and anchored Review for specific wording.
 - Before a broad rewrite, substantial deletion, structural reorganization, or ambiguous change, present a concise plan or proposed diff and request approval.
 - When another collaborator's intent is uncertain, prefer an anchored comment or ask the user instead of silently rewriting their work.
 - On `409`, do not overwrite or automatically replay the stale patch. Read the latest note, rebase the proposed change, and request approval if the rebased diff is materially different.
@@ -289,11 +289,17 @@ curl -s "${AUTH[@]}" \
   }'
 ```
 
-Review comments on Markdown notes (message bodies are plain text, not Markdown):
+General discussion and anchored Review on active Markdown notes (plain-text messages, separate from canonical content):
 
 ```bash
-# List threads and ordered messages
-curl -s "${AUTH[@]}" "$API/v1/harness/notes/note_xxx/comments"
+# List both explicit targets; note-target threads have anchor: null.
+# Omit includeNoteComments for legacy anchored-only reads.
+curl -s "${AUTH[@]}" "$API/v1/harness/notes/note_xxx/comments?includeNoteComments=true"
+
+# A general decision needs no body read solely for a hash, quote or offsets.
+curl -s "${AUTH[@]}" \
+  -X POST "$API/v1/harness/notes/note_xxx/comments" \
+  -d '{"body":"Blocked until API delivery.","target":"note"}'
 
 # Create a range thread using zero-based Markdown offsets and the current contentHash
 curl -s "${AUTH[@]}" \
@@ -315,7 +321,7 @@ curl -s "${AUTH[@]}" \
   -d '{"emoji":"🎉"}'
 ```
 
-Message bodies are plain text and Markdown syntax is not rendered. Messages include grouped reaction counts and `reactedByCurrentActor`. Reactions accept one standard Unicode emoji, including joined and skin-tone emoji; `👍`, `❤️`, `😂`, `🎉`, `👀`, and `🚀` are the human UI's quick defaults. Every comment operation requires explicit Comment permission plus read access. Note edit permission and `isApiEditable` are not required for comments. Existing and new credentials have Comment disabled until the owner grants it. Message edits/deletes are author-only. Use the current document hash for creation and anchor updates; stale anchors return `409`. When a listed thread is `detached`, do not guess a replacement location. Comments are unavailable for canvases, templates, Trash, and public shares.
+Message bodies are plain text and Markdown syntax is not rendered. Messages include grouped reaction counts and `reactedByCurrentActor`. Reactions accept one standard Unicode emoji, including joined and skin-tone emoji; `👍`, `❤️`, `😂`, `🎉`, `👀`, and `🚀` are the human UI's quick defaults. Every comment operation requires explicit Comment permission plus read access. Note edit permission and `isApiEditable` are not required for comments. Existing and new credentials have Comment disabled until the owner grants it. Message edits/deletes are author-only. Use general discussion for whole-note progress/decisions/questions and anchored Review for particular wording. General threads have no anchor, survive body edits/renames, never detach and cannot be remapped. Text targets require a current document hash for creation/anchor updates; stale anchors return `409`. Explicit `target: "text"` with an anchor and legacy anchor-only creation are supported. Missing/mixed/unknown targets are rejected. When an anchored thread is detached, do not guess a replacement. No automatic mutation retries: preserve drafts and verify uncertain outcomes before another intentional submission. Comments remain unavailable for canvases, templates, Trash and public shares. Repository support does not prove deployed availability, and the installed Pi adapter/skills update is a separate deferred follow-up.
 
 Create canvases from JSON Canvas, Minu diagram syntax, or the supported Mermaid flowchart subset.
 

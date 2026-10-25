@@ -79,6 +79,7 @@ const collection = {
 };
 
 const bodyExamples: Record<string, unknown> = {
+  CreateCommentThreadRequest: { body: 'A decision about the whole note.', target: 'note' },
   TemplateCreation: {
     folderId: '{{folderId}}',
     templateId: '{{templateId}}',
@@ -157,6 +158,7 @@ function exampleForParameter(parameter: NonNullable<OpenApiOperation['parameters
   if (parameter.name === 'limit') return '10';
   if (parameter.name === 'cursor') return `{{${cursorVariable(operationId)}}}`;
   if (parameter.name === 'caseSensitive') return 'false';
+  if (parameter.name === 'includeNoteComments') return 'true';
   if (parameter.name === 'from') return '1';
   if (parameter.name === 'to') return '80';
   if (parameter.name === 'baseHash') return '{{baseHash}}';
@@ -244,7 +246,7 @@ function makeRequest(path: string, method: string, operation: OpenApiOperation):
     .map((parameter) => ({
       key: parameter.name,
       value: exampleForParameter(parameter, operation.operationId),
-      disabled: !parameter.required,
+      disabled: !parameter.required && parameter.name !== 'includeNoteComments',
     }));
   const rawPath = path.replace(/\{([^}]+)\}/g, (_, name: string) => pathVariableExamples[name] ?? `{{${name}}}`);
   const raw = `{{baseUrl}}${rawPath}${query.length ? `?${query.map((item) => `${item.key}=${item.value}`).join('&')}` : ''}`;

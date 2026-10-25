@@ -3,6 +3,34 @@ import { describe, expect, it } from 'vitest';
 import app from '../src/api/index';
 
 describe('harness OpenAPI spec', () => {
+  it('describes explicit comment targets and keeps upgraded Postman reads compatible with general creation', async () => {
+    const spec = await (await app.request('/v1/openapi.json')).json();
+    const create = spec.components.schemas.CreateCommentThreadRequest.oneOf;
+    expect(create[0]).toMatchObject({
+      required: ['body', 'target'],
+      additionalProperties: false,
+      properties: { target: { enum: ['note'] } },
+    });
+    expect(create[0].properties).not.toHaveProperty('anchor');
+    expect(create[1]).toMatchObject({ required: ['body', 'anchor'], properties: { target: { enum: ['text'] } } });
+    expect(spec.components.schemas.CommentThread.oneOf).toEqual([
+      { properties: { target: { const: 'note' }, anchor: { type: 'null' } } },
+      { properties: { target: { const: 'text' }, anchor: { $ref: '#/components/schemas/CommentAnchor' } } },
+    ]);
+    expect(spec.paths['/v1/harness/notes/{noteId}/comments'].get.parameters).toContainEqual(
+      expect.objectContaining({ name: 'includeNoteComments', schema: { type: 'boolean', default: false } })
+    );
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const review = collection.item.find((item: { name: string }) => item.name === 'Review');
+    const list = review.item.find((item: { request: { method: string } }) => item.request.method === 'GET');
+    expect(list.request.url.query).toContainEqual({ key: 'includeNoteComments', value: 'true', disabled: false });
+    const post = review.item.find(
+      (item: { request: { method: string; url: { path: string[] } } }) =>
+        item.request.method === 'POST' && item.request.url.path.at(-1) === 'comments'
+    );
+    expect(JSON.parse(post.request.body.raw)).toEqual({ body: 'A decision about the whole note.', target: 'note' });
+  });
+
   it('describes Select regrouping and archive guards without adding board endpoints', async () => {
     const spec = await (await app.request('/openapi.json')).json();
     const patch = spec.paths['/v1/harness/notes/{noteId}/properties'].patch.description;

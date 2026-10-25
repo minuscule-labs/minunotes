@@ -75,12 +75,12 @@ export function NoteCommentDialog({
   if (!open || (!draftAnchor && !thread)) return null;
 
   const submit = async () => {
-    if (!body.trim()) return;
+    if (busy || !body.trim()) return;
     if (draftAnchor) await onCreate(body, draftAnchor);
     else if (thread) await onReply(thread.id, body);
     setBody('');
   };
-  const quote = draftAnchor?.quote ?? thread?.anchor.quote ?? '';
+  const quote = draftAnchor?.quote ?? thread?.anchor?.quote ?? '';
   const canChangeStatus = Boolean(thread && (canManageAnyThread || thread.authoredByCurrentActor));
   const canDeleteThread = Boolean(thread && (canModerate || thread.authoredByCurrentActor));
   const anchoredStyle =
@@ -127,7 +127,7 @@ export function NoteCommentDialog({
           <CommentMarkdownPreview value={quote} />
         </blockquote>
 
-        {thread?.anchor.detached ? (
+        {thread?.anchor?.detached ? (
           <p className="rounded bg-[var(--notes-panel-muted)] px-2 py-1.5 text-[var(--notes-muted)] text-xs">
             The original text could not be reattached.
           </p>

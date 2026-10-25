@@ -64,9 +64,14 @@ function NoteView() {
     queryFn: () => api.backlinks(noteId),
     enabled: Boolean(data?.note && data.note.documentType === 'markdown'),
   });
-  const { data: commentsData } = useQuery({
+  const {
+    data: commentsData,
+    error: commentsReadError,
+    isPending: commentsLoading,
+  } = useQuery({
     queryKey: ['note-comments', noteId],
     queryFn: () => api.noteComments(noteId),
+    retry: (count, error) => !(error instanceof ApiError && [403, 404].includes(error.status)) && count < 2,
     enabled: Boolean(canComment && data?.note && data.note.documentType === 'markdown' && data.note.type === 'note'),
   });
   const [title, setTitle] = useState('');
@@ -98,6 +103,19 @@ function NoteView() {
   } | null>(null);
   const [mappedAnchors, setMappedAnchors] = useState<Record<string, EditorCommentAnchor>>({});
   const [commentError, setCommentError] = useState<string | null>(null);
+  const discussionComposer = useRef<HTMLTextAreaElement | null>(null);
+  const activeNoteId = useRef(noteId);
+  activeNoteId.current = noteId;
+  const commentAccessDenied = commentsReadError instanceof ApiError && [403, 404].includes(commentsReadError.status);
+  useEffect(() => {
+    setReviewOpen(false);
+    setCommentDialogOpen(false);
+    setSelectedThreadId(null);
+    setDraftCommentAnchor(null);
+    setReviewFocus(null);
+    setMappedAnchors({});
+    setCommentError(null);
+  }, [noteId, commentAccessDenied]);
   const [emptyDraftCleanupActive, setEmptyDraftCleanupActive] = useState(false);
   const hydratedNoteId = useRef<string | null>(null);
   const lastSaved = useRef({ title: '', content: '' });
@@ -247,7 +265,6 @@ function NoteView() {
   const isSaving = save.isPending;
   const commentMutation = useMutation({
     mutationFn: (operation: () => Promise<unknown>) => operation(),
-    onError: (error) => setCommentError(error instanceof Error ? error.message : 'Comment action failed'),
   });
   const blocker = useBlocker({
     shouldBlockFn: () =>
@@ -400,7 +417,14 @@ function NoteView() {
 
   const runCommentAction = async <T,>(operation: () => Promise<T>) => {
     setCommentError(null);
-    return (await commentMutation.mutateAsync(operation)) as T;
+    const requestNoteId = noteId;
+    try {
+      return (await commentMutation.mutateAsync(operation)) as T;
+    } catch (error) {
+      if (activeNoteId.current === requestNoteId)
+        setCommentError(error instanceof Error ? error.message : 'Comment action failed');
+      throw error;
+    }
   };
 
   const updateCommentCache = (update: (current: NoteCommentsResponse) => NoteCommentsResponse) => {
@@ -437,6 +461,7 @@ function NoteView() {
   };
 
   const focusCommentThread = (thread: CommentThread) => {
+    if (activeNoteId.current !== thread.noteId || thread.target !== 'text') return;
     setSelectedThreadId(thread.id);
     setDraftCommentAnchor(null);
     setReviewFocus({
@@ -495,32 +520,34 @@ function NoteView() {
 
   const editorComments = useMemo<EditorComment[]>(
     () =>
-      (commentsData?.threads ?? []).map((thread) => {
-        const mapped = mappedAnchors[thread.id];
-        const anchor = mapped ?? {
-          anchorType: thread.anchor.anchorType,
-          from: thread.anchor.from,
-          to: thread.anchor.to,
-          quote: thread.anchor.quote,
-          prefix: thread.anchor.prefix,
-          suffix: thread.anchor.suffix,
-          documentVersion: thread.anchor.documentHash,
-          detached: thread.anchor.detached,
-        };
-        return {
-          id: thread.id,
-          body: thread.messages[0]?.body ?? 'Comment thread',
-          status: thread.status,
-          anchor,
-          author: {
-            id: thread.createdBy.key,
-            name: thread.createdBy.label,
-            type: thread.createdBy.type === 'agent' ? 'agent' : 'user',
-          },
-          createdAt: thread.createdAt,
-          updatedAt: thread.updatedAt,
-        };
-      }),
+      (commentsData?.threads ?? [])
+        .filter((thread) => thread.target === 'text')
+        .map((thread) => {
+          const mapped = mappedAnchors[thread.id];
+          const anchor = mapped ?? {
+            anchorType: thread.anchor.anchorType,
+            from: thread.anchor.from,
+            to: thread.anchor.to,
+            quote: thread.anchor.quote,
+            prefix: thread.anchor.prefix,
+            suffix: thread.anchor.suffix,
+            documentVersion: thread.anchor.documentHash,
+            detached: thread.anchor.detached,
+          };
+          return {
+            id: thread.id,
+            body: thread.messages[0]?.body ?? 'Comment thread',
+            status: thread.status,
+            anchor,
+            author: {
+              id: thread.createdBy.key,
+              name: thread.createdBy.label,
+              type: thread.createdBy.type === 'agent' ? 'agent' : 'user',
+            },
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
+          };
+        }),
     [commentsData?.threads, mappedAnchors]
   );
 
@@ -704,9 +731,16 @@ function NoteView() {
         anchor: toCommentAnchorInput(anchor, documentHash),
       });
       cacheThread(created.thread);
-      setDraftCommentAnchor(null);
-      focusCommentThread(created.thread);
+      if (activeNoteId.current === noteId) {
+        setDraftCommentAnchor(null);
+        focusCommentThread(created.thread);
+      }
     });
+  };
+  const createGeneralComment = async (body: string) => {
+    const created = await runCommentAction(() => api.createCommentThread(noteId, { body, target: 'note' }));
+    cacheThread(created.thread);
+    if (activeNoteId.current === noteId) setSelectedThreadId(created.thread.id);
   };
   const replyToComment = async (threadId: string, body: string) => {
     const response = await runCommentAction(() => api.addCommentReply(noteId, threadId, body));
@@ -795,7 +829,7 @@ function NoteView() {
       ...current,
       threads: current.threads.filter((thread) => thread.id !== threadId),
     }));
-    if (selectedThreadId === threadId) {
+    if (activeNoteId.current === noteId && selectedThreadId === threadId) {
       setSelectedThreadId(null);
       setCommentDialogOpen(false);
     }
@@ -804,8 +838,8 @@ function NoteView() {
   const reviewPanel = (
     <>
       <NoteCommentsPanel
-        open={reviewOpen}
-        threads={commentsData?.threads ?? []}
+        open={reviewOpen && !commentAccessDenied}
+        threads={commentsData?.threads.filter((thread) => thread.target === 'text') ?? []}
         selectedThreadId={selectedThreadId}
         busy={commentMutation.isPending || save.isPending}
         error={commentError}
@@ -821,9 +855,9 @@ function NoteView() {
         onToggleReaction={toggleCommentReaction}
       />
       <NoteCommentDialog
-        open={commentDialogOpen}
+        open={commentDialogOpen && !commentAccessDenied}
         position={commentDialogPosition}
-        thread={selectedThread}
+        thread={selectedThread?.target === 'text' ? selectedThread : null}
         draftAnchor={draftCommentAnchor}
         busy={commentMutation.isPending || save.isPending}
         error={commentError}
@@ -845,21 +879,41 @@ function NoteView() {
   );
   const actions = (
     <>
-      {!emptyDraftCleanupActive && canComment && data.note.documentType === 'markdown' && data.note.type === 'note' ? (
-        <button
-          type="button"
-          className="rounded-md p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
-          onClick={() => {
-            setCommentDialogOpen(false);
-            setDraftCommentAnchor(null);
-            setReviewOpen(true);
-          }}
-          aria-label="Open Review"
-          aria-expanded={reviewOpen}
-          title="Review comments"
-        >
-          <MessageSquare className="h-4 w-4" />
-        </button>
+      {!emptyDraftCleanupActive &&
+      canComment &&
+      !commentAccessDenied &&
+      data.note.documentType === 'markdown' &&
+      data.note.type === 'note' ? (
+        <>
+          <button
+            type="button"
+            className="rounded-md px-2 py-2 text-[var(--notes-muted)] text-xs hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
+            onClick={() => {
+              setReviewOpen(false);
+              setCommentDialogOpen(false);
+              discussionComposer.current?.closest('section')?.scrollIntoView({ block: 'start' });
+              discussionComposer.current?.focus({ preventScroll: true });
+            }}
+            aria-label="Discussion"
+            aria-controls="note-discussion"
+          >
+            Discussion
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-2 text-[var(--notes-muted)] hover:bg-[var(--notes-hover)] hover:text-[var(--notes-text)]"
+            onClick={() => {
+              setCommentDialogOpen(false);
+              setDraftCommentAnchor(null);
+              setReviewOpen(true);
+            }}
+            aria-label="Open Review"
+            aria-expanded={reviewOpen}
+            title="Review comments"
+          >
+            <MessageSquare className="h-4 w-4" />
+          </button>
+        </>
       ) : null}
       {emptyDraftCleanupActive ? (
         <span role="status" className="notes-muted px-2 text-xs">
@@ -1085,8 +1139,41 @@ function NoteView() {
         staleNotice={staleNotice}
         onImageUpload={canEdit ? uploadImage : undefined}
         wikiLinks={wikiLinks}
-        comments={canComment && data.note.type === 'note' ? commentsConfig : undefined}
-        reviewPanel={reviewPanel}
+        comments={canComment && !commentAccessDenied && data.note.type === 'note' ? commentsConfig : undefined}
+        reviewPanel={canComment && !commentAccessDenied ? reviewPanel : undefined}
+        discussionPanel={
+          canComment && !commentAccessDenied && data.note.type === 'note' ? (
+            <div id="note-discussion" key={noteId}>
+              <NoteCommentsPanel
+                key={noteId}
+                inline
+                open
+                composerRef={discussionComposer}
+                threads={commentsData?.threads.filter((thread) => thread.target === 'note') ?? []}
+                selectedThreadId={selectedThreadId}
+                busy={commentMutation.isPending}
+                loading={commentsLoading}
+                error={commentError ?? commentsReadError?.message}
+                canManageAnyThread={canEdit}
+                canModerate={isOwner}
+                onClose={() => undefined}
+                onSelect={(thread) => {
+                  setReviewOpen(false);
+                  setCommentDialogOpen(false);
+                  setReviewFocus(null);
+                  setSelectedThreadId(thread.id);
+                }}
+                onCreate={createGeneralComment}
+                onReply={replyToComment}
+                onStatusChange={changeCommentStatus}
+                onEditMessage={editCommentMessage}
+                onDeleteMessage={deleteCommentMessage}
+                onDeleteThread={deleteCommentThread}
+                onToggleReaction={toggleCommentReaction}
+              />
+            </div>
+          ) : undefined
+        }
         reviewFocus={reviewFocus}
         onCommentAnchorPosition={setCommentDialogPosition}
         actions={actions}

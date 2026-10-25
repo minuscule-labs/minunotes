@@ -835,13 +835,13 @@ export const noteCommentThreads = sqliteTable(
     status: text('status', { enum: ['open', 'resolved'] })
       .notNull()
       .default('open'),
-    anchorType: text('anchor_type', { enum: ['range', 'line'] }).notNull(),
-    anchorFrom: integer('anchor_from').notNull(),
-    anchorTo: integer('anchor_to').notNull(),
-    quote: text('quote').notNull(),
+    anchorType: text('anchor_type', { enum: ['note', 'range', 'line'] }).notNull(),
+    anchorFrom: integer('anchor_from'),
+    anchorTo: integer('anchor_to'),
+    quote: text('quote'),
     prefix: text('prefix'),
     suffix: text('suffix'),
-    documentHash: text('document_hash').notNull(),
+    documentHash: text('document_hash'),
     detached: integer('detached', { mode: 'boolean' }).notNull().default(false),
     createdByActorType: text('created_by_actor_type', { enum: ['user', 'agent'] }).notNull(),
     createdByActorId: text('created_by_actor_id'),
@@ -852,6 +852,10 @@ export const noteCommentThreads = sqliteTable(
     updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
+    check(
+      'note_comment_threads_target_check',
+      sql`(${table.anchorType} = 'note' and ${table.anchorFrom} is null and ${table.anchorTo} is null and ${table.quote} is null and ${table.prefix} is null and ${table.suffix} is null and ${table.documentHash} is null and ${table.detached} = 0) or (${table.anchorType} in ('range', 'line') and ${table.anchorFrom} is not null and ${table.anchorTo} is not null and ${table.quote} is not null and ${table.documentHash} is not null)`
+    ),
     index('note_comment_threads_user_note_updated_at_idx').on(table.userId, table.noteId, table.updatedAt),
     index('note_comment_threads_note_status_idx').on(table.noteId, table.status),
     uniqueIndex('note_comment_threads_id_note_user_idx').on(table.id, table.noteId, table.userId),

@@ -75,7 +75,12 @@ function tools(server: unknown) {
     server as {
       _registeredTools: Record<
         string,
-        { annotations: unknown; description?: string; handler: (args: never) => Promise<unknown> }
+        {
+          annotations: unknown;
+          description?: string;
+          inputSchema: { safeParse: (args: unknown) => { success: boolean } };
+          handler: (args: never) => Promise<unknown>;
+        }
       >;
     }
   )._registeredTools;
@@ -263,6 +268,33 @@ describe('createNotesMcpServer', () => {
 
     expect(client.notes.trash).toHaveBeenCalledWith('note-1');
     expect(client.folders.trash).toHaveBeenCalledWith('folder-1');
+  });
+
+  it('registers and forwards explicit general targets without erasing malformed intent', async () => {
+    const client = mockClient();
+    const registered = tools(createNotesMcpServer(client as never));
+    const tool = registered.notes_create_comment;
+    const general = { noteId: 'note-1', body: 'Decision', target: 'note' };
+    const anchor = { anchorType: 'range', from: 0, to: 4, quote: 'Body', documentHash: 'hash' };
+    for (const valid of [
+      general,
+      { noteId: 'note-1', body: 'Review', anchor },
+      { noteId: 'note-1', body: 'Review', target: 'text', anchor },
+    ])
+      expect(tool.inputSchema.safeParse(valid).success).toBe(true);
+    for (const invalid of [
+      { noteId: 'note-1', body: 'Missing' },
+      { ...general, target: 'unknown' },
+      { ...general, anchor },
+      { ...general, anchor: null },
+      { ...general, documentHash: 'fake' },
+      { ...general, target: 'text' },
+      { ...general, target: 'text', anchor: { ...anchor, target: 'note' } },
+    ])
+      expect(tool.inputSchema.safeParse(invalid).success).toBe(false);
+    await tool.handler(general as never);
+    expect(client.comments.create).toHaveBeenCalledWith('note-1', { body: 'Decision', target: 'note' });
+    expect(client.notes.get).not.toHaveBeenCalled();
   });
 
   it('manages anchored Review comments', async () => {

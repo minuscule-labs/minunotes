@@ -38,6 +38,7 @@ import {
   deleteCommentMessage,
   deleteCommentThread,
   listCommentThreads,
+  parseCommentTarget,
   setCommentThreadStatus,
   toggleCommentReaction,
   updateCommentAnchor,
@@ -488,6 +489,7 @@ noteRoutes.get('/:noteId/comments', async (c) => {
     noteId: c.req.param('noteId'),
     userId: context.access.resourceOwnerUserId,
     actor: { type: 'user', id: context.actor.id },
+    includeNoteComments: c.req.query('includeNoteComments') === 'true',
   });
   if (!result.ok) return commentErrorResponse(c, result);
   return c.json(result.value);
@@ -498,17 +500,19 @@ noteRoutes.post('/:noteId/comments', async (c) => {
   if (context instanceof Response) return context;
   const body = (await c.req.json().catch(() => null)) as {
     body?: string;
+    target?: unknown;
     anchor?: CommentAnchorInput;
   } | null;
   if (!body) return c.json({ error: 'Invalid JSON' }, 400);
   if (typeof body.body !== 'string') return c.json({ error: 'Comment body is required' }, 400);
-  if (!body.anchor) return c.json({ error: 'Comment anchor is required' }, 400);
+  const target = parseCommentTarget(body);
+  if (!target.ok) return commentErrorResponse(c, target);
   const result = await createCommentThread({
     noteId: c.req.param('noteId'),
     userId: context.access.resourceOwnerUserId,
     actor: { type: 'user', id: context.actor.id },
     body: body.body,
-    anchor: body.anchor,
+    ...target.value,
   });
   if (!result.ok) return commentErrorResponse(c, result);
   return c.json(result.value, 201);

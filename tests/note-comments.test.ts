@@ -19,7 +19,7 @@ type ThreadResponse = {
 type MessageResponse = { message: { id: string } };
 
 async function runMigrations(libsql: { executeMultiple: (sql: string) => Promise<unknown> }) {
-  for (let index = 0; index <= 40; index += 1) {
+  for (let index = 0; index <= 45; index += 1) {
     const [file] = await Array.fromAsync(
       (await import('node:fs/promises')).glob(`drizzle/${String(index).padStart(4, '0')}_*.sql`)
     );
@@ -205,6 +205,348 @@ function rangeAnchor(documentHash: string, extras: Record<string, unknown> = {})
 }
 
 describe('note comments', () => {
+  it('persists general discussion independently of content and preserves legacy anchored reads', async () => {
+    const { ownerApp, harnessApp, db, schema, note, hashMarkdown } = await setupApp();
+    await db.update(schema.notes).set({ isApiEditable: false }).where(eq(schema.notes.id, note.id));
+    const before = await db.select().from(schema.notes).where(eq(schema.notes.id, note.id));
+    const created = await harnessApp.request(
+      `/v1/harness/notes/${note.id}/comments`,
+      jsonRequest('POST', {
+        target: 'note',
+        body: '  Whole-note decision  ',
+      })
+    );
+    expect(created.status).toBe(201);
+    const { thread } = await created.json();
+    expect(thread).toMatchObject({ target: 'note', anchor: null, messages: [{ body: 'Whole-note decision' }] });
+    expect(await db.select().from(schema.notes).where(eq(schema.notes.id, note.id))).toEqual(before);
+    expect(await db.select().from(schema.noteVersions)).toEqual([]);
+    expect(await db.select().from(schema.notePropertyState)).toEqual([]);
+    const anchored = await ownerApp.request(
+      `/internal/notes/${note.id}/comments`,
+      jsonRequest('POST', {
+        body: 'Specific wording',
+        anchor: rangeAnchor(hashMarkdown(note.content)),
+      })
+    );
+    expect(anchored.status).toBe(201);
+    const legacy = await ownerApp.request(`/internal/notes/${note.id}/comments`);
+    expect((await legacy.json()).threads).toMatchObject([{ target: 'text', anchor: { quote: 'beta' } }]);
+    const reply = await ownerApp.request(
+      `/internal/notes/${note.id}/comments/${thread.id}/replies`,
+      jsonRequest('POST', { body: 'Follow-up' })
+    );
+    expect(reply.status).toBe(201);
+    const replyId = (await reply.json()).message.id;
+    expect(
+      (
+        await ownerApp.request(
+          `/internal/notes/${note.id}/comments/${thread.id}/messages/${replyId}/reactions`,
+          jsonRequest('POST', { emoji: '👍' })
+        )
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await ownerApp.request(
+          `/internal/notes/${note.id}/comments/${thread.id}/messages/${replyId}`,
+          jsonRequest('PATCH', { body: 'Edited follow-up' })
+        )
+      ).status
+    ).toBe(200);
+    const storedBefore = await db
+      .select()
+      .from(schema.noteCommentThreads)
+      .where(eq(schema.noteCommentThreads.id, thread.id));
+    await db.update(schema.notes).set({ title: 'Renamed', content: '' }).where(eq(schema.notes.id, note.id));
+    for (const [app, prefix] of [
+      [ownerApp, '/internal'],
+      [harnessApp, '/v1/harness'],
+    ] as const) {
+      const mixed = await app.request(`${prefix}/notes/${note.id}/comments?includeNoteComments=true`);
+      expect(mixed.status).toBe(200);
+      const data = await mixed.json();
+      expect(data.threads).toHaveLength(2);
+      expect(data.threads.find((candidate: { id: string }) => candidate.id === thread.id)).toMatchObject({
+        target: 'note',
+        anchor: null,
+        messages: [
+          { body: 'Whole-note decision' },
+          { body: 'Edited follow-up', reactions: [{ emoji: '👍', count: 1 }] },
+        ],
+      });
+    }
+    expect(
+      await db.select().from(schema.noteCommentThreads).where(eq(schema.noteCommentThreads.id, thread.id))
+    ).toEqual(storedBefore);
+    expect(
+      (
+        await ownerApp.request(
+          `/internal/notes/${note.id}/comments/${thread.id}/anchor`,
+          jsonRequest('PATCH', {
+            anchor: rangeAnchor(hashMarkdown('')),
+          })
+        )
+      ).status
+    ).toBe(400);
+    expect(
+      (await harnessApp.request(`/v1/harness/notes/${note.id}/comments/${thread.id}/resolve`, jsonRequest('POST', {})))
+        .status
+    ).toBe(200);
+    expect(
+      (await harnessApp.request(`/v1/harness/notes/${note.id}/comments/${thread.id}/reopen`, jsonRequest('POST', {})))
+        .status
+    ).toBe(200);
+    expect(
+      (
+        await ownerApp.request(`/internal/notes/${note.id}/comments/${thread.id}/messages/${replyId}`, {
+          method: 'DELETE',
+        })
+      ).status
+    ).toBe(200);
+    const deleted = await harnessApp.request(
+      `/v1/harness/notes/${note.id}/comments/${thread.id}/messages/${thread.messages[0].id}`,
+      { method: 'DELETE' }
+    );
+    expect(deleted.status).toBe(200);
+    expect(
+      await db.select().from(schema.noteCommentThreads).where(eq(schema.noteCommentThreads.id, thread.id))
+    ).toEqual([]);
+    expect(
+      await db.select().from(schema.noteCommentMessages).where(eq(schema.noteCommentMessages.threadId, thread.id))
+    ).toEqual([]);
+  });
+
+  it('rejects missing, mixed and malformed targets on both human and Harness boundaries', async () => {
+    const { ownerApp, harnessApp, note, hashMarkdown, db, schema } = await setupApp();
+    const anchor = rangeAnchor(hashMarkdown(note.content));
+    const invalid = [
+      { body: 'Missing' },
+      { body: 'Unknown', target: 'other' },
+      { body: 'Mixed', target: 'note', anchor },
+      { body: 'Null anchor', target: 'note', anchor: null },
+      { body: 'Wrong level', target: 'note', documentHash: 'hash' },
+      { body: 'Unknown mixed field', target: 'note', anchorFrom: 0 },
+      { body: 'Malformed nested target', target: 'text', anchor: { ...anchor, target: 'note' } },
+      { body: 'Missing anchor', target: 'text' },
+      { body: 'Bad anchor', target: 'text', anchor: {} },
+      { body: 'Bad anchor', anchor: [] },
+      { body: 'Bad quote', anchor: { ...anchor, quote: null } },
+      { body: 'Bad offset', anchor: { ...anchor, from: 0.5 } },
+      { body: ' ', target: 'note' },
+      { body: 'x'.repeat(10_001), target: 'note' },
+    ];
+    for (const [app, prefix] of [
+      [ownerApp, '/internal'],
+      [harnessApp, '/v1/harness'],
+    ] as const) {
+      for (const payload of invalid) {
+        const response = await app.request(`${prefix}/notes/${note.id}/comments`, jsonRequest('POST', payload));
+        expect(response.status, JSON.stringify(payload).slice(0, 150)).toBe(400);
+      }
+      const explicit = await app.request(
+        `${prefix}/notes/${note.id}/comments`,
+        jsonRequest('POST', { body: 'Explicit Review', target: 'text', anchor })
+      );
+      expect(explicit.status).toBe(201);
+      const stale = await app.request(
+        `${prefix}/notes/${note.id}/comments`,
+        jsonRequest('POST', { body: 'Stale', target: 'text', anchor: { ...anchor, documentHash: 'stale' } })
+      );
+      expect(stale.status).toBe(409);
+    }
+    expect(await db.select().from(schema.noteCommentThreads)).toHaveLength(2);
+  });
+
+  it('keeps general discussion permission, privacy and resource boundaries', async () => {
+    const f = await setupApp();
+    const { ownerApp, collaboratorApp, harnessApp, note, db, schema, owner, otherUser } = f;
+    const now = new Date();
+    await db.insert(schema.collaborationGrants).values({
+      id: 'general_grant',
+      ownerUserId: owner.id,
+      granteeUserId: otherUser.id,
+      noteId: note.id,
+      folderId: null,
+      role: 'commenter',
+      createdByUserId: owner.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const own = await ownerApp.request(
+      `/internal/notes/${note.id}/comments`,
+      jsonRequest('POST', { target: 'note', body: 'Owner discussion' })
+    );
+    const ownerThread = (await own.json()).thread;
+    const shared = await collaboratorApp.request(
+      `/internal/notes/${note.id}/comments`,
+      jsonRequest('POST', { target: 'note', body: 'Commenter discussion' })
+    );
+    expect(shared.status).toBe(201);
+    const sharedThread = (await shared.json()).thread;
+    const read = await collaboratorApp.request(`/internal/notes/${note.id}/comments?includeNoteComments=true`);
+    expectPrivacySafeCollaborationDto(await read.json(), {
+      forbiddenValues: [owner.id, otherUser.id, owner.email, otherUser.email, 'general_grant', f.folder.id],
+    });
+    for (const suffix of [`${ownerThread.id}/resolve`, `${ownerThread.id}/messages/${ownerThread.messages[0].id}`]) {
+      const response = await collaboratorApp.request(
+        `/internal/notes/${note.id}/comments/${suffix}`,
+        jsonRequest(suffix.endsWith('/resolve') ? 'POST' : 'PATCH', { body: 'Overwrite' })
+      );
+      expect(response.status).toBe(403);
+    }
+    expect(
+      (
+        await harnessApp.request(
+          `/v1/harness/notes/${note.id}/comments/${ownerThread.id}/resolve`,
+          jsonRequest('POST', {})
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (await ownerApp.request(`/internal/notes/${note.id}/comments/${sharedThread.id}`, { method: 'DELETE' })).status
+    ).toBe(200);
+    await db
+      .update(schema.collaborationGrants)
+      .set({ role: 'viewer' })
+      .where(eq(schema.collaborationGrants.id, 'general_grant'));
+    expect((await collaboratorApp.request(`/internal/notes/${note.id}/comments?includeNoteComments=true`)).status).toBe(
+      403
+    );
+    expect(
+      (
+        await collaboratorApp.request(
+          `/internal/notes/${note.id}/comments`,
+          jsonRequest('POST', { target: 'note', body: 'Denied' })
+        )
+      ).status
+    ).toBe(403);
+    await db.delete(schema.collaborationGrants).where(eq(schema.collaborationGrants.id, 'general_grant'));
+    expect((await collaboratorApp.request(`/internal/notes/${note.id}/comments?includeNoteComments=true`)).status).toBe(
+      404
+    );
+    f.apiKey.canComment = false; // This fixture supplies the already-authenticated credential snapshot.
+    expect(
+      (
+        await harnessApp.request(
+          `/v1/harness/notes/${note.id}/comments`,
+          jsonRequest('POST', { target: 'note', body: 'Denied' })
+        )
+      ).status
+    ).toBe(403);
+    for (const id of [f.canvas.id, 'missing']) {
+      expect(
+        (
+          await ownerApp.request(
+            `/internal/notes/${id}/comments`,
+            jsonRequest('POST', { target: 'note', body: 'Unsupported' })
+          )
+        ).status
+      ).toBe(id === 'missing' ? 404 : 400);
+    }
+    await db.update(schema.notes).set({ deletedAt: now }).where(eq(schema.notes.id, note.id));
+    expect((await ownerApp.request(`/internal/notes/${note.id}/comments?includeNoteComments=true`)).status).toBe(404);
+    await db.update(schema.notes).set({ deletedAt: null }).where(eq(schema.notes.id, note.id));
+    expect(
+      (await (await ownerApp.request(`/internal/notes/${note.id}/comments?includeNoteComments=true`)).json()).threads
+    ).toHaveLength(1);
+    await db.delete(schema.notes).where(eq(schema.notes.id, note.id));
+    expect(await db.select().from(schema.noteCommentThreads)).toEqual([]);
+  });
+
+  it('supports scoped comment-only agents on a direct-note grant without exposing its hidden folder', async () => {
+    const f = await setupApp();
+    const { db, schema, note, owner, otherUser } = f;
+    const now = new Date();
+    await db.insert(schema.collaborationGrants).values({
+      id: 'direct_general',
+      ownerUserId: owner.id,
+      granteeUserId: otherUser.id,
+      noteId: note.id,
+      folderId: null,
+      role: 'commenter',
+      createdByUserId: owner.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const authorization = {
+      id: 'shared_comment_authorization',
+      userId: otherUser.id,
+      accessMode: 'all' as const,
+      sharedAccessMode: 'specific' as const,
+      canRead: true,
+      canComment: true,
+      canEdit: false,
+      canCreate: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const key = {
+      ...authorization,
+      authorizationId: authorization.id,
+      uid: 'SHARED01',
+      name: 'Shared reviewer',
+      hash: 'synthetic',
+      salt: 'synthetic',
+    };
+    await db.insert(schema.integrationAuthorizations).values(authorization);
+    await db.insert(schema.apiKeys).values(key);
+    await db.insert(schema.authorizationCollaborationScopes).values({
+      id: 'shared_comment_scope',
+      authorizationId: authorization.id,
+      userId: otherUser.id,
+      collaborationGrantId: 'direct_general',
+      createdAt: now,
+    });
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('user', otherUser);
+      c.set('session', null);
+      c.set('apiKey', key);
+      c.set('oauthAuthorization', null);
+      await next();
+    });
+    app.route('/v1/harness', (await import('../src/api/routes/harness')).harnessRoutes);
+    const created = await app.request(
+      `/v1/harness/notes/${note.id}/comments`,
+      jsonRequest('POST', { target: 'note', body: 'Direct-note general decision' })
+    );
+    expect(created.status).toBe(201);
+    const dto = await created.json();
+    expect(dto.thread).toMatchObject({ target: 'note', anchor: null });
+    expectPrivacySafeCollaborationDto(dto, {
+      forbiddenValues: [
+        owner.id,
+        otherUser.id,
+        f.folder.id,
+        authorization.id,
+        owner.email,
+        otherUser.email,
+        'direct_general',
+        'shared_comment_scope',
+      ],
+    });
+    const list = await app.request(`/v1/harness/notes/${note.id}/comments?includeNoteComments=true`);
+    expect(list.status).toBe(200);
+    const listed = await list.json();
+    expect(listed.threads).toHaveLength(1);
+    expectPrivacySafeCollaborationDto(listed, { forbiddenValues: [owner.id, f.folder.id, authorization.id] });
+    await db
+      .update(schema.collaborationGrants)
+      .set({ role: 'viewer' })
+      .where(eq(schema.collaborationGrants.id, 'direct_general'));
+    expect(
+      (
+        await app.request(
+          `/v1/harness/notes/${note.id}/comments`,
+          jsonRequest('POST', { target: 'note', body: 'Denied after downgrade' })
+        )
+      ).status
+    ).toBe(404);
+    await db.delete(schema.collaborationGrants).where(eq(schema.collaborationGrants.id, 'direct_general'));
+    expect((await app.request(`/v1/harness/notes/${note.id}/comments?includeNoteComments=true`)).status).toBe(404);
+  });
+
   it('counts the same reaction once per actor', async () => {
     const { ownerApp, collaboratorApp, db, schema, owner, otherUser, note, hashMarkdown } = await setupApp();
     await db.insert(schema.collaborationGrants).values({

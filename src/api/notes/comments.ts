@@ -55,20 +55,14 @@ export type SerializedCommentMessage = {
   reactions: SerializedCommentReaction[];
 };
 
+type SerializedCommentTarget =
+  | { target: 'note'; anchor: null }
+  | { target: 'text'; anchor: CommentAnchorInput & { detached: boolean } };
+
 export type SerializedCommentThread = {
   id: string;
   noteId: string;
   status: 'open' | 'resolved';
-  anchor: {
-    anchorType: 'range' | 'line';
-    from: number;
-    to: number;
-    quote: string;
-    prefix?: string;
-    suffix?: string;
-    documentHash: string;
-    detached: boolean;
-  };
   createdBy: SafeCommentActor;
   authoredByCurrentActor: boolean;
   resolvedBy: SafeCommentActor | null;
@@ -76,7 +70,67 @@ export type SerializedCommentThread = {
   createdAt: Date;
   updatedAt: Date;
   messages: SerializedCommentMessage[];
+} & SerializedCommentTarget;
+
+export type CommentCreateTarget = { target: 'note'; anchor?: never } | { target: 'text'; anchor: CommentAnchorInput };
+
+// Both routes and domain callers use this before discarding any request fields.
+export function parseCommentTarget(input: unknown): CommentOperationResult<CommentCreateTarget> {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    return { ok: false, status: 400, error: 'Invalid comment target' };
+  const value = input as Record<string, unknown>;
+  if (Object.keys(value).some((key) => !['body', 'target', 'anchor'].includes(key)))
+    return {
+      ok: false,
+      status: 400,
+      error: 'Unknown comment fields; anchor fields belong inside a text target anchor',
+    };
+  if (value.target === 'note') {
+    if ('anchor' in value) return { ok: false, status: 400, error: 'A note target cannot include an anchor' };
+    return { ok: true, value: { target: 'note' } };
+  }
+  if (value.target !== undefined && value.target !== 'text')
+    return { ok: false, status: 400, error: 'Comment target must be note or text' };
+  if (!value.anchor || typeof value.anchor !== 'object' || Array.isArray(value.anchor))
+    return { ok: false, status: 400, error: 'A text target requires a valid anchor' };
+  return { ok: true, value: { target: 'text', anchor: value.anchor as CommentAnchorInput } };
+}
+
+type TextStoredThread = NoteCommentThread & {
+  anchorType: 'range' | 'line';
+  anchorFrom: number;
+  anchorTo: number;
+  quote: string;
+  documentHash: string;
 };
+
+function isTextThread(thread: NoteCommentThread): thread is TextStoredThread {
+  return (
+    thread.anchorType !== 'note' &&
+    thread.anchorFrom !== null &&
+    thread.anchorTo !== null &&
+    thread.quote !== null &&
+    thread.documentHash !== null
+  );
+}
+
+function serializeTarget(thread: NoteCommentThread): SerializedCommentTarget {
+  if (thread.anchorType === 'note') return { target: 'note', anchor: null };
+  if (!isTextThread(thread)) throw new Error('Invalid stored comment anchor');
+  return {
+    target: 'text',
+    anchor: {
+      anchorType: thread.anchorType,
+      from: thread.anchorFrom,
+      to: thread.anchorTo,
+      quote: thread.quote,
+      ...(thread.prefix !== null ? { prefix: thread.prefix } : {}),
+      ...(thread.suffix !== null ? { suffix: thread.suffix } : {}),
+      documentHash: thread.documentHash,
+      detached: thread.detached,
+    },
+  };
+}
 
 export type CommentOperationResult<T> =
   | { ok: true; value: T }
@@ -147,6 +201,21 @@ function validateAnchor(
   documentHash: string;
   detached: boolean;
 }> {
+  if (
+    !anchor ||
+    typeof anchor !== 'object' ||
+    Array.isArray(anchor) ||
+    Object.keys(anchor).some(
+      (key) => !['anchorType', 'from', 'to', 'quote', 'prefix', 'suffix', 'documentHash', 'detached'].includes(key)
+    ) ||
+    typeof anchor.documentHash !== 'string' ||
+    !anchor.documentHash ||
+    typeof anchor.quote !== 'string' ||
+    (anchor.prefix !== undefined && typeof anchor.prefix !== 'string') ||
+    (anchor.suffix !== undefined && typeof anchor.suffix !== 'string') ||
+    (anchor.detached !== undefined && typeof anchor.detached !== 'boolean')
+  )
+    return { ok: false, status: 400, error: 'Invalid comment anchor' };
   if (anchor.documentHash !== currentHash)
     return {
       ok: false,
@@ -265,16 +334,7 @@ async function serializeThreads(
     id: thread.id,
     noteId: thread.noteId,
     status: thread.status,
-    anchor: {
-      anchorType: thread.anchorType,
-      from: thread.anchorFrom,
-      to: thread.anchorTo,
-      quote: thread.quote,
-      ...(thread.prefix !== null ? { prefix: thread.prefix } : {}),
-      ...(thread.suffix !== null ? { suffix: thread.suffix } : {}),
-      documentHash: thread.documentHash,
-      detached: thread.detached,
-    },
+    ...serializeTarget(thread),
     createdBy: serializeActor({
       actorType: thread.createdByActorType,
       actorId: thread.createdByActorId,
@@ -313,7 +373,7 @@ async function serializeMessageReactions(messageId: string, actor: CommentActor)
   return serializeReactions(reactions, actor);
 }
 
-function findAnchorPosition(thread: NoteCommentThread, content: string) {
+function findAnchorPosition(thread: TextStoredThread, content: string) {
   const positionMatches = (from: number) => {
     const to = from + thread.quote.length;
     if (content.slice(from, to) !== thread.quote) return false;
@@ -346,7 +406,7 @@ function findAnchorPosition(thread: NoteCommentThread, content: string) {
 
 async function reconcileThreadAnchors(threads: NoteCommentThread[], content: string, documentHash: string) {
   for (const thread of threads) {
-    if (thread.documentHash === documentHash) continue;
+    if (!isTextThread(thread) || thread.documentHash === documentHash) continue;
     const anchorFrom = findAnchorPosition(thread, content);
     const detached = anchorFrom === null;
     const anchorTo = detached ? Math.min(thread.anchorTo, content.length) : anchorFrom + thread.quote.length;
@@ -392,13 +452,24 @@ async function loadSerializedThread(input: { noteId: string; threadId: string; u
   return (await serializeThreads(input.actor, [thread], messages, reactions))[0] ?? null;
 }
 
-export async function listCommentThreads(input: { noteId: string; userId: string; actor: CommentActor }) {
+export async function listCommentThreads(input: {
+  noteId: string;
+  userId: string;
+  actor: CommentActor;
+  includeNoteComments?: boolean;
+}) {
   const current = await readCommentableNote(input);
   if (!current.ok) return current;
   const threads = await db
     .select()
     .from(noteCommentThreads)
-    .where(and(eq(noteCommentThreads.noteId, input.noteId), eq(noteCommentThreads.userId, input.userId)))
+    .where(
+      and(
+        eq(noteCommentThreads.noteId, input.noteId),
+        eq(noteCommentThreads.userId, input.userId),
+        input.includeNoteComments ? undefined : inArray(noteCommentThreads.anchorType, ['range', 'line'])
+      )
+    )
     .orderBy(desc(noteCommentThreads.updatedAt), desc(noteCommentThreads.id));
   await reconcileThreadAnchors(threads, current.value.note.content, current.value.contentHash);
   const threadIds = threads.map((thread) => thread.id);
@@ -439,13 +510,32 @@ export async function createCommentThread(input: {
   userId: string;
   actor: CommentActor;
   body: string;
-  anchor: CommentAnchorInput;
+  target?: 'note' | 'text';
+  anchor?: CommentAnchorInput;
 }) {
+  const { noteId: _noteId, userId: _userId, actor: _actor, ...request } = input;
+  const target = parseCommentTarget(request);
+  if (!target.ok) return target;
   const body = normalizeBody(input.body);
   if (!body.ok) return { ok: false, status: 400, error: body.error } satisfies CommentOperationResult<never>;
   const current = await readCommentableNote(input);
   if (!current.ok) return current;
-  const anchor = validateAnchor(input.anchor, current.value.note.content, current.value.contentHash);
+  const anchor =
+    target.value.target === 'text'
+      ? validateAnchor(target.value.anchor, current.value.note.content, current.value.contentHash)
+      : {
+          ok: true as const,
+          value: {
+            anchorType: 'note' as const,
+            anchorFrom: null,
+            anchorTo: null,
+            quote: null,
+            prefix: null,
+            suffix: null,
+            documentHash: null,
+            detached: false,
+          },
+        };
   if (!anchor.ok) return anchor;
 
   const now = new Date();
@@ -557,8 +647,6 @@ export async function updateCommentAnchor(input: {
 }) {
   const current = await readCommentableNote(input);
   if (!current.ok) return current;
-  const anchor = validateAnchor(input.anchor, current.value.note.content, current.value.contentHash);
-  if (!anchor.ok) return anchor;
   const [existing] = await db
     .select()
     .from(noteCommentThreads)
@@ -581,6 +669,14 @@ export async function updateCommentAnchor(input: {
       status: 403,
       error: 'Only the thread author or note owner can update its anchor',
     } satisfies CommentOperationResult<never>;
+  if (existing.anchorType === 'note')
+    return {
+      ok: false,
+      status: 400,
+      error: 'General discussion has no text anchor',
+    } satisfies CommentOperationResult<never>;
+  const anchor = validateAnchor(input.anchor, current.value.note.content, current.value.contentHash);
+  if (!anchor.ok) return anchor;
   await db
     .update(noteCommentThreads)
     .set({ ...anchor.value, updatedAt: new Date() })

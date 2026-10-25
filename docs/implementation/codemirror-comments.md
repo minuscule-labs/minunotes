@@ -1,6 +1,23 @@
-# Review Comments and Threads
+# General Discussion and Anchored Review
 
-**Status:** Implemented for active Markdown notes.
+**Status:** Repository implementation for active Markdown notes; deployment and installed Pi adapter/skill updates are separate.
+
+## Target contract and compatibility
+
+- General create: `{body, target: 'note'}`, no anchor/hash/body-save dependency; responses have `target: 'note', anchor: null`.
+- Review create: `{body, target: 'text', anchor}` or legacy `{body, anchor}`. Current hash and exact range/line rules remain.
+- Missing/unknown/mixed targets are rejected. Anchor updates cannot convert note targets.
+- Raw human/Harness GET without `includeNoteComments=true` remains anchored-only. Upgraded frontend and hosted/standalone MCP opt into both explicit targets. Do not dereference a nullable anchor without narrowing by target.
+- General Discussion is below the note body; a header Discussion button scrolls there and focuses its composer. Review retains the existing drawer/adjacent dialog. Only Review enters MinuEditor mapping/highlights/focus.
+- Migration 0045 extends existing `anchor_type` with `note`, makes anchor-only data nullable, and checks mutually exclusive target invariants. No new store or conversion of legacy threads. Whole-note rows never undergo reconciliation or detach due to content changes.
+
+## Rollout and rollback
+
+Inspect migration 0045 and verify populated threads, replies, reactions, IDs, timestamps, indexes and foreign keys using the real runner on a disposable database before any authorized deployment. Deploy schema/backend compatible reads before updated clients can create note targets. Production migration/deployment is not performed by implementation tests.
+
+Once note-target rows exist, do not roll back to code that assumes every thread has an anchor. Disable new general creation if needed while retaining compatible reads and preserving discussion; never fabricate anchors or delete rows to make older code work. Installed/current-session Pi registration is explicitly deferred, not proof of this repository's capability.
+
+Creates/replies/reaction toggles are not automatically retried after uncertain results. Author verification is not independent validation, human acceptance or release approval.
 
 ## Product boundary
 
@@ -8,12 +25,12 @@ Review comments are external discussion metadata. Markdown remains canonical and
 
 ```txt
 Markdown             canonical note content
-Comment threads      anchored discussion metadata
+Comment threads      general or anchored discussion metadata
 MinuEditor           selection, highlights, gutter actions, local anchor mapping
 MinuNotes            persistence, actors, authorization, threads, and lifecycle
 ```
 
-P1 supports the authenticated note owner and authorized API-key/OAuth agents. Public-share visitors cannot access comments. Canvas comments, suggestions, mentions, notifications, and realtime collaboration are deferred.
+Current routes support the owner, authorized Editors/Commenters, and explicitly scoped API-key/OAuth agents. Public-share visitors cannot access comments. Canvas comments, suggestions, mentions, notifications, and realtime collaboration are deferred.
 
 ## Persistence
 
@@ -21,25 +38,25 @@ P1 supports the authenticated note owner and authorized API-key/OAuth agents. Pu
 
 - note and owner scope;
 - open/resolved state;
-- range or whole-line offsets;
-- quote, prefix, suffix, and document hash;
-- detached state;
+- explicit whole-note, range or whole-line target;
+- offsets, quote, context and document hash for text targets only (null for note targets);
+- detached state for text targets only;
 - creator and resolver actor identity; and
 - lifecycle timestamps.
 
 `note_comment_messages` stores ordered root messages and replies with actor identity and timestamps. Both tables cascade on permanent note deletion. Soft-deleted notes retain their comments, but active-note authorization hides them until restore.
 
-Actor records retain internal ownership IDs for authorization. API responses serialize safe identities only: `owner`, a public API-key UID, or `integration`.
+Actor records retain internal ownership IDs for authorization. API responses use the existing collaboration identity serializer and omit raw user, owner, grant and credential identifiers; direct-note access never reveals folder ancestry.
 
 ## Authorization
 
-- Owners can list and mutate comments on their active Markdown notes.
-- Integrations need explicit `canComment` plus note-folder read access for every comment operation.
+- Owners, Editors and Commenters can discuss active Markdown notes under the existing collaboration policy; Viewers cannot list comments.
+- Integrations need explicit `canComment` plus current note read access and authorized shared scope where applicable; direct-note grants do not imply folder access.
 - Review-only integrations do not need note edit permission, and `isApiEditable` controls canonical note edits rather than comments.
 - `canEdit` does not imply `canComment`, and `canComment` does not imply `canEdit`.
 - Existing and newly created credentials default `canComment` to false until the owner grants **Comment** access.
-- Message edits and deletes are author-only.
-- The note owner or thread creator can resolve, reopen, or delete a thread.
+- Message editing is author-only. Human owners can moderate deletion; human Editors can manage thread status, but do not gain blanket message ownership. Agents retain author-only mutation limits.
+- Other thread authors can manage their own threads without changing note workflow properties.
 - Templates, canvases, trashed notes, inaccessible folders, and public shares expose no comment surface.
 
 ## Anchors

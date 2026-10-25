@@ -1508,7 +1508,7 @@
       "name": "Review",
       "item": [
         {
-          "name": "List anchored comment threads",
+          "name": "List note comment threads",
           "request": {
             "method": "GET",
             "header": [
@@ -1518,11 +1518,18 @@
                 "type": "text"
               }
             ],
-            "description": "Lists Review threads on an active markdown note. Explicit Comment permission and read access to the note folder are required.",
+            "description": "Lists anchored Review by default. Opt in with includeNoteComments=true for both general discussion and Review with explicit note/text targets. Requires explicit Comment permission and current note read access; direct-note grants do not disclose folder ancestry.",
             "url": {
-              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
+              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments?includeNoteComments=true",
               "host": ["{{baseUrl}}"],
-              "path": ["v1", "harness", "notes", "{{noteId}}", "comments"]
+              "path": ["v1", "harness", "notes", "{{noteId}}", "comments"],
+              "query": [
+                {
+                  "key": "includeNoteComments",
+                  "value": "true",
+                  "disabled": false
+                }
+              ]
             }
           },
           "event": [
@@ -1538,7 +1545,7 @@
           ]
         },
         {
-          "name": "Create an anchored comment thread",
+          "name": "Create a general discussion or anchored Review thread",
           "request": {
             "method": "POST",
             "header": [
@@ -1548,7 +1555,16 @@
                 "type": "text"
               }
             ],
-            "description": "Creates a thread and first message. Explicit Comment permission, read access, a current document hash, and an exact markdown anchor are required. Note edit permission is not required.",
+            "description": "Creates a thread and first message atomically. Use target note without anchor data for general discussion; no document hash or content-edit permission is required. Text-specific Review uses target text and a current exact anchor; legacy body+anchor requests remain valid. Missing/mixed/unknown targets are rejected. Explicit Comment permission and current read access are required for both; never retry mutations automatically.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"body\": \"A decision about the whole note.\",\n  \"target\": \"note\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
             "url": {
               "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/comments",
               "host": ["{{baseUrl}}"],
