@@ -1916,6 +1916,65 @@
           ]
         },
         {
+          "name": "Read public folder navigation metadata without note bodies",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/internal/share/folders/{{shareToken}}/navigation",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "share", "folders", "{{shareToken}}", "navigation"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read one freshly authorized public folder note and its wikilink destinations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Revalidates the active token and current note subtree membership on every read. Navigation metadata and Board cards are not access grants. Responses are not cacheable.",
+            "url": {
+              "raw": "{{baseUrl}}/internal/share/folders/{{shareToken}}/notes/{{noteId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "share", "folders", "{{shareToken}}", "notes", "{{noteId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Read authored wikilink destinations for one note in a publicly shared folder",
           "request": {
             "method": "GET",

@@ -2,7 +2,10 @@ import { eq } from 'drizzle-orm';
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanupPropertyBoardTests, setupPropertyBoardTest } from './property-board-fixtures';
 
-afterEach(cleanupPropertyBoardTests);
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await cleanupPropertyBoardTests();
+});
 
 async function setupSharedBoard(folderId = 'board') {
   const f = await setupPropertyBoardTest();
@@ -123,7 +126,14 @@ it('shares visibility projection, full classification and zero-column states wit
     'visible',
   ]);
   expect(sharedList.notes.find((n: { id: string }) => n.id === 'hidden').content).toBe('Private body for hidden');
+  const compact = await (await f.read(`/internal/share/folders/${f.token}/navigation`)).json();
+  expect(compact.notes.map((note: { id: string }) => note.id).sort()).toEqual(
+    sharedList.notes.map((note: { id: string }) => note.id).sort()
+  );
+  const detailUrl = `/internal/share/folders/${f.token}/notes/hidden`;
+  expect((await (await f.read(detailUrl)).json()).note.content).toBe('Private body for hidden');
   expect((await f.app.request('/internal/folders/board/share-link', { method: 'DELETE' })).status).toBe(200);
+  expect((await f.read(detailUrl)).status).toBe(404);
   for (const url of [f.configUrl, publicUrl('unclassified', version)]) expect((await f.read(url)).status).toBe(404);
 });
 
@@ -134,13 +144,19 @@ it('presents the existing folder share as the same board, anonymously and read-o
   await f.addNote('child-note', 'Child note', [], { folderId: 'child' });
   await f.addNote('template', 'Template', [], { type: 'template' });
   await f.addNote('trashed', 'Trashed', [], { deletedAt: f.now });
+  const queries = vi.spyOn(f.libsql, 'execute');
+  const hierarchyReads = () =>
+    queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql));
   const publicConfig = await f.read(f.configUrl);
   expect(publicConfig.status).toBe(200);
+  expect(hierarchyReads()).toHaveLength(1);
   expect(publicConfig.headers.get('cache-control')).toBe('no-store');
   const ownerConfig = await (await f.request('/internal/folders/board/board/config')).json();
   expect(await publicConfig.json()).toEqual({ board: ownerConfig.board });
+  queries.mockClear();
   const lane = await f.read(f.laneUrl);
   expect(lane.status).toBe(200);
+  expect(hierarchyReads()).toHaveLength(1);
   expect(lane.headers.get('cache-control')).toBe('no-store');
   const result = await lane.json();
   expect(result.cards).toMatchObject([{ id: 'public', properties: [{ label: 'Type', value: 'Bug' }] }]);

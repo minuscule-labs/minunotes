@@ -86,11 +86,12 @@ export async function mockPropertyBoard(
     saveFailure: number;
     schemaFailure: number;
     unavailable: boolean;
+    shareRevoked: boolean;
     queryEcho?: string | null;
     sortEcho?: string | null;
     schemaEcho?: { schemaId: string; schemaRevision: number } | null;
     listFailure?: number;
-  } = { readFailure: 0, laneFailure: 0, saveFailure: 0, schemaFailure: 0, unavailable: false };
+  } = { readFailure: 0, laneFailure: 0, saveFailure: 0, schemaFailure: 0, unavailable: false, shareRevoked: false };
   const access = { role, source: role === 'owner' ? 'owner' : 'folder_grant' };
   const groupingField = () =>
     schema.schemaId === config.grouping.schemaId
@@ -348,12 +349,18 @@ export async function mockPropertyBoard(
       ? route.fulfill({ status: controls.schemaFailure, json: { error: 'Schema read failed' } })
       : route.fulfill({ json: schema })
   );
+  await page.route(/\/internal\/share\/folders\/folder_share_token(?:\/navigation|\/notes\/[^/]+)?$/, (route) =>
+    controls.shareRevoked
+      ? route.fulfill({ status: 404, json: { error: 'Shared folder not found' } })
+      : route.fallback()
+  );
   const boardRoute = /\/internal\/(?:share\/folders\/[^/]+\/)?folders\/[^/]+\/board(?:\/config)?(?:\?.*)?$/;
   await page.route(boardRoute, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const publicRead = url.pathname.startsWith('/internal/share/');
+    if (publicRead && controls.shareRevoked) return reply({ error: 'Shared folder not found' }, 404);
     if (publicRead && request.method() !== 'GET') return reply({ error: 'Not found' }, 404);
     if (url.pathname.endsWith('/config')) {
       if (request.method() === 'PUT') {

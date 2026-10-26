@@ -225,6 +225,25 @@ describe('harness OpenAPI spec', () => {
     expect(spec.components.schemas).toHaveProperty('PublicSharedNoteResponse');
   });
 
+  it('documents additive compact public folder reads and generated Postman entries', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    for (const [suffix, operationId, schema] of [
+      ['/navigation', 'readSharedFolderNavigation', 'PublicFolderNavigationResponse'],
+      ['/notes/{noteId}', 'readSharedFolderNote', 'PublicFolderNoteResponse'],
+    ]) {
+      const operation = spec.paths[`/internal/share/folders/{token}${suffix}`].get;
+      expect(operation.operationId).toBe(operationId);
+      expect(operation.security).toEqual([]);
+      expect(operation.responses['200'].content['application/json'].schema.$ref).toBe(`#/components/schemas/${schema}`);
+    }
+    expect(spec.components.schemas.PublicFolderNoteSummary.properties).not.toHaveProperty('content');
+    expect(spec.components.schemas.PublicFolderNoteSummary.additionalProperties).toBe(false);
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const shared = collection.item.find((item: { name: string }) => item.name === 'Shared');
+    expect(JSON.stringify(shared)).toContain('/navigation');
+    expect(JSON.stringify(shared)).toContain('/notes/{{noteId}}');
+  });
+
   it('also serves the spec under the harness namespace', async () => {
     const response = await app.request('/v1/openapi.json');
 
