@@ -6,6 +6,12 @@ import type { ApiKey, OAuthAuthorization } from './db/schema';
 import type { auth } from './lib/auth';
 import { getApiRuntimeConfig } from './lib/env';
 import {
+  isPublicSharePath,
+  reportPublicShareError,
+  type ShareObservabilityEnv,
+  shareSnapshotObservability,
+} from './lib/share-observability';
+import {
   type AuthContext,
   authenticationMiddleware,
   harnessApiKeyAuthenticationMiddleware,
@@ -29,7 +35,7 @@ import { shareRoutes } from './routes/share';
 import { trashRoutes } from './routes/trash';
 
 const app = new Hono<{
-  Variables: {
+  Variables: ShareObservabilityEnv['Variables'] & {
     user: typeof auth.$Infer.Session.user | null;
     session: typeof auth.$Infer.Session.session | null;
     apiKey: ApiKey | null;
@@ -157,6 +163,7 @@ app.use('/internal/oauth/revoke', authRateLimit);
 
 app.route('/internal/auth', authRoutes);
 
+app.use('/internal/share/folders/:token', shareSnapshotObservability);
 app.use('/internal/share', publicShareRateLimit);
 app.use('/internal/share/*', publicShareRateLimit);
 
@@ -261,6 +268,10 @@ app.route('/mcp', mcpRoutes);
 app.route('/oauth', oauthRoutes);
 
 app.onError((error, c) => {
+  if (isPublicSharePath(c.req.path)) {
+    c.header('X-Request-Id', reportPublicShareError(error, c.get('shareSnapshotMeasurement')));
+    return c.json({ error: 'Internal Server Error' }, 500);
+  }
   console.error('[API ERROR]', {
     method: c.req.method,
     path: c.req.path,

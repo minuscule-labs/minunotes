@@ -1,10 +1,15 @@
-import { and, asc, eq, gt, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { BoardValidationError } from '../../shared/board';
 import { NoteQueryError } from '../../shared/note-filters';
 import { PropertyError } from '../../shared/properties';
 import { db } from '../db/client';
 import { attachments, folderShareLinks, folders, noteShareLinks, notes } from '../db/schema';
+import {
+  type ShareObservabilityEnv,
+  type ShareSnapshotMeasurement,
+  shareSnapshotObservability,
+} from '../lib/share-observability';
 import { hashShareToken } from '../lib/share-tokens';
 import { parseBoardLaneRequest } from '../notes/board-request';
 import { readAuthorizedBoard, readAuthorizedBoardLane } from '../notes/boards';
@@ -18,7 +23,7 @@ import { getObjectStorage } from '../storage';
 import { activeNoteWhere, filterActiveFolderHierarchy } from '../trash/policy';
 import { attachmentContentResponse } from './attachments';
 
-export const shareRoutes = new Hono();
+export const shareRoutes = new Hono<ShareObservabilityEnv>();
 
 async function loadActiveNoteShare(token: string) {
   const tokenHash = hashShareToken(token);
@@ -50,7 +55,7 @@ async function loadActiveNoteShare(token: string) {
   return activeFolders.some((folder) => folder.id === row.note.folderId) ? row : null;
 }
 
-async function loadActiveFolderShare(token: string) {
+async function loadActiveFolderShare(token: string, measurement?: ShareSnapshotMeasurement) {
   const tokenHash = hashShareToken(token);
   const now = new Date();
   const [row] = await db
@@ -74,8 +79,11 @@ async function loadActiveFolderShare(token: string) {
     )
     .limit(1);
   if (!row) return null;
-  const activeFolders = await loadUserFolders(row.folder.userId);
-  return activeFolders.some((folder) => folder.id === row.folder.id) ? row : null;
+  if (measurement) measurement.folderQueryCalls++;
+  const userFolders = await loadUserFolders(row.folder.userId);
+  if (!userFolders.some((folder) => folder.id === row.folder.id)) return null;
+  const folderIds = collectFolderTreeIds(row.folder.id, userFolders);
+  return { ...row, userFolders, folderIds };
 }
 
 async function loadUserFolders(userId: string) {
@@ -141,8 +149,7 @@ shareRoutes.get('/folders/:token/notes/:noteId/attachments/:attachmentId/content
 
   const row = await loadActiveFolderShare(token);
   if (!row) return c.json({ error: 'Shared attachment not found' }, 404);
-  const userFolders = await loadUserFolders(row.folder.userId);
-  const folderIds = collectFolderTreeIds(row.folder.id, userFolders);
+  const { folderIds } = row;
   const noteId = c.req.param('noteId');
   const [source] = await db
     .select({ id: notes.id, folderId: notes.folderId })
@@ -179,8 +186,7 @@ shareRoutes.get('/folders/:token/notes/:noteId/wikilinks', async (c) => {
 
   const row = await loadActiveFolderShare(token);
   if (!row) return c.json({ error: 'Shared note not found' }, 404);
-  const userFolders = await loadUserFolders(row.folder.userId);
-  const folderIds = collectFolderTreeIds(row.folder.id, userFolders);
+  const { userFolders, folderIds } = row;
   const [source] = await db
     .select()
     .from(notes)
@@ -203,8 +209,7 @@ shareRoutes.get('/folders/:token/notes/:noteId/wikilinks', async (c) => {
 async function loadSharedBoardFolder(token: string, folderId: string) {
   const row = await loadActiveFolderShare(token.trim());
   if (!row) return null;
-  const userFolders = await loadUserFolders(row.folder.userId);
-  return collectFolderTreeIds(row.folder.id, userFolders).has(folderId) ? row.folder.userId : null;
+  return row.folderIds.has(folderId) ? row.folder.userId : null;
 }
 
 shareRoutes.get('/folders/:token/folders/:folderId/board/config', async (c) => {
@@ -245,28 +250,36 @@ shareRoutes.get('/folders/:token/folders/:folderId/board', async (c) => {
   }
 });
 
-shareRoutes.get('/folders/:token', async (c) => {
+shareRoutes.get('/folders/:token', shareSnapshotObservability, async (c) => {
   const token = c.req.param('token').trim();
   if (!token) return c.json({ error: 'Shared folder not found' }, 404);
 
-  const row = await loadActiveFolderShare(token);
-  if (!row) return c.json({ error: 'Shared folder not found' }, 404);
-  const userFolders = await loadUserFolders(row.folder.userId);
-  const folderIds = collectFolderTreeIds(row.folder.id, userFolders);
-  const sharedNotes = await db
-    .select({
-      id: notes.id,
-      folderId: notes.folderId,
-      title: notes.title,
-      content: notes.content,
-      documentType: notes.documentType,
-      updatedAt: notes.updatedAt,
-    })
-    .from(notes)
-    .where(activeNoteWhere(row.folder.userId, eq(notes.type, 'note')))
-    .orderBy(asc(notes.title));
-
-  const visibleNotes = sharedNotes.filter((note) => folderIds.has(note.folderId));
+  const measurement = c.get('shareSnapshotMeasurement');
+  const row = await loadActiveFolderShare(token, measurement);
+  if (!row || row.folderIds.size === 0) return c.json({ error: 'Shared folder not found' }, 404);
+  const { userFolders, folderIds } = row;
+  const fetchNotes = () =>
+    db
+      .select({
+        id: notes.id,
+        folderId: notes.folderId,
+        title: notes.title,
+        content: notes.content,
+        documentType: notes.documentType,
+        updatedAt: notes.updatedAt,
+      })
+      .from(notes)
+      .where(
+        activeNoteWhere(
+          row.folder.userId,
+          eq(notes.type, 'note'),
+          // One bound JSON value regardless of subtree size; SQLite owns ordering.
+          // json_each is already required by the existing property/Board readers.
+          sql`${notes.folderId} in (select value from json_each(${JSON.stringify([...folderIds])}))`
+        )
+      )
+      .orderBy(asc(notes.title));
+  const visibleNotes = measurement ? await measurement.fetchNotes(fetchNotes) : await fetchNotes();
   const visibleNoteIds = new Set(visibleNotes.map((note) => note.id));
   return c.json({
     folder: {

@@ -143,7 +143,7 @@ async function setupFolderShareApp() {
   app.route('/api/folders', folderRoutes);
   app.route('/api/share', shareRoutes);
 
-  return { app, db, schema, storage };
+  return { app, db, libsql, schema, storage };
 }
 
 function tokenFromUrl(url: string) {
@@ -153,6 +153,7 @@ function tokenFromUrl(url: string) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   const storage = await import('../src/api/storage');
   storage.resetObjectStorageForTests();
   vi.unstubAllEnvs();
@@ -161,7 +162,7 @@ afterEach(async () => {
 
 describe('folder share links', () => {
   it('creates a share link and resolves descendant notes publicly', async () => {
-    const { app } = await setupFolderShareApp();
+    const { app, libsql } = await setupFolderShareApp();
 
     const create = await app.request('/api/folders/folder_a/share-link', {
       method: 'POST',
@@ -172,8 +173,12 @@ describe('folder share links', () => {
     const { shareLink } = (await create.json()) as { shareLink: { id: string; url: string } };
     expect(shareLink.url).toMatch(/^https:\/\/notes\.example\.test\/share\/folders\//);
 
+    const queries = vi.spyOn(libsql, 'execute');
     const publicRead = await app.request(`/api/share/folders/${tokenFromUrl(shareLink.url)}`);
     expect(publicRead.status).toBe(200);
+    expect(
+      queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql))
+    ).toHaveLength(1);
     const body = (await publicRead.json()) as {
       folder: { title: string };
       folders: Array<{ title: string; parentFolderId: string | null }>;
@@ -255,7 +260,7 @@ describe('folder share links', () => {
   });
 
   it('serves attachments only through their owning note in the shared subtree', async () => {
-    const { app, db, schema, storage } = await setupFolderShareApp();
+    const { app, db, libsql, schema, storage } = await setupFolderShareApp();
     await storage.getObjectStorage().putObject({
       key: 'users/user_a/notes/note_child/attachments/att_child-image.png',
       body: new TextEncoder().encode('child-image'),
@@ -282,8 +287,12 @@ describe('folder share links', () => {
     });
     const token = tokenFromUrl(((await create.json()) as { shareLink: { url: string } }).shareLink.url);
 
+    const queries = vi.spyOn(libsql, 'execute');
     const content = await app.request(`/api/share/folders/${token}/notes/note_child/attachments/att_child/content`);
     expect(content.status).toBe(200);
+    expect(
+      queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql))
+    ).toHaveLength(1);
     expect(await content.text()).toBe('child-image');
     expect(content.headers.get('cache-control')).toBe('no-store');
 
@@ -301,7 +310,7 @@ describe('folder share links', () => {
   });
 
   it('resolves only authored links for a selected note inside the shared subtree', async () => {
-    const { app, db, schema } = await setupFolderShareApp();
+    const { app, db, libsql, schema } = await setupFolderShareApp();
     await db
       .update(schema.notes)
       .set({ content: '[[Child Note]] [[Outside Target]] [[Missing]]' })
@@ -339,8 +348,12 @@ describe('folder share links', () => {
     const { shareLink } = (await create.json()) as { shareLink: { url: string } };
     const token = tokenFromUrl(shareLink.url);
 
+    const queries = vi.spyOn(libsql, 'execute');
     const response = await app.request(`/api/share/folders/${token}/notes/note_a/wikilinks`);
     expect(response.status).toBe(200);
+    expect(
+      queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql))
+    ).toHaveLength(1);
     await expect(response.json()).resolves.toEqual({
       resolutions: [
         { target: 'Child Note', href: `/share/folders/${token}?note=note_child` },
