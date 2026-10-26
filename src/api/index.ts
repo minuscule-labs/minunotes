@@ -9,6 +9,8 @@ import {
   isPublicSharePath,
   reportPublicShareError,
   type ShareObservabilityEnv,
+  shareNavigationObservability,
+  shareNoteObservability,
   shareSnapshotObservability,
 } from './lib/share-observability';
 import {
@@ -164,6 +166,8 @@ app.use('/internal/oauth/revoke', authRateLimit);
 app.route('/internal/auth', authRoutes);
 
 app.use('/internal/share/folders/:token', shareSnapshotObservability);
+app.use('/internal/share/folders/:token/navigation', shareNavigationObservability);
+app.use('/internal/share/folders/:token/notes/:noteId', shareNoteObservability);
 app.use('/internal/share', publicShareRateLimit);
 app.use('/internal/share/*', publicShareRateLimit);
 
@@ -269,7 +273,7 @@ app.route('/oauth', oauthRoutes);
 
 app.onError((error, c) => {
   if (isPublicSharePath(c.req.path)) {
-    c.header('X-Request-Id', reportPublicShareError(error, c.get('shareSnapshotMeasurement')));
+    c.header('X-Request-Id', reportPublicShareError(error, c.get('shareReadMeasurement')));
     return c.json({ error: 'Internal Server Error' }, 500);
   }
   console.error('[API ERROR]', {

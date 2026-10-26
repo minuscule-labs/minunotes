@@ -871,7 +871,10 @@ export async function mockBrowserApi(
       return json({ ok: true });
     }
 
-    if (path === `/share/folders/folder_share_token` && method === 'GET')
+    if (
+      (path === '/share/folders/folder_share_token' || path === '/share/folders/folder_share_token/navigation') &&
+      method === 'GET'
+    )
       return json({
         folder: {
           id: browserFixture.folder.id,
@@ -887,40 +890,42 @@ export async function mockBrowserApi(
           },
         ],
         notes: [...notes.values()]
-          .filter((note) => note.type === 'note')
+          .filter(
+            (note) =>
+              note.type === 'note' && [browserFixture.folder.id, browserFixture.childFolder.id].includes(note.folderId)
+          )
           .map((note) => ({
             id: note.id,
             folderId: note.folderId,
             title: note.title,
-            content: note.content,
+            ...(path.endsWith('/navigation') ? {} : { content: note.content }),
             documentType: note.documentType,
             updatedAt: note.updatedAt,
           })),
         share: { id: 'folder_share_browser', permission: 'read', createdAt: now },
       });
 
-    const folderNoteWikilinksMatch = path.match(
-      /^\/share\/folders\/folder_share_token\/notes\/(note_[a-zA-Z0-9_]+)\/wikilinks$/
+    const folderNoteReadMatch = path.match(
+      /^\/share\/folders\/folder_share_token\/notes\/(note_[a-zA-Z0-9_]+)(\/wikilinks)?$/
     );
-    if (folderNoteWikilinksMatch && method === 'GET') {
-      const note = notes.get(folderNoteWikilinksMatch[1]);
-      if (!note) return json({ error: 'Shared note not found' }, 404);
-      return json({
-        resolutions:
-          note.id === browserFixture.linked.id
-            ? [
-                {
-                  target: 'Target Note',
-                  href: `/share/folders/folder_share_token?note=${browserFixture.target.id}`,
-                },
-                {
-                  target: browserFixture.target.id,
-                  href: `/share/folders/folder_share_token?note=${browserFixture.target.id}`,
-                },
-                { target: 'Missing Note', href: null },
-              ]
-            : [],
-      });
+    if (folderNoteReadMatch && method === 'GET') {
+      const note = notes.get(folderNoteReadMatch[1]);
+      if (note?.type !== 'note' || ![browserFixture.folder.id, browserFixture.childFolder.id].includes(note.folderId))
+        return json({ error: 'Shared note not found' }, 404);
+      const resolutions =
+        note.id === browserFixture.linked.id
+          ? [
+              { target: 'Target Note', href: `/share/folders/folder_share_token?note=${browserFixture.target.id}` },
+              {
+                target: browserFixture.target.id,
+                href: `/share/folders/folder_share_token?note=${browserFixture.target.id}`,
+              },
+              { target: 'Missing Note', href: null },
+            ]
+          : [];
+      if (folderNoteReadMatch[2]) return json({ resolutions });
+      const { id, folderId, title, content, documentType, updatedAt } = note;
+      return json({ note: { id, folderId, title, content, documentType, updatedAt }, resolutions });
     }
 
     const sharedNoteMatch = path.match(/^\/share\/(note_share_note_[a-zA-Z0-9_]+)$/);

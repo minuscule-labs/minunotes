@@ -7,6 +7,7 @@ import type { BoardSchemaToken } from '../../shared/board';
 import { EMPTY_NOTE_QUERY, hasNoteQuery, type NoteQuery } from '../../shared/note-filters';
 import { DEFAULT_NOTE_SORT, folderReadIdentity, isPropertySort, type NoteSort } from '../../shared/note-sort';
 import { ApiError, api, type FolderQueryRequest, type SavedBoard, verifyFolderQueryEcho } from '../lib/api';
+import { refreshPublicFolderNavigation } from '../lib/public-folder-share';
 import { FolderBoardSettingsDialog } from './folder-board-settings-dialog';
 import { Button } from './ui/button';
 import { QuickTooltip } from './ui/tooltip';
@@ -293,8 +294,14 @@ export function NotesBoard({
   }, [blocked, generation, qc, folderId, readerId]);
   const refreshBoard = async () => {
     onRefreshDefinitions?.();
-    // Public cards open notes from this snapshot; refresh it before showing newer cards.
-    if (shareToken) await qc.invalidateQueries({ queryKey: ['shared-folder', shareToken], exact: true });
+    if (shareToken) {
+      try {
+        await refreshPublicFolderNavigation(qc, shareToken);
+      } catch {
+        // The public viewer owns navigation errors and root-share denial cleanup.
+        return;
+      }
+    }
     const result = await query.refetch();
     if (result.isError) await qc.invalidateQueries({ queryKey: ['board', folderId, 'lane', readerId] });
   };

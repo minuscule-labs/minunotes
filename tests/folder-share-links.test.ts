@@ -196,6 +196,16 @@ describe('folder share links', () => {
     expect(body.notes.map((note) => note.title)).not.toContain('Template');
     expect(body.share.id).toBe(shareLink.id);
     expect(body.share.permission).toBe('read');
+    const compact = await (await app.request(`/api/share/folders/${tokenFromUrl(shareLink.url)}/navigation`)).json();
+    expect(compact.folder).toEqual(body.folder);
+    expect(compact.folders).toEqual(body.folders);
+    expect(compact.notes.map(({ content: _content, ...note }: { content?: string }) => note)).toEqual(
+      body.notes.map(({ content: _content, ...note }) => note)
+    );
+    expect(compact.notes.every((note: object) => !('content' in note))).toBe(true);
+    for (const id of ['note_a', 'note_child']) {
+      expect((await app.request(`/api/share/folders/${tokenFromUrl(shareLink.url)}/notes/${id}`)).status).toBe(200);
+    }
   });
 
   it('keeps canvas links inside the shared subtree and strips outside targets', async () => {
@@ -354,7 +364,8 @@ describe('folder share links', () => {
     expect(
       queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql))
     ).toHaveLength(1);
-    await expect(response.json()).resolves.toEqual({
+    const resolved = await response.json();
+    expect(resolved).toEqual({
       resolutions: [
         { target: 'Child Note', href: `/share/folders/${token}?note=note_child` },
         { target: 'Outside Target', href: '/share/outside-token' },
@@ -362,6 +373,13 @@ describe('folder share links', () => {
       ],
     });
 
+    queries.mockClear();
+    const detail = await app.request(`/api/share/folders/${token}/notes/note_a`);
+    expect(detail.status).toBe(200);
+    expect((await detail.json()).resolutions).toEqual(resolved.resolutions);
+    expect(
+      queries.mock.calls.filter(([s]) => /^select "id", "parent_folder_id"/.test(typeof s === 'string' ? s : s.sql))
+    ).toHaveLength(1);
     expect((await app.request(`/api/share/folders/${token}/notes/note_outside/wikilinks`)).status).toBe(404);
     await app.request('/api/folders/folder_a/share-link', { method: 'DELETE' });
     expect((await app.request(`/api/share/folders/${token}/notes/note_a/wikilinks`)).status).toBe(404);
@@ -415,7 +433,7 @@ describe('folder share links', () => {
   });
 
   it('allows owners to explicitly share private folders', async () => {
-    const { app } = await setupFolderShareApp();
+    const { app, db, schema } = await setupFolderShareApp();
 
     const create = await app.request('/api/folders/folder_private/share-link', {
       method: 'POST',
@@ -430,6 +448,19 @@ describe('folder share links', () => {
     const body = (await publicRead.json()) as { folder: { title: string }; notes: unknown[] };
     expect(body.folder.title).toBe('Private Folder');
     expect(body.notes).toEqual([]);
+    await db.insert(schema.notes).values({
+      id: 'note_private',
+      userId: 'user_a',
+      folderId: 'folder_private',
+      title: 'Explicitly shared',
+      content: 'Private folder body',
+    });
+    const path = `/api/share/folders/${tokenFromUrl(shareLink.url)}`;
+    const compact = await (await app.request(`${path}/navigation`)).json();
+    expect(compact.folder.title).toBe('Private Folder');
+    expect(compact.notes).toMatchObject([{ id: 'note_private' }]);
+    expect(compact.notes[0]).not.toHaveProperty('content');
+    expect((await (await app.request(`${path}/notes/note_private`)).json()).note.content).toBe('Private folder body');
   });
 
   it('does not allow another user to manage a folder share link', async () => {

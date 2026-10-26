@@ -5,46 +5,44 @@ import {
   mindMapCanvasProfile,
   standardCanvasProfile,
 } from '@dpklabs/minucanvas';
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, useNavigate } from '@tanstack/react-router';
 import type React from 'react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NotesBoard } from '../components/notes-board';
 import { type ResourceColumn, ResourceName, ResourceTable } from '../components/resource-table';
 import { SharedMarkdownRenderer } from '../components/shared-markdown-renderer';
 import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/ui/empty-state';
-import {
-  ApiError,
-  api,
-  type DocumentType,
-  type SharedFolderChild,
-  type SharedFolderNote,
-  type SharedWikilinkResolution,
+import type {
+  DocumentType,
+  SharedFolderChild,
+  SharedFolderNote,
+  SharedFolderNoteSummary,
+  SharedWikilinkResolution,
 } from '../lib/api';
+import {
+  clearPublicFolderShare,
+  discardFailedPublicFolderNote,
+  publicFolderNavigationOptions,
+  publicFolderNoteOptions,
+  publicShareDenied,
+} from '../lib/public-folder-share';
 import { rootRoute } from './__root';
 
 const EMPTY_CANVAS: JsonCanvasDocument = { nodes: [], edges: [] };
 const EMPTY_WIKILINK_RESOLUTIONS: SharedWikilinkResolution[] = [];
 
-function sharedFolderQueryOptions(token: string) {
-  return queryOptions({
-    queryKey: ['shared-folder', token],
-    queryFn: () => api.sharedFolder(token),
-    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
-  });
-}
-
 type CanvasViewport = { x: number; y: number; zoom: number };
 type SharedFolderTreeNode =
-  | (SharedFolderChild & { children: SharedFolderTreeNode[]; notes: SharedFolderNote[] })
+  | (SharedFolderChild & { children: SharedFolderTreeNode[]; notes: SharedFolderNoteSummary[] })
   | {
       id: string;
       parentFolderId: null;
       title: string;
       updatedAt: string;
       children: SharedFolderTreeNode[];
-      notes: SharedFolderNote[];
+      notes: SharedFolderNoteSummary[];
     };
 
 function parseCanvasDocument(content: string): JsonCanvasDocument {
@@ -63,7 +61,7 @@ function parseCanvasDocument(content: string): JsonCanvasDocument {
 function buildSharedFolderTree(input: {
   root: { id: string; title: string; updatedAt: string };
   folders: SharedFolderChild[];
-  notes: SharedFolderNote[];
+  notes: SharedFolderNoteSummary[];
 }): SharedFolderTreeNode {
   const root: SharedFolderTreeNode = {
     id: input.root.id,
@@ -107,36 +105,56 @@ function findFolderNode(node: SharedFolderTreeNode, folderId: string): SharedFol
 
 function SharedFolderView() {
   const { token } = folderShareRoute.useParams();
+  return <SharedFolderViewForToken key={token} token={token} />;
+}
+
+function SharedFolderViewForToken({ token }: { token: string }) {
   const { note: selectedNoteId, folder: selectedFolderId, view } = folderShareRoute.useSearch();
   const boardView = view === 'board';
   const navigate = useNavigate();
-  const { data, error, isLoading } = useQuery(sharedFolderQueryOptions(token));
-  const selectedNote = useMemo(
-    () => data?.notes.find((note) => note.id === selectedNoteId) ?? null,
-    [data?.notes, selectedNoteId]
+  const qc = useQueryClient();
+  const [shareUnavailable, setShareUnavailable] = useState(false);
+  const [openedSummary, setOpenedSummary] = useState<SharedFolderNoteSummary | null>(null);
+  const navigation = useQuery({ ...publicFolderNavigationOptions(token), enabled: !shareUnavailable });
+  const { data, error, isLoading, refetch: refetchNavigation } = navigation;
+  const selectedNote =
+    openedSummary?.id === selectedNoteId
+      ? openedSummary
+      : (data?.notes.find((note) => note.id === selectedNoteId) ?? null);
+  const revalidateShare = useCallback(async () => {
+    setOpenedSummary(null);
+    await refetchNavigation();
+  }, [refetchNavigation]);
+  useEffect(() => {
+    if (!publicShareDenied(error) || shareUnavailable) return;
+    setShareUnavailable(true);
+    setOpenedSummary(null);
+    void clearPublicFolderShare(qc, token);
+  }, [error, shareUnavailable, qc, token]);
+  const previousSelection = useRef(selectedNoteId);
+  useEffect(() => {
+    if (previousSelection.current && !selectedNoteId) void refetchNavigation();
+    previousSelection.current = selectedNoteId;
+  }, [selectedNoteId, refetchNavigation]);
+  const onDetailLoaded = useCallback(
+    (summary: SharedFolderNoteSummary) => {
+      setOpenedSummary(summary);
+      if (
+        !data?.notes.some((note) => note.id === summary.id) ||
+        (summary.folderId !== data?.folder.id && !data?.folders.some((folder) => folder.id === summary.folderId))
+      ) {
+        void refetchNavigation();
+      }
+    },
+    [data, refetchNavigation]
   );
   useEffect(() => {
-    const title = selectedNote?.title ?? data?.folder.title ?? (error ? 'Shared folder unavailable' : 'Shared folder');
+    const title =
+      shareUnavailable || publicShareDenied(error)
+        ? 'Shared folder unavailable'
+        : (selectedNote?.title ?? data?.folder.title ?? (error ? 'Shared folder unavailable' : 'Shared folder'));
     document.title = `${title} - MinuNotes`;
-  }, [data?.folder.title, error, selectedNote?.title]);
-
-  const { data: wikilinkData } = useQuery({
-    queryKey: ['shared-folder-note-wikilinks', token, selectedNote?.id],
-    queryFn: () => api.sharedFolderNoteWikilinks(token, selectedNote?.id ?? ''),
-    enabled: Boolean(selectedNote && !selectedNote.documentType.startsWith('canvas.')),
-    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
-  });
-  const wikilinkResolutions = useMemo(() => {
-    const resolutions = wikilinkData?.resolutions ?? EMPTY_WIKILINK_RESOLUTIONS;
-    if (!boardView) return resolutions;
-    const sharePath = `/share/folders/${encodeURIComponent(token)}`;
-    return resolutions.map((resolution) => {
-      if (!resolution.href?.startsWith(`${sharePath}?`)) return resolution;
-      const url = new URL(resolution.href, window.location.origin);
-      url.searchParams.set('view', 'board');
-      return { ...resolution, href: `${url.pathname}${url.search}${url.hash}` };
-    });
-  }, [boardView, token, wikilinkData?.resolutions]);
+  }, [data?.folder.title, error, selectedNote?.title, shareUnavailable]);
   const setSelectedNote = (noteId: string | null, folderId = selectedFolderId) => {
     void navigate({
       to: '/share/folders/$token',
@@ -160,7 +178,7 @@ function SharedFolderView() {
         Loading shared folder...
       </div>
     );
-  if (error instanceof ApiError && error.status === 404)
+  if (shareUnavailable || publicShareDenied(error))
     return (
       <SharedFolderShell>
         <EmptyState title="Shared folder unavailable">
@@ -168,11 +186,12 @@ function SharedFolderView() {
         </EmptyState>
       </SharedFolderShell>
     );
-  if (!data?.folder)
+  if (error || !data?.folder)
     return (
       <SharedFolderShell>
         <EmptyState title="Unable to load folder">
           <p>Try opening the link again.</p>
+          <Button onClick={() => void refetchNavigation()}>Retry</Button>
         </EmptyState>
       </SharedFolderShell>
     );
@@ -218,25 +237,25 @@ function SharedFolderView() {
               </button>
             </div>
           ) : null}
-          {selectedNote ? (
-            <SharedFolderNoteView
-              note={selectedNote}
-              token={token}
-              resolutions={wikilinkResolutions}
-              onBack={() => {
-                setSelectedNote(null, selectedNote.folderId);
-              }}
-            />
-          ) : selectedNoteId ? (
-            <SharedFolderMissingNote
+          {selectedNoteId ? (
+            <SharedFolderSelectedNote
               key={`${token}-${selectedNoteId}`}
               token={token}
-              onBack={() => setSelectedNote(null)}
+              noteId={selectedNoteId}
+              boardView={boardView}
+              onLoaded={onDetailLoaded}
+              onAccessDenied={revalidateShare}
+              onBack={(folderId) => setSelectedNote(null, selectedFolderId ?? folderId)}
             />
           ) : selectedFolder && boardView ? (
             <div className="flex min-h-0 flex-1 flex-col gap-4 p-6">
               <h2 className="shrink-0 text-xl font-semibold">{selectedFolder.title}</h2>
-              <NotesBoard key={`${token}-${selectedFolder.id}`} folderId={selectedFolder.id} shareToken={token} />
+              <NotesBoard
+                key={`${token}-${selectedFolder.id}`}
+                folderId={selectedFolder.id}
+                shareToken={token}
+                onAccessDenied={revalidateShare}
+              />
             </div>
           ) : selectedFolder ? (
             <SharedFolderContents
@@ -379,27 +398,71 @@ function SharedFolderContents({
   );
 }
 
-function SharedFolderMissingNote({ token, onBack }: { token: string; onBack: () => void }) {
-  // Mount only for a cache miss. Refetch the same folder query once per selection,
-  // so the parent can open the note when it arrives without a separate note cache.
-  const { error, isFetching, refetch } = useQuery({
-    ...sharedFolderQueryOptions(token),
-    refetchOnMount: 'always',
-  });
+function SharedFolderSelectedNote({
+  token,
+  noteId,
+  boardView,
+  onBack,
+  onLoaded,
+  onAccessDenied,
+}: {
+  token: string;
+  noteId: string;
+  boardView: boolean;
+  onBack: (folderId?: string) => void;
+  onLoaded: (summary: SharedFolderNoteSummary) => void;
+  onAccessDenied: () => Promise<void>;
+}) {
+  const qc = useQueryClient();
+  const query = useQuery(publicFolderNoteOptions(token, noteId));
+  const reportedAt = useRef<number>(0);
+  const lastAuthorizedFolderId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!query.error) return;
+    discardFailedPublicFolderNote(qc, token, noteId);
+    if (publicShareDenied(query.error)) void onAccessDenied();
+  }, [query.error, qc, token, noteId, onAccessDenied]);
+  useEffect(() => {
+    if (!query.data || query.error || query.isFetching || reportedAt.current === query.dataUpdatedAt) return;
+    reportedAt.current = query.dataUpdatedAt;
+    const { id, folderId, title, documentType, updatedAt } = query.data.note;
+    lastAuthorizedFolderId.current = folderId;
+    onLoaded({ id, folderId, title, documentType, updatedAt });
+  }, [query.data, query.error, query.isFetching, query.dataUpdatedAt, onLoaded]);
+  const resolutions = useMemo(() => {
+    const values = query.data?.resolutions ?? EMPTY_WIKILINK_RESOLUTIONS;
+    if (!boardView) return values;
+    const sharePath = `/share/folders/${encodeURIComponent(token)}`;
+    return values.map((resolution) => {
+      if (!resolution.href?.startsWith(`${sharePath}?`)) return resolution;
+      const url = new URL(resolution.href, window.location.origin);
+      url.searchParams.set('view', 'board');
+      return { ...resolution, href: `${url.pathname}${url.search}${url.hash}` };
+    });
+  }, [boardView, token, query.data?.resolutions]);
+  if (query.data && !query.error && !query.isFetching)
+    return (
+      <SharedFolderNoteView
+        note={query.data.note}
+        token={token}
+        resolutions={resolutions}
+        onBack={() => onBack(query.data.note.folderId)}
+      />
+    );
   return (
     <section className="space-y-4 p-6">
-      <Button onClick={onBack}>Back to folder</Button>
-      {isFetching ? (
+      <Button onClick={() => onBack(lastAuthorizedFolderId.current)}>Back to folder</Button>
+      {query.isPending || query.isFetching ? (
         <p role="status">Loading shared note...</p>
-      ) : error ? (
-        <div role="alert" className="space-y-2">
-          <p>Unable to load shared note.</p>
-          <Button onClick={() => void refetch()}>Retry</Button>
-        </div>
-      ) : (
+      ) : publicShareDenied(query.error) ? (
         <EmptyState title="Shared note unavailable">
           <p>It may have been removed or moved outside this shared folder.</p>
         </EmptyState>
+      ) : (
+        <div role="alert" className="space-y-2">
+          <p>Unable to load shared note.</p>
+          <Button onClick={() => void query.refetch()}>Retry</Button>
+        </div>
       )}
     </section>
   );

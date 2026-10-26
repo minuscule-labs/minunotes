@@ -85,6 +85,11 @@ test('renders callouts and Mermaid diagrams in a shared note', async ({ page }) 
 });
 
 test('loads and navigates folder-shared notes through the note search parameter', async ({ page }) => {
+  const reads: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/internal/share/folders/')) reads.push(path);
+  });
   await mockBrowserApi(page);
   await page.goto(`/share/folders/folder_share_token?note=${browserFixture.linked.id}`);
 
@@ -102,4 +107,9 @@ test('loads and navigates folder-shared notes through the note search parameter'
   await expect(page).toHaveURL('/share/folders/folder_share_token');
   await page.getByRole('button', { name: browserFixture.linked.title }).click();
   await expect(page).toHaveURL(`/share/folders/folder_share_token?note=${browserFixture.linked.id}`);
+  await expect(page.getByRole('heading', { name: browserFixture.linked.title, exact: true })).toBeVisible();
+  expect(
+    reads.filter((path) => path.endsWith('/wikilinks') || path === '/internal/share/folders/folder_share_token')
+  ).toEqual([]);
+  expect(reads.filter((path) => path.endsWith(`/notes/${browserFixture.linked.id}`))).toHaveLength(2);
 });

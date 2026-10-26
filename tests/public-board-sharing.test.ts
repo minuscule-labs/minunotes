@@ -126,7 +126,14 @@ it('shares visibility projection, full classification and zero-column states wit
     'visible',
   ]);
   expect(sharedList.notes.find((n: { id: string }) => n.id === 'hidden').content).toBe('Private body for hidden');
+  const compact = await (await f.read(`/internal/share/folders/${f.token}/navigation`)).json();
+  expect(compact.notes.map((note: { id: string }) => note.id).sort()).toEqual(
+    sharedList.notes.map((note: { id: string }) => note.id).sort()
+  );
+  const detailUrl = `/internal/share/folders/${f.token}/notes/hidden`;
+  expect((await (await f.read(detailUrl)).json()).note.content).toBe('Private body for hidden');
   expect((await f.app.request('/internal/folders/board/share-link', { method: 'DELETE' })).status).toBe(200);
+  expect((await f.read(detailUrl)).status).toBe(404);
   for (const url of [f.configUrl, publicUrl('unclassified', version)]) expect((await f.read(url)).status).toBe(404);
 });
 

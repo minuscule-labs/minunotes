@@ -327,6 +327,14 @@ export type SharedWikilinkResolution = { target: string; href: string | null };
 export type SharedFolderNote = SharedNote & { id: string; folderId: string };
 export type SharedFolder = { id: string; title: string; updatedAt: string };
 export type SharedFolderChild = { id: string; parentFolderId: string | null; title: string; updatedAt: string };
+export type SharedFolderNoteSummary = Omit<SharedFolderNote, 'content'>;
+export type PublicFolderNavigation = {
+  folder: SharedFolder;
+  folders: SharedFolderChild[];
+  notes: SharedFolderNoteSummary[];
+  share: { id: string; permission: 'read'; createdAt: string };
+};
+export type PublicFolderNoteDetail = { note: SharedFolderNote; resolutions: SharedWikilinkResolution[] };
 export type NoteEvent = {
   id: string;
   noteId: string;
@@ -993,6 +1001,16 @@ export const api = {
       notes: SharedFolderNote[];
       share: { id: string; permission: 'read'; createdAt: string };
     }>(`/share/folders/${encodeURIComponent(token)}`),
+  sharedFolderNavigation: (token: string, signal?: AbortSignal) =>
+    request<PublicFolderNavigation>(`/share/folders/${encodeURIComponent(token)}/navigation`, {
+      signal,
+      cache: 'no-store',
+    }),
+  sharedFolderNote: (token: string, noteId: string, signal?: AbortSignal) =>
+    request<PublicFolderNoteDetail>(`/share/folders/${encodeURIComponent(token)}/notes/${encodeURIComponent(noteId)}`, {
+      signal,
+      cache: 'no-store',
+    }),
   sharedFolderNoteWikilinks: (token: string, noteId: string) =>
     request<{ resolutions: SharedWikilinkResolution[] }>(
       `/share/folders/${encodeURIComponent(token)}/notes/${encodeURIComponent(noteId)}/wikilinks`

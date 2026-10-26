@@ -993,6 +993,46 @@ export const harnessOpenApiSpec = {
         },
       },
     },
+    '/internal/share/folders/{token}/navigation': {
+      get: {
+        tags: ['Shared'],
+        operationId: 'readSharedFolderNavigation',
+        summary: 'Read public folder navigation metadata without note bodies',
+        security: [],
+        parameters: [{ $ref: '#/components/parameters/ShareToken' }],
+        responses: {
+          '200': {
+            description: 'Authorized subtree metadata; no note content',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/PublicFolderNavigationResponse' } },
+            },
+          },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '429': { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+    },
+    '/internal/share/folders/{token}/notes/{noteId}': {
+      get: {
+        tags: ['Shared'],
+        operationId: 'readSharedFolderNote',
+        summary: 'Read one freshly authorized public folder note and its wikilink destinations',
+        security: [],
+        description:
+          'Revalidates the active token and current note subtree membership on every read. Navigation metadata and Board cards are not access grants. Responses are not cacheable.',
+        parameters: [{ $ref: '#/components/parameters/ShareToken' }, { $ref: '#/components/parameters/NoteId' }],
+        responses: {
+          '200': {
+            description: 'Selected note and source-bound resolutions',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/PublicFolderNoteResponse' } },
+            },
+          },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '429': { $ref: '#/components/responses/RateLimited' },
+        },
+      },
+    },
     '/internal/share/folders/{token}/notes/{noteId}/wikilinks': {
       get: {
         tags: ['Shared'],
@@ -1431,6 +1471,60 @@ export const harnessOpenApiSpec = {
             type: 'array',
             items: { $ref: '#/components/schemas/SharedWikilinkResolution' },
           },
+        },
+      },
+      PublicFolderNoteSummary: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'folderId', 'title', 'documentType', 'updatedAt'],
+        properties: {
+          id: { type: 'string' },
+          folderId: { type: 'string' },
+          title: { type: 'string' },
+          documentType: { type: 'string', enum: ['markdown', 'canvas.default', 'canvas.mindmap'] },
+          updatedAt: { type: 'string' },
+        },
+      },
+      PublicSharedFolder: {
+        type: 'object',
+        required: ['id', 'title', 'updatedAt'],
+        properties: { id: { type: 'string' }, title: { type: 'string' }, updatedAt: { type: 'string' } },
+      },
+      PublicSharedFolderChild: {
+        type: 'object',
+        required: ['id', 'parentFolderId', 'title', 'updatedAt'],
+        properties: {
+          id: { type: 'string' },
+          parentFolderId: { type: ['string', 'null'] },
+          title: { type: 'string' },
+          updatedAt: { type: 'string' },
+        },
+      },
+      PublicFolderNavigationResponse: {
+        type: 'object',
+        required: ['folder', 'folders', 'notes', 'share'],
+        properties: {
+          folder: { $ref: '#/components/schemas/PublicSharedFolder' },
+          folders: { type: 'array', items: { $ref: '#/components/schemas/PublicSharedFolderChild' } },
+          notes: { type: 'array', items: { $ref: '#/components/schemas/PublicFolderNoteSummary' } },
+          share: { $ref: '#/components/schemas/PublicShareSummary' },
+        },
+      },
+      PublicFolderNoteResponse: {
+        type: 'object',
+        required: ['note', 'resolutions'],
+        properties: {
+          note: {
+            allOf: [
+              { $ref: '#/components/schemas/PublicSharedNote' },
+              {
+                type: 'object',
+                required: ['id', 'folderId'],
+                properties: { id: { type: 'string' }, folderId: { type: 'string' } },
+              },
+            ],
+          },
+          resolutions: { type: 'array', items: { $ref: '#/components/schemas/SharedWikilinkResolution' } },
         },
       },
       AccessSummary: {
