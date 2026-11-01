@@ -672,6 +672,10 @@ select {
 .notes-minu-editor .cm-line.me-hr-line::after {
   border-top-color: var(--notes-border) !important;
 }
+.notes-minu-renderer,
+.notes-minu-editor .me-table-widget {
+  --me-table-cell-min-width: 120px;
+}
 .notes-minu-renderer table,
 .notes-minu-editor .me-table-render {
   width: 100%;
@@ -686,7 +690,7 @@ select {
 .notes-minu-renderer td,
 .notes-minu-editor .me-table-render th,
 .notes-minu-editor .me-table-render td {
-  min-width: 5ch;
+  min-width: var(--me-table-cell-min-width);
   border: 1px solid var(--me-table-border);
   padding: 0.5rem 0.75rem;
   text-align: left;
@@ -743,9 +747,13 @@ select {
   outline: 1px solid var(--notes-border);
   outline-offset: -1px;
 }
+.notes-minu-editor .me-table-widget--editing .me-table-render th,
+.notes-minu-editor .me-table-widget--editing .me-table-render td,
+.notes-minu-editor .me-table-input-sizer {
+  min-width: var(--me-table-cell-min-width);
+}
 .notes-minu-editor .me-table-input {
   width: 100%;
-  min-width: 5ch;
   border: 0;
   background: transparent !important;
   color: var(--notes-text) !important;
