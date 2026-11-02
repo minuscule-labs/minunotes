@@ -118,6 +118,7 @@ function oauthAuthorizationServerMetadata(origin: string) {
 function mcpProtectedResourceMetadata(origin: string) {
   return {
     resource: `${origin}/mcp`,
+    resource_name: 'MinuNotes',
     authorization_servers: [origin],
     bearer_methods_supported: ['header'],
     scopes_supported: ['notes.read', 'notes.create', 'notes.edit'],

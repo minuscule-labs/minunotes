@@ -121,6 +121,7 @@ export function validateDcrRedirectUri(uri: string) {
     hostname === 'chatgpt.com' ||
     hostname.endsWith('.chatgpt.com') ||
     hostname === 'chat.openai.com' ||
+    hostname === 'claude.ai' ||
     hostname === 'localhost' ||
     hostname === '127.0.0.1';
   if (!allowed)
