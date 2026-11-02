@@ -191,6 +191,8 @@ describe('folder duplication', () => {
         ].includes(row.id)
     );
     expect(copied).toHaveLength(4);
+    expect(result.folder.id).toMatch(/^folder_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
+    for (const note of copied) expect(note.id).toMatch(/^note_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
     const target = copied.find((row) => row.title === 'Target'),
       canvas = copied.find((row) => row.title === 'Canvas'),
       template = copied.find((row) => row.title === 'Assigned template');

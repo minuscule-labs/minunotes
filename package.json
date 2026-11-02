@@ -93,7 +93,8 @@
     "react-dom": "latest",
     "sst": "4.14.3",
     "tailwind-merge": "latest",
-    "tldts": "^7.4.10"
+    "tldts": "^7.4.10",
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
