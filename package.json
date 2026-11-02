@@ -1,6 +1,6 @@
 {
   "name": "minunotes",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "type": "module",
   "packageManager": "pnpm@8.15.3",
   "scripts": {
