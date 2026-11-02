@@ -232,12 +232,16 @@ describe('hosted MCP route', () => {
     await expect(response.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 
-  it('serves OAuth protected resource metadata for MCP', async () => {
-    const response = await app.request('/mcp/.well-known/oauth-protected-resource');
+  it.each([
+    '/.well-known/oauth-protected-resource',
+    '/mcp/.well-known/oauth-protected-resource',
+  ])('serves OAuth protected resource metadata for MCP at %s', async (metadataPath) => {
+    const response = await app.request(metadataPath);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       resource: 'http://localhost/mcp',
+      resource_name: 'MinuNotes',
       authorization_servers: ['http://localhost'],
       bearer_methods_supported: ['header'],
     });

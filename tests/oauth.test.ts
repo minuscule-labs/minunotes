@@ -185,15 +185,18 @@ describe('oauth foundations', () => {
     expect(revoke.status).toBe(200);
   }, 10_000);
 
-  it('dynamically registers public OAuth clients', async () => {
+  it.each([
+    ['ChatGPT Connector', 'https://chatgpt.com/connector/oauth/abc123'],
+    ['Claude Connector', 'https://claude.ai/api/mcp/auth_callback'],
+  ])('dynamically registers public OAuth clients for %s', async (clientName, redirectUri) => {
     const { app } = await setupApp();
 
     const response = await app.request('/api/oauth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        client_name: 'ChatGPT Connector',
-        redirect_uris: ['https://chatgpt.com/connector/oauth/abc123'],
+        client_name: clientName,
+        redirect_uris: [redirectUri],
         token_endpoint_auth_method: 'none',
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
@@ -209,19 +212,26 @@ describe('oauth foundations', () => {
       response_types: string[];
     };
     expect(body.client_id).toMatch(/^oauth_client_/);
-    expect(body.redirect_uris).toEqual(['https://chatgpt.com/connector/oauth/abc123']);
+    expect(body.redirect_uris).toEqual([redirectUri]);
     expect(body.token_endpoint_auth_method).toBe('none');
     expect(body.grant_types).toContain('authorization_code');
     expect(body.response_types).toContain('code');
   });
 
-  it('rejects unsupported dynamic client redirect hosts', async () => {
+  it.each([
+    'https://evil.example/callback',
+    'https://subdomain.claude.ai/api/mcp/auth_callback',
+    'https://claude.ai.evil.example/api/mcp/auth_callback',
+    'https://evilclaude.ai/api/mcp/auth_callback',
+    'https://claude.ai@evil.example/api/mcp/auth_callback',
+    'http://claude.ai/api/mcp/auth_callback',
+  ])('rejects untrusted or insecure dynamic client redirect URI %s', async (redirectUri) => {
     const { app } = await setupApp();
 
     const response = await app.request('/api/oauth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ client_name: 'Unknown', redirect_uris: ['https://evil.example/callback'] }),
+      body: JSON.stringify({ client_name: 'Unknown', redirect_uris: [redirectUri] }),
     });
 
     expect(response.status).toBe(400);
