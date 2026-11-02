@@ -19,7 +19,6 @@ export type IntegrationAccessPayload = PermissionValue & {
   collaborationGrantIds: string[];
   permissions: Array<PermissionValue & { folderId: string; appliesTo: 'exact' | 'subtree' }>;
 };
-export type IntegrationCapabilities = PermissionValue & { canCreateFolders: boolean };
 type PermissionKey = keyof PermissionValue;
 
 const PERMISSION_ORDER: PermissionKey[] = ['canRead', 'canCreate', 'canComment', 'canEdit'];
@@ -148,7 +147,7 @@ export function IntegrationAccessForm({
   folders,
   collaborations,
   initialGrant,
-  allowedPermissions,
+  initialCanRead = true,
   onSubmit,
   onSavingChange,
   submitLabel,
@@ -160,7 +159,7 @@ export function IntegrationAccessForm({
   folders: Folder[];
   collaborations: SharedCollaboration[];
   initialGrant?: ApiKey | OAuthAuthorization;
-  allowedPermissions?: IntegrationCapabilities;
+  initialCanRead?: boolean;
   onSubmit: (payload: IntegrationAccessPayload) => Promise<void>;
   onSavingChange?: (saving: boolean) => void;
   submitLabel: string;
@@ -174,7 +173,10 @@ export function IntegrationAccessForm({
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [folderPermissions, setFolderPermissions] = useState<Map<string, PermissionValue>>(new Map());
   const [accessMode, setAccessMode] = useState<ApiKeyAccessMode>('all');
-  const [keyPermission, setKeyPermission] = useState<PermissionValue>(defaultPermission);
+  const [keyPermission, setKeyPermission] = useState<PermissionValue>({
+    ...defaultPermission,
+    canRead: initialCanRead,
+  });
   const [canCreateFolders, setCanCreateFolders] = useState(false);
   const [sharedAccessMode, setSharedAccessMode] = useState<SharedAccessMode>('none');
   const [selectedGrantIds, setSelectedGrantIds] = useState<Set<string>>(new Set());
@@ -208,14 +210,7 @@ export function IntegrationAccessForm({
     [folders, selectableFolders, selectedFolderIds]
   );
   const restrictedScope = accessMode !== 'all';
-  const allowed = allowedPermissions ?? {
-    canRead: true,
-    canCreate: true,
-    canComment: true,
-    canEdit: true,
-    canCreateFolders: true,
-  };
-  const initialPermission = { ...defaultPermission, canRead: allowed.canRead };
+  const initialPermission = { ...defaultPermission, canRead: initialCanRead };
   const folderPermissionFallback = restrictedScope ? initialPermission : keyPermission;
   const selectedPermissionValues = [...selectedFolderIds].map(
     (folderId) => folderPermissions.get(folderId) ?? folderPermissionFallback
@@ -237,7 +232,7 @@ export function IntegrationAccessForm({
             canEdit: currentGrant.canEdit,
             canComment: currentGrant.canComment,
           }
-        : { ...defaultPermission, canRead: allowedPermissions?.canRead ?? true }
+        : { ...defaultPermission, canRead: initialCanRead }
     );
     setSelectedFolderIds(new Set((currentGrant?.permissions ?? []).map((permission) => permission.folderId)));
     setFolderPermissions(
@@ -253,7 +248,7 @@ export function IntegrationAccessForm({
         ])
       )
     );
-  }, [currentGrant, allowedPermissions?.canRead]);
+  }, [currentGrant, initialCanRead]);
   const addFolder = (folder: Folder) => {
     setSelectedFolderIds((current) => new Set(current).add(folder.id));
     setFolderPermissions((current) => new Map(current).set(folder.id, { ...folderPermissionFallback }));
@@ -308,11 +303,6 @@ export function IntegrationAccessForm({
 
   return (
     <>
-      {allowedPermissions ? (
-        <p className="mt-4 text-slate-500 text-xs">
-          Only permissions requested by this app are available. Disabled permissions were not requested.
-        </p>
-      ) : null}
       <div className="mt-4">
         <p className="font-medium text-sm">Scope</p>
         <div className="mt-2 grid gap-2 sm:grid-cols-3">
@@ -369,7 +359,7 @@ export function IntegrationAccessForm({
                   }}
                   type="checkbox"
                   checked={restrictedScope ? selection.checked : keyPermission[key]}
-                  disabled={!allowed[key] || (restrictedScope && selectedFolderIds.size === 0)}
+                  disabled={restrictedScope && selectedFolderIds.size === 0}
                   onChange={(event) => {
                     const enabled = event.target.checked;
                     if (restrictedScope) {
@@ -400,7 +390,6 @@ export function IntegrationAccessForm({
             className="mt-1"
             type="checkbox"
             checked={canCreateFolders}
-            disabled={!allowed.canCreateFolders}
             onChange={(e) => setCanCreateFolders(e.target.checked)}
           />
           <span>
@@ -495,7 +484,7 @@ export function IntegrationAccessForm({
                       <input
                         type="checkbox"
                         checked={restrictedScope ? value[permission] : value[permission] && keyPermission[permission]}
-                        disabled={!allowed[permission] || (!restrictedScope && !keyPermission[permission])}
+                        disabled={!restrictedScope && !keyPermission[permission]}
                         onChange={(event) => updateFolderPermission(folder.id, permission, event.target.checked)}
                       />
                       {permissionLabel(permission)}

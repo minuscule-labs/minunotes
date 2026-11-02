@@ -103,7 +103,7 @@ test('edits a connected OAuth app using the API-key permission controls', async 
   await expect(page.getByText('Read · Create · Comment · Create folders')).toBeVisible();
 });
 
-async function mockConsent(page: Page, scope: string) {
+async function mockConsent(page: Page, scope?: string) {
   await mockBrowserApi(page);
   await page.route('**/internal/oauth/authorize/preview?**', (route) =>
     route.fulfill({
@@ -111,7 +111,7 @@ async function mockConsent(page: Page, scope: string) {
       contentType: 'application/json',
       body: JSON.stringify({
         client: { name: 'Consent Test App', description: null },
-        request: { scope, state: 'test-state', redirectUri: 'https://client.example/callback' },
+        request: { scope: scope ?? fullScope, state: 'test-state', redirectUri: 'https://client.example/callback' },
       }),
     })
   );
@@ -121,7 +121,7 @@ async function mockConsent(page: Page, scope: string) {
     redirect_uri: 'https://client.example/callback',
     code_challenge: 'a'.repeat(43),
     code_challenge_method: 'S256',
-    scope,
+    ...(scope === undefined ? {} : { scope }),
     state: 'test-state',
   });
   await page.goto(`/oauth/authorize?${params}`);
@@ -160,10 +160,46 @@ test('API-key creation retains names, permissions, and one-time token display', 
   await expect(page.getByRole('checkbox', { name: 'Comment', exact: true })).not.toBeChecked();
 });
 
+for (const scope of [undefined, fullScope]) {
+  test(`first-time consent with ${scope === undefined ? 'no scope parameter' : 'all requested scopes'} keeps unselected permissions off`, async ({
+    page,
+  }) => {
+    await mockConsent(page, scope);
+    let body: Record<string, unknown> | null = null;
+    await page.route('**/internal/oauth/authorize/approve', (route) => {
+      body = route.request().postDataJSON();
+      return route.fulfill({ json: { redirectUrl: '/integrations' } });
+    });
+    await expect(page.getByRole('checkbox', { name: 'Read', exact: true })).toBeChecked();
+    for (const name of ['Create', 'Comment', 'Edit', /Allow folder creation/]) {
+      const checkbox = page.getByRole('checkbox', { name, exact: true });
+      await expect(checkbox).toBeEnabled();
+      await expect(checkbox).not.toBeChecked();
+    }
+    await page.getByRole('button', { name: 'Allow access' }).click();
+    await expect
+      .poll(() => body)
+      .toMatchObject({
+        accessMode: 'all',
+        canRead: true,
+        canCreate: false,
+        canEdit: false,
+        canComment: false,
+        canCreateFolders: false,
+        sharedAccessMode: 'none',
+        collaborationGrantIds: [],
+        permissions: [],
+      });
+    if (scope === undefined) expect(body).not.toHaveProperty('scope');
+    else expect(body).toHaveProperty('scope', scope);
+    await expect(page).toHaveURL(/\/integrations$/);
+  });
+}
+
 test('create-only OAuth requests do not silently add Read', async ({ page }) => {
   await mockConsent(page, 'notes.create');
   const read = page.getByRole('checkbox', { name: 'Read', exact: true });
-  await expect(read).toBeDisabled();
+  await expect(read).toBeEnabled();
   await expect(read).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Allow access' })).toBeDisabled();
   await page.getByRole('checkbox', { name: 'Create', exact: true }).check();
@@ -184,30 +220,77 @@ test('project-root consent limits search to roots and clears rules on scope chan
   await expect(page.getByRole('button', { name: 'Allow access' })).toBeDisabled();
 });
 
-test('explains read-only OAuth scope limits and keeps Read toggleable', async ({ page }) => {
+test('initial consent allows explicit permissions beyond the app request', async ({ page }) => {
   await mockConsent(page, 'notes.read');
-  await expect(page.getByText('Disabled permissions were not requested.', { exact: false })).toBeVisible();
-  await expect(page.getByRole('checkbox', { name: 'Read', exact: true })).toBeEnabled();
+  let body: Record<string, unknown> | null = null;
+  await page.route('**/internal/oauth/authorize/approve', (route) => {
+    body = route.request().postDataJSON();
+    return route.fulfill({ json: { redirectUrl: '/integrations' } });
+  });
   for (const name of ['Create', 'Comment', 'Edit']) {
-    await expect(page.getByRole('checkbox', { name, exact: true })).toBeDisabled();
+    const checkbox = page.getByRole('checkbox', { name, exact: true });
+    await expect(checkbox).toBeEnabled();
+    await expect(checkbox).not.toBeChecked();
   }
-  await expect(page.getByRole('checkbox', { name: /Allow folder creation/ })).toBeDisabled();
-  await page.getByRole('checkbox', { name: 'Read', exact: true }).uncheck();
+  const folderCreation = page.getByRole('checkbox', { name: /Allow folder creation/ });
+  await expect(folderCreation).toBeEnabled();
+  await expect(folderCreation).not.toBeChecked();
+  const read = page.getByRole('checkbox', { name: 'Read', exact: true });
+  const comment = page.getByRole('checkbox', { name: 'Comment', exact: true });
+  await comment.check();
+  await read.uncheck();
+  await expect(comment).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Allow access' })).toBeDisabled();
-  await page.getByRole('checkbox', { name: 'Read', exact: true }).check();
-  await expect(page.getByRole('button', { name: 'Allow access' })).toBeEnabled();
-  await page.getByRole('radio', { name: /Specific folders/ }).check();
-  await page.getByPlaceholder('Search folders...').fill('Browser tests');
-  await page.getByRole('button', { name: 'Add Browser tests', exact: true }).click();
-  for (const name of ['Create', 'Comment', 'Edit']) {
-    for (const checkbox of await page.getByRole('checkbox', { name, exact: true }).all()) {
-      await expect(checkbox).toBeDisabled();
-    }
-  }
+  await comment.check();
+  await expect(read).toBeChecked();
+  await folderCreation.check();
+  await folderCreation.uncheck();
+  await folderCreation.check();
+  await expect(comment).toBeChecked();
+  await page.getByRole('button', { name: 'Allow access' }).click();
+  await expect
+    .poll(() => body)
+    .toMatchObject({
+      scope: 'notes.read',
+      accessMode: 'all',
+      canRead: true,
+      canCreate: false,
+      canEdit: false,
+      canComment: true,
+      canCreateFolders: true,
+      sharedAccessMode: 'none',
+      collaborationGrantIds: [],
+      permissions: [],
+    });
+  await expect(page).toHaveURL(/\/integrations$/);
 });
 
-test('consent shares bulk and individual folder controls and submits mixed rules', async ({ page }) => {
-  await mockConsent(page, fullScope);
+test('folder-creation-only consent does not grant note permissions automatically', async ({ page }) => {
+  await mockConsent(page, 'folders.create');
+  let body: Record<string, unknown> | null = null;
+  await page.route('**/internal/oauth/authorize/approve', (route) => {
+    body = route.request().postDataJSON();
+    return route.fulfill({ json: { redirectUrl: '/integrations' } });
+  });
+  for (const name of ['Read', 'Create', 'Comment', 'Edit']) {
+    await expect(page.getByRole('checkbox', { name, exact: true })).not.toBeChecked();
+  }
+  await expect(page.getByRole('button', { name: 'Allow access' })).toBeDisabled();
+  await page.getByRole('checkbox', { name: /Allow folder creation/ }).check();
+  await page.getByRole('button', { name: 'Allow access' }).click();
+  await expect
+    .poll(() => body)
+    .toMatchObject({
+      canRead: false,
+      canCreate: false,
+      canEdit: false,
+      canComment: false,
+      canCreateFolders: true,
+    });
+});
+
+test('consent shares bulk and individual folder controls beyond requested scopes', async ({ page }) => {
+  await mockConsent(page, 'notes.read');
   let body: Record<string, unknown> | null = null;
   await page.route('**/internal/oauth/authorize/approve', (route) => {
     body = route.request().postDataJSON();
@@ -233,6 +316,7 @@ test('consent shares bulk and individual folder controls and submits mixed rules
   await expect(comment.nth(2)).toBeChecked();
   await comment.nth(2).uncheck();
   await page.getByRole('checkbox', { name: 'Edit', exact: true }).nth(2).check();
+  await page.getByRole('checkbox', { name: /Allow folder creation/ }).check();
   await page.getByRole('button', { name: 'Allow access' }).click();
   await expect
     .poll(() => body)
@@ -242,7 +326,8 @@ test('consent shares bulk and individual folder controls and submits mixed rules
       canComment: true,
       canEdit: true,
       canCreate: false,
-      scope: fullScope,
+      scope: 'notes.read',
+      canCreateFolders: true,
       sharedAccessMode: 'none',
       collaborationGrantIds: [],
       permissions: [
