@@ -196,6 +196,82 @@ describe('note link parser', () => {
 });
 
 describe('note link indexing', () => {
+  it('keeps existing UUIDv4 notes readable and editable alongside UUIDv7 notes and links', async () => {
+    const { app, db, schema, folderA } = await setupNoteLinksApp();
+    const legacyId = 'note_f47ac10b58cc4372a5670e02b2c3d479';
+    await db.insert(schema.notes).values({
+      id: legacyId,
+      folderId: folderA.id,
+      userId: folderA.userId,
+      title: 'Existing v4 note',
+      content: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const current = await createNote(
+      app,
+      folderA.id,
+      'New v7 note',
+      `[[${legacyId}|Existing]]\n[Existing](/notes/${legacyId})`
+    );
+    expect(current.id).toMatch(/^note_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
+
+    const read = await app.request(`/api/notes/${legacyId}`);
+    expect(read.status).toBe(200);
+    const legacy = (await read.json()) as { note: { id: string }; contentHash: string };
+    expect(legacy.note.id).toBe(legacyId);
+    const edit = await app.request(`/api/notes/${legacyId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        content: `[[${current.id}|New]]\n[New](/notes/${current.id})`,
+        baseHash: legacy.contentHash,
+      }),
+    });
+    expect(edit.status).toBe(200);
+    await expect(edit.json()).resolves.toMatchObject({ note: { id: legacyId } });
+
+    for (const [sourceId, targetId] of [
+      [legacyId, current.id],
+      [current.id, legacyId],
+    ]) {
+      const links = await app.request(`/api/notes/${sourceId}/links`);
+      expect(links.status).toBe(200);
+      await expect(links.json()).resolves.toMatchObject({
+        links: expect.arrayContaining([
+          expect.objectContaining({ targetNoteId: targetId, linkType: 'wikilink' }),
+          expect.objectContaining({ targetNoteId: targetId, linkType: 'markdown-internal-url' }),
+        ]),
+      });
+    }
+
+    const canvas = await createCanvas(
+      app,
+      folderA.id,
+      'Mixed ID links',
+      JSON.stringify({
+        nodes: [legacyId, current.id].map((id, index) => ({
+          id: `node_${index}`,
+          type: 'text',
+          text: 'Target',
+          x: index * 200,
+          y: 0,
+          width: 160,
+          height: 80,
+          minunotes: { link: { type: 'note', id } },
+        })),
+        edges: [],
+      })
+    );
+    const links = await app.request(`/api/notes/${canvas.id}/links`);
+    expect(links.status).toBe(200);
+    await expect(links.json()).resolves.toMatchObject({
+      links: expect.arrayContaining(
+        [legacyId, current.id].map((targetNoteId) => expect.objectContaining({ targetNoteId, linkType: 'canvas-note' }))
+      ),
+    });
+  });
+
   it('indexes resolved links and returns backlinks', async () => {
     const { app, folderA } = await setupNoteLinksApp();
     const target = await createNote(app, folderA.id, 'Target Note');

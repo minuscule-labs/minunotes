@@ -8,6 +8,15 @@ const resolver = createInternalNoteUrlPasteResolver({
 
 describe('internal note URL paste resolver', () => {
   it.each([
+    'note_f47ac10b58cc4372a5670e02b2c3d479',
+    'note_01941f297c0075f4a310744d2167fc5b',
+  ])('resolves both UUIDv4 and UUIDv7 note IDs: %s', (target) => {
+    expect(resolver(`https://notes.minusculelabs.com/notes/${target}`, { selectedText: '', mode: 'live' })).toEqual({
+      target,
+    });
+  });
+
+  it.each([
     'http://localhost:5173/notes/note_abc123',
     'http://localhost:5173/notes/note_abc123/',
     'https://notes.minusculelabs.com/notes/note_abc123',

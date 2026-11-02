@@ -109,6 +109,7 @@ describe('harness canvas operations', () => {
     const { note } = (await response.json()) as {
       note: { id: string; title: string; documentType: string; content?: string };
     };
+    expect(note.id).toMatch(/^note_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
     expect(note.title).toBe('Raw canvas');
     expect(note.documentType).toBe('canvas.default');
     expect(note.content).toBeUndefined();

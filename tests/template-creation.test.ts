@@ -55,6 +55,7 @@ describe('atomic reviewed creation', () => {
     const body = await reviewed(f, { values: { [schema.definitions[0].id]: 'Exact' } });
     const result = await f.templates.createFromTemplate({ actorUserId: 'editor' }, body);
     const [note] = await f.db.select().from(f.schema.notes).where(eq(f.schema.notes.id, result.note.id));
+    expect(note.id).toMatch(/^note_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
     expect(note).toMatchObject({
       userId: 'owner',
       createdByUserId: 'editor',
