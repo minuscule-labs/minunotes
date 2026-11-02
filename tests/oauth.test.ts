@@ -659,7 +659,7 @@ describe('oauth foundations', () => {
     });
   });
 
-  it('rejects unsupported scopes and permissions beyond the requested scope', async () => {
+  it('rejects unsupported scopes during preview and approval', async () => {
     const { app } = await setupApp();
     const verifier = 's'.repeat(64);
     const base = `response_type=code&client_id=client_a&redirect_uri=${encodeURIComponent('https://client.example/callback')}&code_challenge=${encodeURIComponent(pkceChallenge(verifier))}&code_challenge_method=S256`;
@@ -677,7 +677,7 @@ describe('oauth foundations', () => {
         redirectUri: 'https://client.example/callback',
         codeChallenge: pkceChallenge(verifier),
         codeChallengeMethod: 'S256',
-        scope: 'notes.read',
+        scope: 'notes.read admin',
         accessMode: 'all',
         canRead: true,
         canEdit: true,
@@ -685,6 +685,267 @@ describe('oauth foundations', () => {
     });
     expect(approve.status).toBe(400);
     await expect(approve.json()).resolves.toMatchObject({ error: 'invalid_scope' });
+  });
+
+  it.each([
+    'all',
+    'specific',
+    'top_level',
+  ])('allows explicit permissions beyond requested scopes during %s consent', async (accessMode) => {
+    const { app, bearerApp, db, schema, user } = await setupApp();
+    await db.insert(schema.folders).values({
+      id: 'folder_consent',
+      userId: user.id,
+      title: 'Consent folder',
+      parentFolderId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const verifier = 'e'.repeat(64);
+    const capabilities = {
+      canRead: true,
+      canCreate: true,
+      canEdit: true,
+      canComment: true,
+      canCreateFolders: true,
+    };
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge(verifier),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read',
+        accessMode,
+        ...capabilities,
+        permissions: [{ folderId: 'folder_consent', ...capabilities }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const expectedScope = 'notes.read notes.create notes.edit comments.write folders.create';
+    await expect(db.select().from(schema.integrationAuthorizations)).resolves.toMatchObject([capabilities]);
+    await expect(db.select().from(schema.oauthAuthorizations)).resolves.toMatchObject([{ scope: expectedScope }]);
+    await expect(db.select().from(schema.oauthAuthorizationCodes)).resolves.toMatchObject([{ scope: expectedScope }]);
+    await expect(db.select().from(schema.authorizationFolderRules)).resolves.toMatchObject([
+      { folderId: 'folder_consent', ...capabilities, appliesTo: accessMode === 'top_level' ? 'subtree' : 'exact' },
+    ]);
+
+    const { redirectUrl } = (await response.json()) as { redirectUrl: string };
+    const token = await app.request('/api/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: 'client_a',
+        redirect_uri: 'https://client.example/callback',
+        code: new URL(redirectUrl).searchParams.get('code') ?? '',
+        code_verifier: verifier,
+      }),
+    });
+    expect(token.status).toBe(200);
+    const tokens = (await token.json()) as { access_token: string; refresh_token: string; scope: string };
+    expect(tokens.scope).toBe(expectedScope);
+    const authenticated = await bearerApp.request('/', {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+    });
+    expect(authenticated.status).toBe(200);
+    await expect(authenticated.json()).resolves.toMatchObject({ authorization: capabilities });
+
+    const refresh = await app.request('/api/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
+    });
+    expect(refresh.status).toBe(200);
+    await expect(refresh.json()).resolves.toMatchObject({ scope: expectedScope });
+  });
+
+  it.each([
+    { selection: 'neither', canComment: false, canCreateFolders: false },
+    { selection: 'Comment only', canComment: true, canCreateFolders: false },
+    { selection: 'folder creation only', canComment: false, canCreateFolders: true },
+    { selection: 'both', canComment: true, canCreateFolders: true },
+  ])('enforces $selection through hosted MCP after initial consent and refresh', async ({
+    canComment,
+    canCreateFolders,
+  }) => {
+    const { app, bearerApp, db, schema, user } = await setupApp();
+    const { mcpRoutes } = await import('../src/api/routes/mcp');
+    bearerApp.route('/mcp', mcpRoutes);
+    await db.insert(schema.folders).values({
+      id: 'folder_mcp_consent',
+      userId: user.id,
+      title: 'MCP consent',
+      parentFolderId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const content = 'Review this note.';
+    await db.insert(schema.notes).values({
+      id: 'note_mcp_consent',
+      userId: user.id,
+      folderId: 'folder_mcp_consent',
+      title: 'Consent review',
+      content,
+      documentType: 'markdown',
+      type: 'note',
+      isApiEditable: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const verifier = 'm'.repeat(64);
+    const approval = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge(verifier),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read',
+        accessMode: 'all',
+        canRead: true,
+        canCreate: false,
+        canEdit: false,
+        canComment,
+        canCreateFolders,
+      }),
+    });
+    expect(approval.status).toBe(200);
+    const { redirectUrl } = (await approval.json()) as { redirectUrl: string };
+    const exchange = await app.request('/api/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: 'client_a',
+        redirect_uri: 'https://client.example/callback',
+        code: new URL(redirectUrl).searchParams.get('code') ?? '',
+        code_verifier: verifier,
+      }),
+    });
+    expect(exchange.status).toBe(200);
+    const tokens = (await exchange.json()) as { refresh_token: string; scope: string };
+    const expectedScope = [
+      'notes.read',
+      canComment ? 'comments.write' : null,
+      canCreateFolders ? 'folders.create' : null,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    expect(tokens.scope).toBe(expectedScope);
+    const refresh = await app.request('/api/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token }),
+    });
+    expect(refresh.status).toBe(200);
+    const refreshed = (await refresh.json()) as { access_token: string; scope: string };
+    expect(refreshed.scope).toBe(expectedScope);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await bearerApp.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${refreshed.access_token}`,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()).result;
+    };
+    const forbidden = {
+      isError: true,
+      content: [{ type: 'text', text: expect.stringContaining('(403)') }],
+    };
+    const read = await call('notes_get_note', { noteId: 'note_mcp_consent' });
+    expect(read.isError).not.toBe(true);
+    const { contentHash } = read.structuredContent.result;
+    expect(contentHash).toEqual(expect.any(String));
+    const comment = await call('notes_create_comment', {
+      noteId: 'note_mcp_consent',
+      body: 'Explicitly authorized review',
+      anchor: { anchorType: 'range', from: 0, to: content.length, quote: content, documentHash: contentHash },
+    });
+    if (canComment) {
+      expect(comment.isError).not.toBe(true);
+      expect(comment.structuredContent.result.thread.messages[0].body).toBe('Explicitly authorized review');
+    } else expect(comment).toMatchObject(forbidden);
+    await expect(db.select().from(schema.noteCommentThreads)).resolves.toHaveLength(canComment ? 1 : 0);
+
+    const folder = await call('notes_create_folder', { title: 'Explicitly authorized folder' });
+    if (canCreateFolders) {
+      expect(folder.isError).not.toBe(true);
+      expect(folder.structuredContent.result.folder.title).toBe('Explicitly authorized folder');
+    } else expect(folder).toMatchObject(forbidden);
+    await expect(db.select().from(schema.folders)).resolves.toHaveLength(canCreateFolders ? 2 : 1);
+
+    expect(await call('notes_create_note', { folderId: 'folder_mcp_consent', title: 'Not authorized' })).toMatchObject(
+      forbidden
+    );
+    expect(
+      await call('notes_edit_note', {
+        noteId: 'note_mcp_consent',
+        baseHash: contentHash,
+        edits: [{ type: 'append', text: 'Not authorized' }],
+      })
+    ).toMatchObject({ isError: true, content: [{ type: 'text', text: 'Note not found (404)' }] });
+    await expect(db.select().from(schema.notes)).resolves.toMatchObject([{ id: 'note_mcp_consent', content }]);
+  });
+
+  it.each([
+    { scope: 'notes.create', canCreate: true, canCreateFolders: false },
+    { scope: 'folders.create', canCreate: false, canCreateFolders: true },
+  ])('does not implicitly add Read to $scope consent', async ({ scope, canCreate, canCreateFolders }) => {
+    const { app, db, schema } = await setupApp();
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('n'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope,
+        accessMode: 'all',
+        canCreate,
+        canCreateFolders,
+      }),
+    });
+    expect(response.status).toBe(200);
+    await expect(db.select().from(schema.oauthAuthorizations)).resolves.toMatchObject([{ scope }]);
+    await expect(db.select().from(schema.integrationAuthorizations)).resolves.toMatchObject([
+      { canRead: false, canCreate, canCreateFolders, canComment: false, canEdit: false },
+    ]);
+  });
+
+  it('still rejects Comment without Read during initial consent', async () => {
+    const { app, db, schema } = await setupApp();
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('c'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.create',
+        accessMode: 'all',
+        canRead: false,
+        canComment: true,
+      }),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'Comment permission requires read permission' });
+    await expect(db.select().from(schema.integrationAuthorizations)).resolves.toHaveLength(0);
+    await expect(db.select().from(schema.oauthAuthorizationCodes)).resolves.toHaveLength(0);
   });
 
   it.each([
@@ -777,8 +1038,42 @@ describe('oauth foundations', () => {
     ]);
   });
 
+  it('keeps folder rules within the explicitly approved maximum permissions', async () => {
+    const { app, db, schema, user } = await setupApp();
+    await db.insert(schema.folders).values({
+      id: 'folder_ceiling',
+      userId: user.id,
+      title: 'Folder ceiling',
+      parentFolderId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const response = await app.request('/api/oauth/authorize/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        responseType: 'code',
+        clientId: 'client_a',
+        redirectUri: 'https://client.example/callback',
+        codeChallenge: pkceChallenge('p'.repeat(64)),
+        codeChallengeMethod: 'S256',
+        scope: 'notes.read',
+        accessMode: 'all',
+        canRead: true,
+        canCreate: false,
+        canEdit: false,
+        canComment: false,
+        permissions: [{ folderId: 'folder_ceiling', canRead: true, canCreate: true, canEdit: true, canComment: true }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    await expect(db.select().from(schema.oauthAuthorizations)).resolves.toMatchObject([{ scope: 'notes.read' }]);
+    await expect(db.select().from(schema.authorizationFolderRules)).resolves.toMatchObject([
+      { folderId: 'folder_ceiling', canRead: true, canCreate: false, canEdit: false, canComment: false },
+    ]);
+  });
+
   it.each([
-    { name: 'scope escalation', permissions: [{ folderId: 'folder_test', canEdit: true }], error: 'invalid_scope' },
     {
       name: 'comment without read',
       permissions: [{ folderId: 'folder_test', canRead: false, canComment: true }],
@@ -922,15 +1217,21 @@ describe('oauth foundations', () => {
         redirectUri: 'https://client.example/callback',
         codeChallenge: pkceChallenge(verifier),
         codeChallengeMethod: 'S256',
-        scope: 'notes.read notes.edit',
+        scope: 'notes.read notes.create notes.edit comments.write folders.create',
         accessMode: 'all',
         canRead: true,
+        canCreate: false,
         canEdit: false,
+        canComment: false,
+        canCreateFolders: false,
       }),
     });
     expect(approve.status).toBe(200);
     const [approved] = await db.select().from(schema.oauthAuthorizations);
     expect(approved.scope).toBe('notes.read');
+    await expect(db.select().from(schema.integrationAuthorizations)).resolves.toMatchObject([
+      { canRead: true, canCreate: false, canEdit: false, canComment: false, canCreateFolders: false },
+    ]);
 
     const bearer = 'mnoac_scope_intersection';
     await db.insert(schema.integrationAuthorizations).values({

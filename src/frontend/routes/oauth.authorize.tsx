@@ -76,13 +76,7 @@ function OAuthAuthorizeView() {
         <IntegrationAccessForm
           folders={folders.data?.folders ?? []}
           collaborations={collaborations.data?.collaborations ?? []}
-          allowedPermissions={{
-            canRead: requestedScopes.has('notes.read'),
-            canCreate: requestedScopes.has('notes.create'),
-            canEdit: requestedScopes.has('notes.edit'),
-            canComment: requestedScopes.has('comments.write') && requestedScopes.has('notes.read'),
-            canCreateFolders: requestedScopes.has('folders.create'),
-          }}
+          initialCanRead={requestedScopes.has('notes.read')}
           submitLabel="Allow access"
           onSubmit={async (payload) => {
             const { redirectUrl } = await api.approveOAuthAuthorization({ ...request, ...payload });

@@ -25,7 +25,6 @@ import {
   generateOAuthToken,
   hashOAuthToken,
   isRedirectUriAllowed,
-  oauthCapabilitiesFitScope,
   oauthError,
   oauthScopeForCapabilities,
   parseOAuthScope,
@@ -678,7 +677,7 @@ oauthRoutes.post('/authorize/approve', async (c) => {
   if (!requestedScope.ok)
     return c.json(oauthError('invalid_scope', `Unsupported scopes: ${requestedScope.unsupported.join(', ')}`), 400);
 
-  const canRead = body.canRead ?? true;
+  const canRead = body.canRead ?? requestedScope.scopes.has('notes.read');
   const canCreate = body.canCreate ?? false;
   const canEdit = body.canEdit ?? false;
   const canComment = body.canComment ?? false;
@@ -687,8 +686,8 @@ oauthRoutes.post('/authorize/approve', async (c) => {
   if (!canRead && !canCreate && !canEdit && !canComment && !canCreateFolders)
     return c.json({ error: 'At least one permission is required' }, 400);
   if (canComment && !canRead) return c.json({ error: 'Comment permission requires read permission' }, 400);
-  if (!oauthCapabilitiesFitScope(approvedCapabilities, requestedScope.scopes))
-    return c.json(oauthError('invalid_scope', 'Approved permissions exceed the requested OAuth scope'), 400);
+  // Consent is an explicit user choice, just like editing an existing connection.
+  // The client's requested scopes do not limit that choice; unchecked capabilities stay off.
   const approvedScope = oauthScopeForCapabilities(approvedCapabilities);
   if (
     body.sharedAccessMode !== undefined &&
@@ -740,17 +739,10 @@ oauthRoutes.post('/authorize/approve', async (c) => {
   if (new Set(permissionInputs.map((permission) => permission.folderId)).size !== permissionInputs.length)
     return c.json({ error: 'Duplicate folder permissions' }, 400);
   for (const permission of permissionInputs) {
-    const capabilities = {
-      canRead: permission.canRead ?? canRead,
-      canCreate: permission.canCreate ?? canCreate,
-      canEdit: permission.canEdit ?? canEdit,
-      canComment: permission.canComment ?? canComment,
-      canCreateFolders,
-    };
-    if (capabilities.canComment && !capabilities.canRead)
+    const folderCanRead = permission.canRead ?? canRead;
+    const folderCanComment = permission.canComment ?? canComment;
+    if (folderCanComment && !folderCanRead)
       return c.json({ error: 'Comment permission requires read permission' }, 400);
-    if (!oauthCapabilitiesFitScope(capabilities, requestedScope.scopes))
-      return c.json(oauthError('invalid_scope', 'Folder permissions exceed the requested OAuth scope'), 400);
   }
   if (accessMode !== 'all' && permissionInputs.length === 0)
     return c.json({ error: 'At least one folder is required' }, 400);
