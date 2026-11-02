@@ -27,6 +27,7 @@ export default defineConfig(async ({ mode }) => {
   return {
     plugins: [mdx({ remarkPlugins: [remarkFrontmatter, remarkMdxFrontmatter] }), react(), tailwindcss()],
     test: {
+      maxWorkers: 4,
       // Demo lifecycle tests bind ports and start real servers; run with test:demo instead.
       exclude: [
         '**/node_modules/**',
