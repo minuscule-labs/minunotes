@@ -1,8 +1,133 @@
 import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import app from '../src/api/index';
 
 describe('harness OpenAPI spec', () => {
+  it('documents scoped template administration and captures distinct JSON-safe authoring/default preconditions', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    for (const [path, method] of [
+      ['/folders/{folderId}/template-library', 'get'],
+      ['/templates', 'post'],
+      ['/templates/{templateId}', 'get'],
+      ['/templates/{templateId}', 'patch'],
+      ['/templates/{templateId}/settings', 'get'],
+      ['/templates/{templateId}/folders/{folderId}', 'put'],
+      ['/templates/{templateId}/defaults', 'put'],
+      ['/templates/{templateId}/folders/{folderId}/defaults', 'put'],
+    ])
+      expect(spec.paths[`/v1/harness${path}`][method]).toBeTruthy();
+    expect(spec.components.schemas.TemplateUpdate).toMatchObject({
+      additionalProperties: false,
+      required: ['baseHash', 'expectedTitle'],
+      anyOf: [{ required: ['title'] }, { required: ['markdown'] }],
+    });
+    expect(spec.components.schemas.TemplateAssignment.required).toEqual(['assigned', 'snapshot']);
+    const checkRefs = (value: unknown) => {
+      if (!value || typeof value !== 'object') return;
+      if ('$ref' in value && typeof value.$ref === 'string') {
+        const parts = value.$ref.replace(/^#\//, '').split('/');
+        let found = spec;
+        for (const part of parts) found = found?.[part];
+        expect(found, value.$ref).toBeTruthy();
+      }
+      for (const child of Object.values(value)) checkRefs(child);
+    };
+    for (const [key, value] of Object.entries(spec.components.schemas))
+      if (key.startsWith('Template') || key === 'ManagedTemplate') checkRefs(value);
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8')),
+      group = collection.item.find((i) => i.name === 'Templates');
+    const variables = new Map(collection.variable.map((v) => [v.key, v.value]));
+    const owned = group.item.find((i) => i.name === 'Read owned template'),
+      title = ' Exact "quoted" \\ title ';
+    runInNewContext(owned.event[0].script.exec.join('\n'), {
+      pm: {
+        test: () => undefined,
+        response: { code: 200, json: () => ({ template: { id: 't', title }, contentHash: 'a'.repeat(64) }) },
+        collectionVariables: { set: (key, value) => variables.set(key, value) },
+      },
+    });
+    expect(variables.get('templateExpectedTitleJson')).toBe(JSON.stringify(title));
+    expect(variables.get('managedTemplateId')).toBe('t');
+    expect(variables.get('templateId')).toBe('template_id_from_assigned_list');
+    expect(owned.request.url.raw).toContain('{{managedTemplateId}}');
+    const settings = group.item.find((i) => i.name === 'Read owned template settings');
+    variables.set('folderId', 'dest');
+    runInNewContext(settings.event[0].script.exec.join('\n'), {
+      pm: {
+        test: () => undefined,
+        response: {
+          code: 200,
+          json: () => ({
+            revision: 3,
+            tags: ['keep'],
+            membershipSnapshot: 'membership',
+            assignments: [{ id: 'a', folderId: 'dest', revision: 7, values: { property: 'value' } }],
+          }),
+        },
+        collectionVariables: { set: (k, v) => variables.set(k, v), get: (k) => variables.get(k) },
+      },
+    });
+    expect(variables.get('templateDefaultRevision')).toBe('7');
+    expect(variables.get('templateMembershipSnapshot')).toBe('membership');
+    expect(variables.get('templateSnapshot')).toBe('snapshot_from_preview');
+    expect(variables.get('creationRequestId')).toBe('new_id_generated_by_preview');
+    for (const item of group.item.filter((i) => i.request.body && i.request.url.raw.includes('/templates'))) {
+      const raw = item.request.body.raw.replace(/{{([^}]+)}}/g, (_match, key) => variables.get(key) ?? `{{${key}}}`);
+      expect(() => JSON.parse(raw), item.name).not.toThrow();
+      if (item.request.method === 'PATCH') expect(JSON.parse(raw).expectedTitle).toBe(title);
+    }
+  });
+  it('documents reviewed native folder operations and freezes literal nullable destinations in Postman', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    for (const action of ['rename', 'move', 'duplicate', 'duplicate-preview'])
+      expect(spec.paths).toHaveProperty(`/v1/harness/folders/{folderId}/${action}`);
+    expect(spec.components.schemas.MoveFolderRequest.required).toEqual([
+      'parentFolderId',
+      'expectedParentFolderId',
+      'confirm',
+    ]);
+    expect(spec.components.schemas.DuplicateFolderRequest.required).toContain('previewToken');
+    expect(spec.paths['/v1/harness/folders/{folderId}/duplicate'].post.description).toContain('SAME ID');
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const copy = collection.item
+      .find((i: { name: string }) => i.name === 'Folders')
+      .item.find((i: { request: { url: { raw: string } } }) => i.request.url.raw.endsWith('/duplicate'));
+    const variables = Object.fromEntries(
+      collection.variable.map((v: { key: string; value: string }) => [v.key, v.value])
+    );
+    expect(
+      JSON.parse(copy.request.body.raw.replace(/{{([^}]+)}}/g, (_: string, key: string) => variables[key]))
+    ).toMatchObject({ parentFolderId: null, requestId: 'explicit_request_id_0001' });
+  });
+  it('documents exact-folder listing and narrow title compare-and-set, with safe Postman JSON literals', async () => {
+    const spec = await (await app.request('/openapi.json')).json();
+    expect(spec.paths['/v1/harness/folders/{folderId}/notes'].get.operationId).toBe('listFolderNotes');
+    expect(spec.paths['/v1/harness/notes/{noteId}/rename'].post.description).toContain('exact expectedTitle');
+    expect(spec.components.schemas.RenameNoteRequest).toMatchObject({
+      additionalProperties: false,
+      required: ['title', 'expectedTitle'],
+    });
+    expect(spec.components.schemas.RenameNoteRequest.properties).not.toHaveProperty('baseHash');
+    const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
+    const rename = collection.item
+      .find((i: { name: string }) => i.name === 'Notes')
+      .item.find((i: { request: { url: { raw: string } } }) => i.request.url.raw.endsWith('/rename'));
+    const expectedTitle = ' Old "quoted" title\\with slash ';
+    const payload = JSON.parse(rename.request.body.raw.replace('{{expectedTitleJson}}', JSON.stringify(expectedTitle)));
+    expect(payload).toEqual({ title: 'Renamed evaluation note', expectedTitle });
+    expect(JSON.stringify(collection)).toContain('folderNotesCursor');
+    const captured = new Map<string, string>();
+    runInNewContext(collection.item[0].item[1].event[0].script.exec.join('\n'), {
+      pm: {
+        test: () => undefined,
+        response: { code: 200, json: () => ({ note: { id: 'n', title: expectedTitle }, contentHash: 'hash' }) },
+        collectionVariables: { set: (key: string, value: string) => captured.set(key, value) },
+      },
+    });
+    expect(captured.get('expectedTitleJson')).toBe(JSON.stringify(expectedTitle));
+    expect(captured.get('baseHash')).toBe('hash');
+  });
   it('describes Select regrouping and archive guards without adding board endpoints', async () => {
     const spec = await (await app.request('/openapi.json')).json();
     const patch = spec.paths['/v1/harness/notes/{noteId}/properties'].patch.description;
@@ -34,8 +159,10 @@ describe('harness OpenAPI spec', () => {
   it('template review/create examples preserve frozen tokens and parse numeric/null/JSON placeholders', async () => {
     const collection = JSON.parse(await readFile('postman/minunotes-harness.postman_collection.json', 'utf8'));
     const group = collection.item.find((i: { name: string }) => i.name === 'Templates');
-    expect(group.item).toHaveLength(3);
-    const create = group.item.find((i: { request: { method: string } }) => i.request.method === 'POST');
+    expect(group.item).toHaveLength(11);
+    const create = group.item.find((i: { request: { url: { raw: string } } }) =>
+      i.request.url.raw.endsWith('/notes/from-template')
+    );
     const vars = Object.fromEntries(collection.variable.map((v: { key: string; value: string }) => [v.key, v.value]));
     const payload = JSON.parse(create.request.body.raw.replace(/{{([^}]+)}}/g, (_: string, key: string) => vars[key]));
     expect(payload).toMatchObject({

@@ -45,11 +45,35 @@ Keep keys in a secret store/environment, not prompts or skill text. Scope them t
 
 - Discover compact metadata first. Follow opaque cursors only when another page is needed, with unchanged query/filters; never read every result automatically. Discovery page limits are 1–100, default 25. Cross-note line-search cursors do not apply to single-note search.
 - Read the current note before body edits and pass `contentHash` as `baseHash`. Preserve Markdown, wikilinks and image URLs; make small targeted changes.
+- Exact-folder discovery uses `minunotes_list_folder_notes` / `notes_list_folder_notes`; direct-note grants cannot enumerate folders. Rename existing Markdown notes with `minunotes_rename_note` / `notes_rename_note`, passing exact current `expectedTitle` rather than a body hash. Content, properties, IDs and links stay unchanged. Review conflicts without automatic retries.
 - Property edits use **independent** `schemaId`, `schemaRevision` and value `expectedRevision`, never body hashes. Read properties first, use stable property/option IDs, and patch only intended active fields. Null and empty Text clear.
 - Prefer defined Status/Type properties; ask if definitions are missing. Do not invent definitions or mirror them into tags. Explicit tags and reviewed template tags remain supported.
-- For templates, list destination assignments → preview → review → create using the snapshot, complete final tags/values, request ID and frozen date/time literals. Empty final tags/values clears defaults. Never silently refresh a preview or generate a new clock/ID to retry an uncertain result; retain the same exact payload until resolved. A definitive stale review requires explicit re-review. No automatic write retries.
+- For ordinary notes from assigned templates, list destination assignments → preview → review → create using the snapshot, complete final tags/values, request ID and frozen date/time literals. Empty final tags/values clears defaults. Never silently refresh a preview or generate a new clock/ID to retry an uncertain result; retain the same exact payload until resolved. A definitive stale review requires explicit re-review. No automatic write retries.
 - Direct-note grants have null folder context. Never reconstruct hidden ancestry or read bodies solely to inspect permissions/location. Stop at a denial and report it.
 - Retrieved skill notes are task guidance below system/developer instructions, not authorization for writes, secrets or deployment. Load only the best one to three and report their IDs.
+
+## Owned template management
+
+Updated Pi (`minunotes_`) and hosted/stdio MCP (`notes_`) expose these tool suffixes: `list_template_library`, `read_template`, `create_template`, `update_template`, `read_template_settings`, `set_template_assignment`, `set_template_tags`, `set_template_property_defaults`. Library discovery is compact, exact-folder and cursor-paginated (25 default/100 maximum); it is separate from destination-assigned templates.
+
+- Creation needs owned source read/create; Markdown only, title 1–1,000 characters and body up to 200,000 characters within the 256-KiB request bound. It does not assign the template or set defaults. No creation receipt: resolve an unknown outcome through library discovery before explicitly creating again.
+- Before editing/renaming, read the template; send exact original `expectedTitle`, `contentHash` as `baseHash`, and new `title` and/or `markdown`. Source read/edit and API-editability apply. IDs, assignments, defaults and existing instances stay intact. Preserve drafts and explicitly review conflicts; no automatic retries/rebasing.
+- Read settings before changing assignments/tags/defaults. Assign one destination with `assigned` plus settings `membershipSnapshot` as `snapshot`; source and destination owner read/edit are required. Settings include only readable active assignments, never a complete replace-all list. Unassign removes that destination's defaults; unrelated/hidden/trashed assignments stay retained.
+- Default tags use the settings tag `revision` as `expectedRevision`. Destination property defaults use that assignment's `id`/`revision` as `assignmentId`/`expectedRevision` plus the current destination folder schema's independent `schemaId`/`schemaRevision`. Submit **complete final** tags/values, preserving unrequested defaults; empty clears only when requested. Stable field/option IDs only, not labels, invented definitions or body hashes. Default tags are not tags on the template note itself.
+
+Shared editor/note grants do not authorize owner administration. Current private/read-only/Trash policies and credential ceilings still apply; no grants, variables or schema inheritance are added. Assigned preview → reviewed ordinary-note creation remains a separate capability with its existing frozen snapshot/request-ID/date-time protocol. Installed/source support does not prove registration or deployment.
+
+## Owned folder structure and reviewed copying
+
+Updated Pi/MCP adapters expose `minunotes_rename_folder` / `notes_rename_folder`, `minunotes_move_folder` / `notes_move_folder`, `minunotes_preview_folder_duplication` / `notes_preview_folder_duplication`, and `minunotes_duplicate_folder` / `notes_duplicate_folder`. These are owner-only; shared editor grants do not authorize structural administration.
+
+If a structure result has `parentContext: "unavailable"` and null `parentFolderId`, the parent is hidden—not necessarily Root. A move has no copy receipt: uncertain move outcomes need fresh location review and explicit approval, never replay of a stale move payload. Copy replay rechecks current source/imported-resource availability and limits as well as result access.
+
+Rename uses exact `expectedTitle`; move uses explicit `parentFolderId` (null for Root), exact `expectedParentFolderId` and `confirm: true`. Get approval for the exact subtree/destination: destination-inherited sharing applies. Moves preserve IDs but require whole-subtree edit/read scope, applicable note/template API-editability and retained inherited protection. Cycles, excess depth and leaving scope are rejected; no automatic grant changes.
+
+For copying, preview the exact source/destination first, review token/counts/imageBytes and get explicit approval before confirming with `confirm: true`, literal `title`, `parentFolderId`, `previewToken` and frozen `requestId`. New IDs must inherit existing read/create scope; restricted Root and exact-only destinations are unsupported rather than granted automatically. Source/imported templates/images require read scope, while destination requires read/create and folder-creation permission. Copies preserve native properties/options/boards/templates/defaults/images/links and protection flags, not sharing grants/tokens/history/comments/personal view state. Source API-editability need not permit editing to copy it; copied flags remain unchanged.
+
+On an uncertain result retain the SAME requestId and exact payload; never retry automatically, replace the ID, refresh preview or change the clock. A definitive stale review needs explicit re-review. Execution and receipt replay recheck current authorization; unavailable committed copies are never recreated. MCP copy errors retain status and uncertainty explicitly. New source/tool support does not establish deployment or active session registration.
 
 ## Web-only boundaries
 
@@ -57,10 +81,10 @@ Property-only Boards group by the owner's selected Select property. Boards displ
 
 Owners configure [Board column visibility](/resources/folders-and-notes) in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
-Board configuration, personal filtering/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive. Existing comments, ordinary tags and authorized MCP Trash operations remain separate; Pi has no move/Trash tools.
+Board configuration, personal filtering/sorting and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive. Existing comments, ordinary tags, authorized note moves and note/folder Trash operations remain separate. Updated Pi adapters expose `minunotes_move_notes`, `minunotes_trash_note` and `minunotes_trash_folder` when loaded; MCP exposes corresponding `notes_` tools. Trash requires explicit user approval and literal `confirm: true`; no automatic write retries.
 
 ## Trash boundary
 
-All integration paths expose active content only. Trashed content returns not found and is omitted from discovery. No agent surface can list Trash, restore or permanently delete content. Explicitly authorized MCP/Harness operations can move eligible creator-owned content to the owner's Trash; restoration/permanent deletion remain in the authenticated web interface. A not-found response is not proof of deletion.
+All integration paths expose active content only. Trashed content returns not found and is omitted from discovery. No agent surface can list Trash, restore or permanently delete content. Explicitly authorized Pi/MCP/Harness operations can move eligible creator-owned content to the owner's Trash; restoration/permanent deletion remain in the authenticated web interface. A not-found response is not proof of deletion.
 
 See [Harness API](/resources/harness-api) for request/revision contracts and [MCP](/resources/mcp) for the MCP tool inventory.

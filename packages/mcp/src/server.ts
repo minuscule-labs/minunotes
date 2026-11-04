@@ -40,6 +40,22 @@ function toolResult(data: unknown) {
   };
 }
 
+async function copyToolResult(run: () => Promise<unknown>) {
+  try {
+    return toolResult(await run());
+  } catch (error) {
+    const failure = error as Error & { status?: number; data?: { uncertain?: boolean } };
+    return {
+      ...toolResult({
+        error: failure?.message ?? String(error),
+        status: failure?.status ?? null,
+        uncertain: failure?.data?.uncertain ?? true,
+      }),
+      isError: true,
+    };
+  }
+}
+
 const propertyMutationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reorder_options'), propertyId: z.string(), optionIds: z.array(z.string()) }).strict(),
   z
@@ -88,8 +104,35 @@ const templateCreationSchema = z
   .strict();
 export type TemplateCreation = z.infer<typeof templateCreationSchema>;
 
+export type RenameNoteInput = { title: string; expectedTitle: string };
+export type FolderMoveInput = { parentFolderId: string | null; expectedParentFolderId: string | null; confirm: true };
+export type FolderCopyInput = { title: string; parentFolderId: string | null; requestId: string; previewToken: string };
+
+export type TemplateAuthoringInput = { folderId: string; title: string; markdown: string };
+export type TemplateUpdateInput = { baseHash: string; expectedTitle: string; title?: string; markdown?: string };
+export type TemplateAssignmentInput = { assigned: boolean; snapshot: string };
+
 export type NotesMcpClient = {
+  templates: {
+    library: (folderId: string, input?: { limit?: number; cursor?: string }) => Promise<unknown>;
+    read: (templateId: string) => Promise<unknown>;
+    create: (input: TemplateAuthoringInput) => Promise<unknown>;
+    update: (templateId: string, input: TemplateUpdateInput) => Promise<unknown>;
+    settings: (templateId: string) => Promise<unknown>;
+    assign: (templateId: string, folderId: string, input: TemplateAssignmentInput) => Promise<unknown>;
+    tags: (templateId: string, input: { expectedRevision: number; tags: string[] }) => Promise<unknown>;
+    defaults: (
+      templateId: string,
+      folderId: string,
+      input: PropertyPatch & { assignmentId: string }
+    ) => Promise<unknown>;
+  };
   folders: {
+    rename: (folderId: string, input: RenameNoteInput) => Promise<unknown>;
+    move: (folderId: string, input: FolderMoveInput) => Promise<unknown>;
+    duplicatePreview: (folderId: string, parentFolderId: string | null) => Promise<unknown>;
+    duplicate: (folderId: string, input: FolderCopyInput) => Promise<unknown>;
+    notes: (folderId: string, input?: { limit?: number; cursor?: string }) => Promise<unknown>;
     templates: (folderId: string) => Promise<unknown>;
     templatePreview: (folderId: string, templateId: string) => Promise<unknown>;
     list: (input?: { limit?: number; cursor?: string }) => Promise<unknown>;
@@ -99,6 +142,7 @@ export type NotesMcpClient = {
     mutateProperties: (folderId: string, input: SchemaMutationRequest) => Promise<unknown>;
   };
   notes: {
+    rename: (noteId: string, input: RenameNoteInput) => Promise<unknown>;
     fromTemplate: (input: TemplateCreation) => Promise<unknown>;
     search: (input: { query: string; tag?: string; limit?: number; cursor?: string }) => Promise<unknown>;
     get: (noteId: string) => Promise<unknown>;
@@ -185,6 +229,143 @@ export type NotesMcpClient = {
 
 export function createNotesMcpServer(client: NotesMcpClient) {
   const server = new McpServer({ name: 'minunotes', version: '0.1.0' });
+  const templateId = z.string().min(1).max(100);
+  const templateTitle = z.string().min(1).max(1000).regex(/\S/);
+  const revision = z
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER - 1);
+  const readHints = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+  const writeHints = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+  server.registerTool(
+    'notes_list_template_library',
+    {
+      title: 'List owned template library',
+      description:
+        'One compact exact-folder page of owned templates, not assigned templates or bodies. Requires source read scope; never enumerate shared libraries. Follow unchanged cursors only as needed.',
+      inputSchema: z
+        .object({
+          folderId: templateId,
+          limit: z.number().int().min(1).max(100).optional(),
+          cursor: z.string().min(1).optional(),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: readHints,
+    },
+    async ({ folderId, ...input }) => toolResult(await client.templates.library(folderId, input))
+  );
+  server.registerTool(
+    'notes_read_template',
+    {
+      title: 'Read owned template',
+      description:
+        'Read an owned Markdown template body/title and contentHash for authoring. Current source read scope applies; assigned-template preview is a separate narrower capability.',
+      inputSchema: z.object({ templateId }).strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: readHints,
+    },
+    async ({ templateId }) => toolResult(await client.templates.read(templateId))
+  );
+  server.registerTool(
+    'notes_create_template',
+    {
+      title: 'Create owned template',
+      description:
+        'Create a Markdown template only when requested, requiring owned source read/create. Does not assign it or set defaults. No automatic retry or durable creation receipt: resolve unknown outcomes by library discovery before explicitly creating again.',
+      inputSchema: z.object({ folderId: templateId, title: templateTitle, markdown: z.string().max(200000) }).strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: { ...writeHints, destructiveHint: false },
+    },
+    async (input) => toolResult(await client.templates.create(input))
+  );
+  server.registerTool(
+    'notes_update_template',
+    {
+      title: 'Edit or rename owned template',
+      description:
+        'Read the template first; pass its exact expectedTitle and contentHash as baseHash plus title and/or markdown. Requires source read/edit and API-editability. Preserves ID, assignments and defaults. Preserve drafts and explicitly review conflicts; never rebase or retry automatically.',
+      inputSchema: z
+        .object({
+          templateId,
+          baseHash: z.string().regex(/^[a-f0-9]{64}$/),
+          expectedTitle: z.string().max(200000),
+          title: templateTitle.optional(),
+          markdown: z.string().max(200000).optional(),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: writeHints,
+    },
+    async ({ templateId, ...input }) => {
+      if (input.title === undefined && input.markdown === undefined) throw new Error('title or markdown is required');
+      return toolResult(await client.templates.update(templateId, input));
+    }
+  );
+  server.registerTool(
+    'notes_read_template_settings',
+    {
+      title: 'Read owned template settings',
+      description:
+        'Read independent default-tag revision, membershipSnapshot and only readable active destination assignments/default revisions. This is a scoped view, never a replace-all membership list. Hidden/trashed assignments remain retained.',
+      inputSchema: z.object({ templateId }).strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: readHints,
+    },
+    async ({ templateId }) => toolResult(await client.templates.settings(templateId))
+  );
+  server.registerTool(
+    'notes_set_template_assignment',
+    {
+      title: 'Set one template assignment',
+      description:
+        'Read template settings first; use membershipSnapshot as snapshot. Assign/unassign only the named owned destination with source/destination read/edit and source API-editability. Unassign removes its defaults; preserve all other/hidden assignments. Only when requested, with explicit conflict review and no automatic retry.',
+      inputSchema: z
+        .object({ templateId, folderId: templateId, assigned: z.boolean(), snapshot: z.string().min(1).max(128) })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: writeHints,
+    },
+    async ({ templateId, folderId, ...input }) => toolResult(await client.templates.assign(templateId, folderId, input))
+  );
+  server.registerTool(
+    'notes_set_template_tags',
+    {
+      title: 'Set template default tags',
+      description:
+        'Read template settings first; replace only default tags using their independent expectedRevision, not contentHash. Complete final explicit tags; empty clears only when requested. Does not tag the template note itself. No automatic retries or invented tags.',
+      inputSchema: z
+        .object({ templateId, expectedRevision: revision, tags: z.array(z.string().min(1).max(80)).max(50) })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: writeHints,
+    },
+    async ({ templateId, ...input }) => toolResult(await client.templates.tags(templateId, input))
+  );
+  server.registerTool(
+    'notes_set_template_property_defaults',
+    {
+      title: 'Set destination template defaults',
+      description:
+        'Read template settings and destination folder schema first. Use assignmentId/default revision and independent schemaId/schemaRevision; complete final values with stable property/option IDs, never contentHash or invented definitions. Source/destination read/edit and source API-editability apply. No automatic retries; explicitly review conflicts.',
+      inputSchema: z
+        .object({
+          templateId,
+          folderId: templateId,
+          assignmentId: templateId,
+          expectedRevision: revision,
+          schemaId: templateId.nullable(),
+          schemaRevision: revision,
+          values: z.record(z.string().max(100), z.string().max(1000).nullable()),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: writeHints,
+    },
+    async ({ templateId, folderId, ...input }) =>
+      toolResult(await client.templates.defaults(templateId, folderId, input))
+  );
   server.registerTool(
     'notes_list_assigned_templates',
     {
@@ -831,6 +1012,106 @@ export function createNotesMcpServer(client: NotesMcpClient) {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ noteId, ...input }) => toolResult(await client.notes.patchProperties(noteId, input))
+  );
+  server.registerTool(
+    'notes_list_folder_notes',
+    {
+      title: 'List exact folder notes',
+      description:
+        'List one page of compact ordinary-note metadata in an authorized folder, including canvas formats, without content or templates. Direct-note grants do not authorize folder enumeration. Follow pageInfo.nextCursor unchanged only when more metadata is needed.',
+      inputSchema: z
+        .object({
+          folderId: z.string().min(1).max(100),
+          limit: z.number().int().min(1).max(100).optional(),
+          cursor: z.string().min(1).optional(),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId, ...input }) => toolResult(await client.folders.notes(folderId, input))
+  );
+  server.registerTool(
+    'notes_rename_note',
+    {
+      title: 'Rename Markdown note',
+      description:
+        'Rename an existing ordinary Markdown note without changing content, properties, ID or links. Supply exact expectedTitle from current metadata; body hashes do not detect title changes. Conflicts require review, not automatic retries. Shared responses hide containing-folder context.',
+      inputSchema: z
+        .object({
+          noteId: z.string().min(1).max(100),
+          title: z.string().trim().min(1).max(1000),
+          expectedTitle: z.string(),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ noteId, ...input }) => toolResult(await client.notes.rename(noteId, input))
+  );
+  const folderId = z.string().min(1).max(100);
+  const parent = folderId.nullable();
+  const structureHints = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+  server.registerTool(
+    'notes_rename_folder',
+    {
+      title: 'Rename owned folder',
+      description:
+        'Owner-only scoped folder rename with exact expectedTitle. Preserves identity; conflicts require review, never automatic retry.',
+      inputSchema: z.object({ folderId, title: z.string().trim().min(1).max(200), expectedTitle: z.string() }).strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: structureHints,
+    },
+    async ({ folderId, ...input }) => toolResult(await client.folders.rename(folderId, input))
+  );
+  server.registerTool(
+    'notes_move_folder',
+    {
+      title: 'Move owned folder subtree',
+      description:
+        'Owner-only move preserving folder/note IDs. Requires exact expectedParentFolderId and explicit user approval with confirm:true for the destination, whose inherited sharing applies. Checks the whole subtree, API-editability, destination and resulting scope; rejects cycles/depth overflow and loss of inherited protection. No automatic retries or grant changes.',
+      inputSchema: z
+        .object({ folderId, parentFolderId: parent, expectedParentFolderId: parent, confirm: z.literal(true) })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: structureHints,
+    },
+    async ({ folderId, ...input }) => toolResult(await client.folders.move(folderId, input))
+  );
+  server.registerTool(
+    'notes_preview_folder_duplication',
+    {
+      title: 'Review owned folder duplication',
+      description:
+        'Read-only preview of a native owned-folder copy into an explicit destination (null/omitted means Root). Requires full source/imported-resource read scope, destination read/create and folder creation permission. New IDs must inherit scope: no automatic grants. Returns token/counts/imageBytes; never starts a copy or accesses storage. Review before confirmation.',
+      inputSchema: z.object({ folderId, parentFolderId: parent.optional() }).strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId, parentFolderId }) =>
+      toolResult(await client.folders.duplicatePreview(folderId, parentFolderId ?? null))
+  );
+  server.registerTool(
+    'notes_duplicate_folder',
+    {
+      title: 'Duplicate reviewed owned folder',
+      description:
+        'Confirm the exact previewed native copy; destination-inherited access applies. Preserves native metadata/templates/images/links and protections, never sharing grants/tokens. Requires confirm:true, reviewed previewToken, title/destination and frozen requestId. Keep the SAME ID and exact payload after uncertain outcomes; stale review needs explicit re-review. Rechecks authorization on execution/replay. No automatic retries, clock/ID generation or preview refresh.',
+      inputSchema: z
+        .object({
+          folderId,
+          title: z.string().trim().min(1).max(200),
+          parentFolderId: parent,
+          requestId: z.string().regex(/^[a-zA-Z0-9_-]{16,128}$/),
+          previewToken: z.string().regex(/^[a-f0-9]{64}$/),
+          confirm: z.literal(true),
+        })
+        .strict(),
+      outputSchema: jsonObjectSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ folderId, title, parentFolderId, requestId, previewToken }) =>
+      copyToolResult(() => client.folders.duplicate(folderId, { title, parentFolderId, requestId, previewToken }))
   );
   return server;
 }

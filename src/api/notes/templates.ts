@@ -12,6 +12,7 @@ import {
   templateTags,
   templateValues,
 } from '../../shared/templates';
+import { syncNoteAttachmentReferences } from '../attachments/references';
 import {
   folders,
   noteCreationRequests,
@@ -20,20 +21,29 @@ import {
   templateDefaultState,
   templateFolderAssignments,
 } from '../db/schema';
-import { createDocument } from '../harness/commands';
+import { ownedFolderPolicy } from '../folders/structure';
+import { createDocument, getNoteEventSummary, insertNoteEvent } from '../harness/commands';
 import { hashMarkdown } from '../harness/hash';
 import { isFolderEffectivelyPrivate } from '../lib/folder-access';
 import { createId } from '../lib/id';
 import { activeFolderWhere, activeNoteWhere, filterActiveFolderHierarchy } from '../trash/policy';
+import { reindexNoteLinks, resolveUnresolvedNoteLinks } from './links';
 import { authorizeMetadata, type MetadataActor, metadataSchema } from './metadata-access';
 import { type MetadataTx, metadataTransaction } from './metadata-transaction';
 import { setNoteTags } from './tags';
+import { createNoteVersion } from './versions';
+
+const MAX_TEMPLATE_ASSIGNMENTS = 1000;
 
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
-async function ownedTemplate(tx: MetadataTx, actor: MetadataActor, templateId: string) {
-  if (actor.actorType === 'agent') throw new PropertyError('Only the owner manages defaults', 403);
+async function ownedTemplate(
+  tx: MetadataTx,
+  actor: MetadataActor,
+  templateId: string,
+  capability: 'read' | 'edit' = 'edit'
+) {
   const [note] = await tx
     .select()
     .from(notes)
@@ -46,6 +56,12 @@ async function ownedTemplate(tx: MetadataTx, actor: MetadataActor, templateId: s
       )
     );
   if (!note) throw new PropertyError('Template not found', 404);
+  await authorizeMetadata(tx, actor, note.folderId, actor.actorUserId, null, 'read');
+  if (capability === 'edit') {
+    await authorizeMetadata(tx, actor, note.folderId, actor.actorUserId, null, 'edit');
+    if (actor.actorType === 'agent' && !note.isApiEditable)
+      throw new PropertyError('Template is not editable through the API', 403);
+  }
   return note;
 }
 async function assignments(tx: MetadataTx, ownerId: string, templateId: string) {
@@ -67,22 +83,21 @@ async function tagState(tx: MetadataTx, templateId: string, ownerId: string) {
 }
 export async function readTemplateMembership(actor: MetadataActor, templateId: string) {
   return metadataTransaction(async (tx) => {
-    await ownedTemplate(tx, actor, templateId);
+    await ownedTemplate(tx, actor, templateId, 'read');
     const rows = await assignments(tx, actor.actorUserId, templateId);
-    const active = filterActiveFolderHierarchy(
-      await tx
-        .select()
-        .from(folders)
-        .where(and(eq(folders.userId, actor.actorUserId), isNull(folders.deletedAt)))
-    );
-    return { folders: active.filter((f) => rows.some((r) => r.folderId === f.id)), snapshot: membership(rows) };
+    const policy = await ownedFolderPolicy(tx, actor);
+    return {
+      folders: policy.tree.folders.filter((f) => policy.allowed(f.id, 'read') && rows.some((r) => r.folderId === f.id)),
+      snapshot: membership(rows),
+    };
   });
 }
 export async function saveTemplateMembership(actor: MetadataActor, templateId: string, input: unknown) {
+  if (actor.actorType === 'agent') throw new PropertyError('Use per-destination assignment changes', 403);
   const body = templateObject(input, ['folderIds', 'snapshot']);
   if (
     !Array.isArray(body.folderIds) ||
-    body.folderIds.length > 1000 ||
+    body.folderIds.length > MAX_TEMPLATE_ASSIGNMENTS ||
     new Set(body.folderIds).size !== body.folderIds.length
   )
     throw new PropertyError('Invalid folder IDs');
@@ -123,29 +138,61 @@ export async function saveTemplateMembership(actor: MetadataActor, templateId: s
     return { ok: true, snapshot: membership(current) };
   });
 }
+async function templateDefaults(tx: MetadataTx, actor: MetadataActor, templateId: string): Promise<TemplateDefaults> {
+  await ownedTemplate(tx, actor, templateId, 'read');
+  const rows = await assignments(tx, actor.actorUserId, templateId);
+  const policy = await ownedFolderPolicy(tx, actor);
+  const visible = policy.tree.folders.filter((f) => policy.allowed(f.id, 'read'));
+  return {
+    ...(await tagState(tx, templateId, actor.actorUserId)),
+    assignments: rows
+      .filter((r) => visible.some((f) => f.id === r.folderId))
+      .map((r) => ({
+        id: r.id,
+        folderId: r.folderId,
+        title: visible.find((f) => f.id === r.folderId)?.title ?? '',
+        revision: r.defaultsRevision,
+        schemaId: r.schemaId,
+        values: JSON.parse(r.propertyDefaults),
+      })),
+  };
+}
 export async function readTemplateDefaults(actor: MetadataActor, templateId: string): Promise<TemplateDefaults> {
+  return metadataTransaction((tx) => templateDefaults(tx, actor, templateId));
+}
+export async function readTemplateSettings(actor: MetadataActor, templateId: string) {
+  return metadataTransaction(async (tx) => ({
+    ...(await templateDefaults(tx, actor, templateId)),
+    membershipSnapshot: membership(await assignments(tx, actor.actorUserId, templateId)),
+  }));
+}
+export async function setTemplateAssignment(
+  actor: MetadataActor,
+  templateId: string,
+  folderId: string,
+  input: unknown
+) {
+  const body = templateObject(input, ['assigned', 'snapshot']);
+  if (typeof body.assigned !== 'boolean') throw new PropertyError('assigned must be a boolean');
+  const snapshot = templateString(body.snapshot, 128);
   return metadataTransaction(async (tx) => {
     await ownedTemplate(tx, actor, templateId);
+    await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'read');
+    await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'edit');
     const rows = await assignments(tx, actor.actorUserId, templateId);
-    const active = filterActiveFolderHierarchy(
+    if (membership(rows) !== snapshot) throw new PropertyError('Assignments changed; review before retrying', 409);
+    const current = rows.find((row) => row.folderId === folderId);
+    if (body.assigned && !current) {
+      const policy = await ownedFolderPolicy(tx, actor);
+      if (rows.filter((row) => policy.tree.byId.has(row.folderId)).length >= MAX_TEMPLATE_ASSIGNMENTS)
+        throw new PropertyError(`At most ${MAX_TEMPLATE_ASSIGNMENTS} active template assignments are allowed`);
       await tx
-        .select()
-        .from(folders)
-        .where(and(eq(folders.userId, actor.actorUserId), isNull(folders.deletedAt)))
-    );
-    return {
-      ...(await tagState(tx, templateId, actor.actorUserId)),
-      assignments: rows
-        .filter((r) => active.some((f) => f.id === r.folderId))
-        .map((r) => ({
-          id: r.id,
-          folderId: r.folderId,
-          title: active.find((f) => f.id === r.folderId)?.title ?? '',
-          revision: r.defaultsRevision,
-          schemaId: r.schemaId,
-          values: JSON.parse(r.propertyDefaults),
-        })),
-    };
+        .insert(templateFolderAssignments)
+        .values({ id: createId('template_folder'), userId: actor.actorUserId, templateId, folderId });
+    }
+    if (!body.assigned && current)
+      await tx.delete(templateFolderAssignments).where(eq(templateFolderAssignments.id, current.id));
+    return { ok: true, snapshot: membership(await assignments(tx, actor.actorUserId, templateId)) };
   });
 }
 export async function saveTemplateTags(actor: MetadataActor, templateId: string, input: unknown) {
@@ -194,6 +241,7 @@ export async function saveAssignmentDefaults(
     revision = propertyRevision(body.schemaRevision);
   return metadataTransaction(async (tx) => {
     await ownedTemplate(tx, actor, templateId);
+    await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'read');
     await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'edit');
     const [row] = await tx
       .select()
@@ -218,6 +266,117 @@ export async function saveAssignmentDefaults(
     return { id, revision: expected + 1, schemaId, values };
   });
 }
+function managedDocument(note: typeof notes.$inferSelect) {
+  return {
+    template: {
+      id: note.id,
+      title: note.title,
+      folderId: note.folderId,
+      body: note.content,
+      isApiEditable: note.isApiEditable,
+    },
+    contentHash: hashMarkdown(note.content),
+  };
+}
+export async function readManagedTemplate(actor: MetadataActor, templateId: string) {
+  return metadataTransaction(async (tx) => managedDocument(await ownedTemplate(tx, actor, templateId, 'read')));
+}
+export async function createManagedTemplate(actor: MetadataActor, input: unknown) {
+  const body = templateObject(input, ['folderId', 'title', 'markdown']);
+  const folderId = templateString(body.folderId, 100),
+    title = templateString(body.title, 1000).trim(),
+    markdown = templateString(body.markdown, 200000, true);
+  return metadataTransaction(async (tx) => {
+    await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'read');
+    await authorizeMetadata(tx, actor, folderId, actor.actorUserId, null, 'create');
+    const result = await createDocument(
+      {
+        userId: actor.actorUserId,
+        creatorUserId: actor.actorUserId,
+        folderId,
+        title,
+        markdown,
+        type: 'template',
+        actorType: actor.actorType,
+        actorId: actor.actorId ?? actor.actorUserId,
+      },
+      tx
+    );
+    if (!result.ok) throw new PropertyError(result.error, result.status as 400 | 404);
+    return managedDocument(await ownedTemplate(tx, actor, result.value.note.id, 'read'));
+  });
+}
+export async function updateManagedTemplate(actor: MetadataActor, templateId: string, input: unknown) {
+  const body = templateObject(input, ['baseHash', 'expectedTitle', 'title', 'markdown']);
+  const baseHash = templateString(body.baseHash, 64),
+    expectedTitle = templateString(body.expectedTitle, 200000, true);
+  if (!/^[a-f0-9]{64}$/.test(baseHash) || (body.title === undefined && body.markdown === undefined))
+    throw new PropertyError('A body hash, exact title and title/markdown change are required');
+  const title = body.title === undefined ? undefined : templateString(body.title, 1000).trim();
+  const markdown = body.markdown === undefined ? undefined : templateString(body.markdown, 200000, true);
+  return metadataTransaction(async (tx) => {
+    const current = await ownedTemplate(tx, actor, templateId);
+    if (current.title !== expectedTitle || hashMarkdown(current.content) !== baseHash)
+      throw new PropertyError('Template changed; read and review before retrying', 409);
+    const titleChanged = title !== undefined && title !== current.title,
+      contentChanged = markdown !== undefined && markdown !== current.content;
+    if (!titleChanged && !contentChanged) return managedDocument(current);
+    const [note] = await tx
+      .update(notes)
+      .set({
+        title: title ?? current.title,
+        content: markdown ?? current.content,
+        updatedAt: new Date(),
+        updatedByActorType: actor.actorType ?? 'user',
+        updatedByActorId: actor.actorId ?? actor.actorUserId,
+      })
+      .where(
+        activeNoteWhere(
+          actor.actorUserId,
+          eq(notes.id, current.id),
+          eq(notes.folderId, current.folderId),
+          eq(notes.title, expectedTitle),
+          eq(notes.content, current.content),
+          eq(notes.type, 'template'),
+          eq(notes.documentType, 'markdown')
+        )
+      )
+      .returning();
+    if (!note) throw new PropertyError('Template changed; read and review before retrying', 409);
+    await createNoteVersion(
+      {
+        note: current,
+        reason: actor.actorType === 'agent' ? 'before_agent_edit' : 'autosave_checkpoint',
+        actorType: actor.actorType ?? 'user',
+        actorId: actor.actorId,
+      },
+      tx
+    );
+    if (contentChanged) {
+      await syncNoteAttachmentReferences({ noteId: note.id, userId: note.userId, markdown: note.content }, tx);
+      await reindexNoteLinks(
+        { noteId: note.id, userId: note.userId, markdown: note.content, documentType: 'markdown' },
+        tx
+      );
+    }
+    if (titleChanged) await resolveUnresolvedNoteLinks({ noteId: note.id, userId: note.userId, title: note.title }, tx);
+    await insertNoteEvent(
+      {
+        noteId: note.id,
+        userId: note.userId,
+        actorType: actor.actorType ?? 'user',
+        actorId: actor.actorId ?? actor.actorUserId,
+        eventType: 'update',
+        summary: getNoteEventSummary('update', { titleChanged, contentChanged }),
+        beforeHash: baseHash,
+        afterHash: hashMarkdown(note.content),
+      },
+      tx
+    );
+    return managedDocument(note);
+  });
+}
+
 /** Include retained assignments even when their template or storage folder is in Trash. */
 export async function guardTemplateDefaults(
   tx: MetadataTx,

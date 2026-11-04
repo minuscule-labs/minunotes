@@ -2,6 +2,70 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createClient, loadConfig, NotesConfigurationError } from '../src/config';
 
 describe('config', () => {
+  it('forwards eight owner template routes, exact preconditions and complete clears without retries', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'key' });
+    await client.templates.library('folder /1', { limit: 1, cursor: 'literal +/=' });
+    await client.templates.read('template /1');
+    await client.templates.create({ folderId: 'f', title: 'T', markdown: '' });
+    const update = { expectedTitle: ' Exact "Title" ', baseHash: 'a'.repeat(64), markdown: '' };
+    await client.templates.update('template /1', update);
+    await client.templates.settings('template /1');
+    await client.templates.assign('template /1', 'folder /1', { assigned: false, snapshot: 'membership' });
+    await client.templates.tags('template /1', { expectedRevision: 2, tags: [] });
+    const defaults = { assignmentId: 'a', expectedRevision: 3, schemaId: null, schemaRevision: 0, values: {} };
+    await client.templates.defaults('template /1', 'folder /1', defaults);
+    expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(
+      [
+        '/folders/folder%20%2F1/template-library',
+        '/templates/template%20%2F1',
+        '/templates',
+        '/templates/template%20%2F1',
+        '/templates/template%20%2F1/settings',
+        '/templates/template%20%2F1/folders/folder%20%2F1',
+        '/templates/template%20%2F1/defaults',
+        '/templates/template%20%2F1/folders/folder%20%2F1/defaults',
+      ].map((p) => `/v1/harness${p}`)
+    );
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('cursor')).toBe('literal +/=');
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: 'PATCH', body: JSON.stringify(update) });
+    expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: 'PUT', body: JSON.stringify(defaults) });
+    const denied = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'Assignments changed' }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', denied);
+    await expect(client.templates.assign('t', 'f', { assigned: true, snapshot: 'stale' })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(denied).toHaveBeenCalledTimes(1);
+  });
+  it('uses native folder endpoints and preserves frozen copy payload without automatic retries', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'key' });
+    await client.folders.rename('folder /1', { title: 'New', expectedTitle: 'Old' });
+    await client.folders.move('folder /1', { parentFolderId: null, expectedParentFolderId: 'old', confirm: true });
+    await client.folders.duplicatePreview('folder /1', null);
+    const frozen = {
+      title: 'Copy',
+      parentFolderId: null,
+      requestId: 'fixed_request_0001',
+      previewToken: 'a'.repeat(64),
+    };
+    await client.folders.duplicate('folder /1', frozen);
+    expect(fetchMock.mock.calls.map((call) => new URL(String(call[0])).pathname)).toEqual(
+      ['rename', 'move', 'duplicate-preview', 'duplicate'].map((p) => `/v1/harness/folders/folder%20%2F1/${p}`)
+    );
+    expect(fetchMock.mock.calls[3]).toEqual([
+      expect.any(String),
+      expect.objectContaining({ body: JSON.stringify(frozen) }),
+    ]);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -35,6 +99,37 @@ describe('config', () => {
       expectedUrl,
       expect.objectContaining({ headers: expect.objectContaining({ 'x-api-key': 'key' }) })
     );
+  });
+
+  it('forwards exact-folder cursors and literal rename preconditions without retries', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient({ NOTES_API_URL: 'https://example.com', NOTES_API_KEY: 'key' });
+    await client.folders.notes('folder /1', { limit: 1, cursor: 'literal +/=' });
+    const input = { title: 'After', expectedTitle: ' Before "quoted" ' };
+    await client.notes.rename('note /1', input);
+    const listUrl = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(listUrl.pathname).toBe('/v1/harness/folders/folder%20%2F1/notes');
+    expect(Object.fromEntries(listUrl.searchParams)).toEqual({ limit: '1', cursor: 'literal +/=' });
+    expect(fetchMock.mock.calls[1]).toEqual([
+      'https://example.com/v1/harness/notes/note%20%2F1/rename',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(input) }),
+    ]);
+    const denied = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'Title changed' }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', denied);
+    await expect(client.notes.rename('n', input)).rejects.toMatchObject({
+      status: 409,
+      data: { error: 'Title changed' },
+    });
+    expect(denied).toHaveBeenCalledTimes(1);
   });
 
   it('uses destination template paths and preserves the exact reviewed creation payload', async () => {

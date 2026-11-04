@@ -23,6 +23,7 @@ export type FolderDuplicationRequest = {
 };
 export type FolderDuplicationCounts = { folders: number; notes: number; templates: number; attachments: number };
 export type FolderDuplicationResult = {
+  parentContext?: 'unavailable';
   folder: { id: string; title: string; parentFolderId: string | null };
   counts: FolderDuplicationCounts;
   replayed: boolean;

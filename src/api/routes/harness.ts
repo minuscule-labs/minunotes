@@ -1,5 +1,6 @@
 import { eq, inArray } from 'drizzle-orm';
 import { type Context, Hono } from 'hono';
+import { FolderDuplicationError } from '../../shared/folder-duplication';
 import { PropertyError } from '../../shared/properties';
 import { db } from '../db/client';
 import {
@@ -10,6 +11,8 @@ import {
   notes,
   type OAuthAuthorization,
 } from '../db/schema';
+import { duplicateFolder, previewFolderDuplication } from '../folders/duplicate';
+import { moveOwnedFolder, renameOwnedFolder } from '../folders/structure';
 import {
   type CanvasSyntaxFormat,
   canvasDocumentFromSyntax,
@@ -100,7 +103,19 @@ import {
   readNoteProperties,
 } from '../notes/properties';
 import { listIntegrationAccessibleTags, listNoteTags, listUserTags, setNoteTags } from '../notes/tags';
-import { createFromTemplate, listAssignedTemplates, previewAssignedTemplate } from '../notes/templates';
+import { listFolderNotes, renameMarkdownNote } from '../notes/task-automation';
+import {
+  createFromTemplate,
+  createManagedTemplate,
+  listAssignedTemplates,
+  previewAssignedTemplate,
+  readManagedTemplate,
+  readTemplateSettings,
+  saveAssignmentDefaults,
+  saveTemplateTags,
+  setTemplateAssignment,
+  updateManagedTemplate,
+} from '../notes/templates';
 import { trashFolder, trashNote } from '../trash/operations';
 
 type Variables = {
@@ -579,6 +594,118 @@ harnessRoutes.get('/folders', async (c) => {
   return c.json({ folders: visibleFolders, pageInfo: page.pageInfo });
 });
 
+harnessRoutes.get('/folders/:folderId/notes', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const folderId = c.req.param('folderId');
+  const access = await resolveHarnessFolder(c, folderId, 'read');
+  if (!access) return c.json({ error: 'Folder not found' }, 404);
+  const queries = c.req.queries();
+  if (Object.keys(queries).some((key) => !['limit', 'cursor'].includes(key) || queries[key].length !== 1))
+    return c.json({ error: 'Only limit and cursor are supported' }, 400);
+  const scope = paginationScope(
+    'folder-notes-v1:title-id:note',
+    user.id,
+    getIntegrationAuthorization(c)?.authorizationId ?? '',
+    getActor(c).actorId ?? '',
+    folderId
+  );
+  try {
+    const result = await listFolderNotes({
+      actor: propertyActor(c),
+      ownerId: access.resourceOwnerUserId,
+      folderId,
+      limit: parsePageLimit(c.req.query('limit')),
+      cursorScope: scope,
+      cursor: decodeCursor(c.req.query('cursor'), scope, isTitleIdPosition),
+    });
+    return c.json({ notes: result.notes.map(summarizeHarnessNote), pageInfo: result.pageInfo });
+  } catch (error) {
+    if (error instanceof InvalidCursorError) return c.json({ error: error.message }, 400);
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
+harnessRoutes.use('/notes/:noteId/rename', createRequestSizeLimitMiddleware({ maxBytes: 64 * 1024 }));
+harnessRoutes.post('/notes/:noteId/rename', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const result = await renameMarkdownNote(
+      propertyActor(c),
+      c.req.param('noteId'),
+      await c.req.json().catch(() => null)
+    );
+    const summary = summarizeHarnessDocumentResult(result);
+    // A shared rename never discloses a containing folder, even if grant sources changed in flight.
+    return c.json(result.note.userId === user.id ? summary : { ...summary, note: { ...summary.note, folderId: null } });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
+for (const [action, command] of [
+  ['rename', renameOwnedFolder],
+  ['move', moveOwnedFolder],
+] as const) {
+  harnessRoutes.use(`/folders/:folderId/${action}`, createRequestSizeLimitMiddleware({ maxBytes: 64 * 1024 }));
+  harnessRoutes.post(`/folders/:folderId/${action}`, async (c) => {
+    if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+    try {
+      const folder = await command(propertyActor(c), c.req.param('folderId'), await c.req.json().catch(() => null));
+      return c.json({
+        folder: summarizeHarnessFolder(folder),
+        ...(folder.parentContext ? { parentContext: folder.parentContext } : {}),
+      });
+    } catch (error) {
+      if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+      throw error;
+    }
+  });
+}
+
+harnessRoutes.get('/folders/:folderId/duplicate-preview', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const queries = c.req.queries();
+  if (Object.keys(queries).some((key) => key !== 'parentFolderId' || queries[key].length !== 1))
+    return c.json({ error: 'Invalid preview destination' }, 400);
+  try {
+    return c.json(
+      await previewFolderDuplication(user.id, c.req.param('folderId'), c.req.query('parentFolderId') ?? null, {
+        actor: propertyActor(c),
+      })
+    );
+  } catch (error) {
+    if (error instanceof FolderDuplicationError)
+      return c.json({ error: error.message, uncertain: error.uncertain }, error.status);
+    return c.json({ error: 'Copy summary could not be loaded' }, 503);
+  }
+});
+harnessRoutes.use('/folders/:folderId/duplicate', createRequestSizeLimitMiddleware({ maxBytes: 4096 }));
+harnessRoutes.post('/folders/:folderId/duplicate', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    const result = await duplicateFolder(user.id, c.req.param('folderId'), await c.req.json().catch(() => null), {
+      actor: propertyActor(c),
+    });
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    if (error instanceof FolderDuplicationError)
+      return c.json({ error: error.message, uncertain: error.uncertain }, error.status);
+    return c.json(
+      {
+        error: 'Duplication could not be confirmed. Review before an explicit retry of the unchanged request.',
+        uncertain: true,
+      },
+      503
+    );
+  }
+});
+
 harnessRoutes.post('/folders', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
@@ -1013,6 +1140,121 @@ function propertyActor(c: Context<{ Variables: Variables }>): PropertyActor {
     credentialCapabilities: integration?.actor,
   };
 }
+harnessRoutes.get('/folders/:folderId/template-library', async (c) => {
+  const user = getUser(c);
+  if (!user) return c.json({ error: 'Unauthorized' }, 401);
+  const queries = c.req.queries();
+  if (Object.keys(queries).some((key) => !['limit', 'cursor'].includes(key) || queries[key].length !== 1))
+    return c.json({ error: 'Only limit and cursor are supported' }, 400);
+  const folderId = c.req.param('folderId');
+  const scope = paginationScope(
+    'folder-templates-v1:title-id:template',
+    user.id,
+    getIntegrationAuthorization(c)?.authorizationId ?? '',
+    getActor(c).actorId ?? '',
+    folderId
+  );
+  try {
+    const result = await listFolderNotes({
+      actor: propertyActor(c),
+      ownerId: user.id,
+      folderId,
+      noteType: 'template',
+      limit: parsePageLimit(c.req.query('limit')),
+      cursorScope: scope,
+      cursor: decodeCursor(c.req.query('cursor'), scope, isTitleIdPosition),
+    });
+    return c.json({ templates: result.notes.map(summarizeHarnessNote), pageInfo: result.pageInfo });
+  } catch (error) {
+    if (error instanceof InvalidCursorError) return c.json({ error: error.message }, 400);
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.use('/templates', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+harnessRoutes.use('/templates/*', createRequestSizeLimitMiddleware({ maxBytes: 256 * 1024 }));
+harnessRoutes.post('/templates', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await createManagedTemplate(propertyActor(c), await c.req.json().catch(() => null)), 201);
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.get('/templates/:templateId', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readManagedTemplate(propertyActor(c), c.req.param('templateId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.patch('/templates/:templateId', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await updateManagedTemplate(propertyActor(c), c.req.param('templateId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.get('/templates/:templateId/settings', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(await readTemplateSettings(propertyActor(c), c.req.param('templateId')));
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.put('/templates/:templateId/folders/:folderId', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await setTemplateAssignment(
+        propertyActor(c),
+        c.req.param('templateId'),
+        c.req.param('folderId'),
+        await c.req.json().catch(() => null)
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.put('/templates/:templateId/defaults', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await saveTemplateTags(propertyActor(c), c.req.param('templateId'), await c.req.json().catch(() => null))
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+harnessRoutes.put('/templates/:templateId/folders/:folderId/defaults', async (c) => {
+  if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
+  try {
+    return c.json(
+      await saveAssignmentDefaults(
+        propertyActor(c),
+        c.req.param('templateId'),
+        c.req.param('folderId'),
+        await c.req.json().catch(() => null)
+      )
+    );
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
+  }
+});
+
 harnessRoutes.get('/folders/:folderId/templates', async (c) => {
   if (!getUser(c)) return c.json({ error: 'Unauthorized' }, 401);
   try {

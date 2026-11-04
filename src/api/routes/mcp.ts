@@ -80,13 +80,48 @@ function createHostedMcpClient(authState: {
     const body = await response.json().catch(() => null);
     if (!response.ok) {
       const message = typeof body?.error === 'string' ? body.error : 'MinuNotes harness request failed';
-      throw new Error(`${message} (${response.status})`);
+      const error = new Error(`${message} (${response.status})`) as Error & { status: number; data: unknown };
+      error.status = response.status;
+      error.data = body;
+      throw error;
     }
     return body;
   }
 
   return {
+    templates: {
+      library: (id, input = {}) =>
+        request(`/folders/${encodeURIComponent(id)}/template-library${toQueryString(input)}`),
+      read: (id) => request(`/templates/${encodeURIComponent(id)}`),
+      create: (input) => request('/templates', { method: 'POST', body: JSON.stringify(input) }),
+      update: (id, input) =>
+        request(`/templates/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+      settings: (id) => request(`/templates/${encodeURIComponent(id)}/settings`),
+      assign: (id, folderId, input) =>
+        request(`/templates/${encodeURIComponent(id)}/folders/${encodeURIComponent(folderId)}`, {
+          method: 'PUT',
+          body: JSON.stringify(input),
+        }),
+      tags: (id, input) =>
+        request(`/templates/${encodeURIComponent(id)}/defaults`, { method: 'PUT', body: JSON.stringify(input) }),
+      defaults: (id, folderId, input) =>
+        request(`/templates/${encodeURIComponent(id)}/folders/${encodeURIComponent(folderId)}/defaults`, {
+          method: 'PUT',
+          body: JSON.stringify(input),
+        }),
+    },
     folders: {
+      rename: (id, input) =>
+        request(`/folders/${encodeURIComponent(id)}/rename`, { method: 'POST', body: JSON.stringify(input) }),
+      move: (id, input) =>
+        request(`/folders/${encodeURIComponent(id)}/move`, { method: 'POST', body: JSON.stringify(input) }),
+      duplicatePreview: (id, parentFolderId) =>
+        request(
+          `/folders/${encodeURIComponent(id)}/duplicate-preview${toQueryString({ parentFolderId: parentFolderId ?? undefined })}`
+        ),
+      duplicate: (id, input) =>
+        request(`/folders/${encodeURIComponent(id)}/duplicate`, { method: 'POST', body: JSON.stringify(input) }),
+      notes: (folderId, input = {}) => request(`/folders/${encodeURIComponent(folderId)}/notes${toQueryString(input)}`),
       templates: (folderId) => request(`/folders/${encodeURIComponent(folderId)}/templates`),
       templatePreview: (folderId, templateId) =>
         request(`/folders/${encodeURIComponent(folderId)}/templates/${encodeURIComponent(templateId)}/preview`),
@@ -102,6 +137,8 @@ function createHostedMcpClient(authState: {
       trash: (folderId) => request(`/folders/${encodeURIComponent(folderId)}/trash`, { method: 'POST' }),
     },
     notes: {
+      rename: (noteId, input) =>
+        request(`/notes/${encodeURIComponent(noteId)}/rename`, { method: 'POST', body: JSON.stringify(input) }),
       fromTemplate: (input) => request('/notes/from-template', { method: 'POST', body: JSON.stringify(input) }),
       properties: (noteId) => request(`/notes/${encodeURIComponent(noteId)}/properties`),
       patchProperties: (noteId, input) =>
