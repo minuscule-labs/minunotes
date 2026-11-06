@@ -49,6 +49,18 @@ const collection = {
     { key: 'folderId', value: 'folder_xxx' },
     { key: 'noteId', value: 'note_xxx' },
     { key: 'templateId', value: 'template_id_from_assigned_list' },
+    { key: 'managedTemplateId', value: 'owned_template_id_from_library' },
+    { key: 'templateLibraryCursor', value: '' },
+    { key: 'templateBaseHash', value: 'content_hash_from_owned_template_read' },
+    { key: 'templateExpectedTitleJson', value: '"exact_owned_template_title_from_read"' },
+    { key: 'templateMembershipSnapshot', value: 'membership_snapshot_from_settings' },
+    { key: 'templateTagRevision', value: '0' },
+    { key: 'templateDefaultTagsJson', value: '[]' },
+    { key: 'templateAssignmentId', value: 'assignment_id_from_settings' },
+    { key: 'templateDefaultRevision', value: '0' },
+    { key: 'templateDefaultsSchemaIdJson', value: 'null' },
+    { key: 'templateDefaultsSchemaRevision', value: '0' },
+    { key: 'templateDefaultValuesJson', value: '{}' },
     { key: 'templateSnapshot', value: 'snapshot_from_preview' },
     { key: 'templateSchemaIdJson', value: 'null' },
     { key: 'templateSchemaRevision', value: '0' },
@@ -63,6 +75,14 @@ const collection = {
     { key: 'nodeId', value: 'node_a' },
     { key: 'targetNoteId', value: 'note_target' },
     { key: 'baseHash', value: 'hash_from_read' },
+    { key: 'expectedTitleJson', value: '"title_from_read"' },
+    { key: 'folderNotesCursor', value: '' },
+    { key: 'folderExpectedTitleJson', value: '"exact_folder_name_from_metadata"' },
+    { key: 'folderExpectedParentJson', value: 'null' },
+    { key: 'folderCopyParentJson', value: 'null' },
+    { key: 'folderCopyParentId', value: 'authorized_destination_folder_id' },
+    { key: 'folderCopyToken', value: 'reviewed_token_from_preview' },
+    { key: 'folderCopyRequestId', value: 'explicit_request_id_0001' },
     { key: 'propertySchemaId', value: 'schema_id_from_properties_read' },
     { key: 'folderSchemaRevision', value: '0' },
     { key: 'schemaRevision', value: '0' },
@@ -79,6 +99,21 @@ const collection = {
 };
 
 const bodyExamples: Record<string, unknown> = {
+  TemplateAuthoring: { folderId: '{{folderId}}', title: 'Task template', markdown: '# Task\n\n{{date}}' },
+  TemplateUpdate: {
+    baseHash: '{{templateBaseHash}}',
+    expectedTitle: '{{templateExpectedTitleJson}}',
+    title: 'Renamed task template',
+  },
+  TemplateAssignment: { assigned: true, snapshot: '{{templateMembershipSnapshot}}' },
+  TemplateTagDefaults: { expectedRevision: '{{templateTagRevision}}', tags: '{{templateDefaultTagsJson}}' },
+  TemplatePropertyDefaults: {
+    assignmentId: '{{templateAssignmentId}}',
+    expectedRevision: '{{templateDefaultRevision}}',
+    schemaId: '{{templateDefaultsSchemaIdJson}}',
+    schemaRevision: '{{templateDefaultsSchemaRevision}}',
+    values: '{{templateDefaultValuesJson}}',
+  },
   TemplateCreation: {
     folderId: '{{folderId}}',
     templateId: '{{templateId}}',
@@ -123,6 +158,19 @@ const bodyExamples: Record<string, unknown> = {
   },
   LinkCanvasNodeToNoteRequest: { targetNoteId: '{{targetNoteId}}', baseHash: '{{baseHash}}' },
   UpdateTagsRequest: { tags: ['evaluation'] },
+  RenameFolderRequest: { title: 'Renamed folder', expectedTitle: '{{folderExpectedTitleJson}}' },
+  MoveFolderRequest: {
+    parentFolderId: '{{folderCopyParentJson}}',
+    expectedParentFolderId: '{{folderExpectedParentJson}}',
+    confirm: true,
+  },
+  DuplicateFolderRequest: {
+    title: 'Reviewed project copy',
+    parentFolderId: '{{folderCopyParentJson}}',
+    requestId: '{{folderCopyRequestId}}',
+    previewToken: '{{folderCopyToken}}',
+  },
+  RenameNoteRequest: { title: 'Renamed evaluation note', expectedTitle: '{{expectedTitleJson}}' },
   EditNoteRequest: { baseHash: '{{baseHash}}', edits: [{ type: 'append', text: '\n- Checked by harness\n' }] },
 };
 
@@ -140,6 +188,8 @@ function schemaName(ref?: string) {
 }
 
 function cursorVariable(operationId?: string) {
+  if (operationId === 'listFolderNotes') return 'folderNotesCursor';
+  if (operationId === 'listTemplateLibrary') return 'templateLibraryCursor';
   if (operationId === 'listFolders') return 'folderCursor';
   if (operationId === 'listTags') return 'tagCursor';
   if (operationId === 'searchNotes') return 'searchCursor';
@@ -153,6 +203,7 @@ function exampleForParameter(parameter: NonNullable<OpenApiOperation['parameters
   if (parameter.name === 'q') return 'project';
   if (parameter.name === 'tag') return 'release-notes';
   if (parameter.name === 'folderId') return '{{folderId}}';
+  if (parameter.name === 'parentFolderId') return '{{folderCopyParentId}}';
   if (parameter.name === 'context') return '2';
   if (parameter.name === 'limit') return '10';
   if (parameter.name === 'cursor') return `{{${cursorVariable(operationId)}}}`;
@@ -170,7 +221,7 @@ function requestBody(operation: OpenApiOperation) {
   return {
     mode: 'raw' as const,
     raw: JSON.stringify(example, null, 2).replace(
-      /"{{(folderSchemaRevision|schemaRevision|propertiesRevision|templateSchemaIdJson|templateSchemaRevision|templateTagsJson|templateValuesJson|templateVariablesJson)}}"/g,
+      /"{{(templateExpectedTitleJson|templateTagRevision|templateDefaultTagsJson|templateDefaultRevision|templateDefaultsSchemaIdJson|templateDefaultsSchemaRevision|templateDefaultValuesJson|folderSchemaRevision|schemaRevision|propertiesRevision|templateSchemaIdJson|templateSchemaRevision|templateTagsJson|templateValuesJson|templateVariablesJson|expectedTitleJson|folderExpectedTitleJson|folderExpectedParentJson|folderCopyParentJson)}}"/g,
       '{{$1}}'
     ),
     options: { raw: { language: 'json' as const } },
@@ -181,6 +232,18 @@ function testScript(operationId?: string) {
   const exec = [
     "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
   ];
+  if (['readTemplate', 'createTemplate', 'updateTemplate'].includes(operationId ?? ''))
+    exec.push(
+      "const managed = pm.response.json(); if ([200,201].includes(pm.response.code)) { pm.collectionVariables.set('managedTemplateId',managed.template.id); pm.collectionVariables.set('templateBaseHash',managed.contentHash); pm.collectionVariables.set('templateExpectedTitleJson',JSON.stringify(managed.template.title)); }"
+    );
+  if (operationId === 'readTemplateSettings')
+    exec.push(
+      "const settings = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('templateMembershipSnapshot',settings.membershipSnapshot); pm.collectionVariables.set('templateTagRevision',String(settings.revision)); pm.collectionVariables.set('templateDefaultTagsJson',JSON.stringify(settings.tags)); const assignment = settings.assignments.find(a=>a.folderId===pm.collectionVariables.get('folderId')); pm.collectionVariables.set('templateAssignmentId',assignment?.id ?? ''); pm.collectionVariables.set('templateDefaultRevision',String(assignment?.revision ?? 0)); pm.collectionVariables.set('templateDefaultValuesJson',JSON.stringify(assignment?.values ?? {})); }"
+    );
+  if (operationId === 'previewFolderDuplication')
+    exec.push(
+      "const copyPreview = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('folderCopyToken', copyPreview.token); pm.collectionVariables.set('folderCopyParentJson', JSON.stringify(copyPreview.parentFolderId)); pm.collectionVariables.set('folderCopyRequestId', pm.variables.replaceIn('{{$guid}}')); }"
+    );
   if (operationId === 'listAssignedTemplates')
     exec.push(
       "const body = pm.response.json(); if (body.templates?.[0]?.id) pm.collectionVariables.set('templateId',body.templates[0].id);"
@@ -194,7 +257,17 @@ function testScript(operationId?: string) {
       "const body = pm.response.json(); if (body.notes?.[0]?.id) pm.collectionVariables.set('noteId', body.notes[0].id);"
     );
   }
-  if (['listFolders', 'listTags', 'searchNotes', 'listOrphanNotes', 'searchNoteLines'].includes(operationId ?? '')) {
+  if (
+    [
+      'listTemplateLibrary',
+      'listFolderNotes',
+      'listFolders',
+      'listTags',
+      'searchNotes',
+      'listOrphanNotes',
+      'searchNoteLines',
+    ].includes(operationId ?? '')
+  ) {
     exec.push(
       `const body = pm.response.json(); pm.collectionVariables.set('${cursorVariable(operationId)}', body.pageInfo?.nextCursor ?? '');`
     );
@@ -215,7 +288,7 @@ function testScript(operationId?: string) {
   }
   if (['readFolderProperties', 'mutateFolderProperties'].includes(operationId ?? '')) {
     exec.push(
-      "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+      "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('folderSchemaRevision', String(body.revision)); pm.collectionVariables.set('templateDefaultsSchemaIdJson',JSON.stringify(body.schemaId)); pm.collectionVariables.set('templateDefaultsSchemaRevision',String(body.revision)); }"
     );
   }
   if (['readNoteProperties', 'patchNoteProperties'].includes(operationId ?? '')) {
@@ -225,7 +298,12 @@ function testScript(operationId?: string) {
   }
   if (operationId === 'getNote') {
     exec.push(
-      "const body = pm.response.json(); if (body.contentHash) pm.collectionVariables.set('baseHash', body.contentHash);"
+      "const readState = pm.response.json(); if (readState.contentHash) pm.collectionVariables.set('baseHash', readState.contentHash);"
+    );
+  }
+  if (['getNote', 'renameNote'].includes(operationId ?? '')) {
+    exec.push(
+      "const renameState = pm.response.json(); if (pm.response.code === 200 && typeof renameState.note?.title === 'string') pm.collectionVariables.set('expectedTitleJson', JSON.stringify(renameState.note.title));"
     );
   }
   return [{ listen: 'test' as const, script: { type: 'text/javascript', exec } }];
@@ -233,12 +311,20 @@ function testScript(operationId?: string) {
 
 function makeRequest(path: string, method: string, operation: OpenApiOperation): PostmanItem {
   const parameters = operation.parameters ?? [];
+  const pathVariables = [
+    'readTemplate',
+    'updateTemplate',
+    'readTemplateSettings',
+    'setTemplateAssignment',
+    'setTemplateTags',
+    'setTemplatePropertyDefaults',
+  ].includes(operation.operationId ?? '')
+    ? { ...pathVariableExamples, templateId: '{{managedTemplateId}}' }
+    : pathVariableExamples;
   const pathValues = path
     .split('/')
     .filter(Boolean)
-    .map((part) =>
-      part.startsWith('{') ? (pathVariableExamples[part.slice(1, -1)] ?? `{{${part.slice(1, -1)}}}`) : part
-    );
+    .map((part) => (part.startsWith('{') ? (pathVariables[part.slice(1, -1)] ?? `{{${part.slice(1, -1)}}}`) : part));
   const query = parameters
     .filter((parameter) => parameter.in === 'query')
     .map((parameter) => ({
@@ -246,7 +332,7 @@ function makeRequest(path: string, method: string, operation: OpenApiOperation):
       value: exampleForParameter(parameter, operation.operationId),
       disabled: !parameter.required,
     }));
-  const rawPath = path.replace(/\{([^}]+)\}/g, (_, name: string) => pathVariableExamples[name] ?? `{{${name}}}`);
+  const rawPath = path.replace(/\{([^}]+)\}/g, (_, name: string) => pathVariables[name] ?? `{{${name}}}`);
   const raw = `{{baseUrl}}${rawPath}${query.length ? `?${query.map((item) => `${item.key}=${item.value}`).join('&')}` : ''}`;
   return {
     name: operation.summary ?? operation.operationId ?? `${method.toUpperCase()} ${path}`,

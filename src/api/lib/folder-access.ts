@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { type ApiKey, authorizationFolderRules, type Folder, folders, type OAuthAuthorization } from '../db/schema';
+import type { MetadataExecutor } from '../notes/metadata-transaction';
 import { activeFolderWhere, filterActiveFolderHierarchy } from '../trash/policy';
 import { type AuthorizationCapability, authorizationAllowsFolderCapability } from './integration-authorization';
 
@@ -13,8 +14,8 @@ export type FolderAccessTree = {
   agentReadOnlyFolderIds: Set<string>;
 };
 
-export async function loadFolderAccessTree(userId: string): Promise<FolderAccessTree> {
-  const selected = await db.select().from(folders).where(activeFolderWhere(userId));
+export async function loadFolderAccessTree(userId: string, executor: MetadataExecutor = db): Promise<FolderAccessTree> {
+  const selected = await executor.select().from(folders).where(activeFolderWhere(userId));
   const rows = filterActiveFolderHierarchy(selected);
   const byId = new Map(rows.map((folder) => [folder.id, folder]));
   const privateFolderIds = new Set<string>();
@@ -111,8 +112,11 @@ export async function validateFolderParent(input: { userId: string; parentFolder
   return { ok: true as const, parent, depth: parentDepth + 1 };
 }
 
-export async function validateFolderMove(input: { userId: string; folderId: string; parentFolderId: string | null }) {
-  const tree = await loadFolderAccessTree(input.userId);
+export async function validateFolderMove(
+  input: { userId: string; folderId: string; parentFolderId: string | null },
+  executor: MetadataExecutor = db
+) {
+  const tree = await loadFolderAccessTree(input.userId, executor);
   const folder = tree.byId.get(input.folderId);
   if (!folder) return { ok: false as const, status: 404 as const, error: 'Folder not found' };
 

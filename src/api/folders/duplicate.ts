@@ -8,6 +8,7 @@ import {
   type FolderDuplicationResult,
   parseFolderDuplication,
 } from '../../shared/folder-duplication';
+import { PropertyError } from '../../shared/properties';
 import {
   attachments,
   folderBoardViews,
@@ -22,6 +23,7 @@ import {
   templateFolderAssignments,
 } from '../db/schema';
 import { getApiRuntimeConfig } from '../lib/env';
+import { isDescendantOrSelf } from '../lib/folder-access';
 import { createId } from '../lib/id';
 import { reindexNoteLinks } from '../notes/links';
 import { type MetadataTx, metadataTransaction } from '../notes/metadata-transaction';
@@ -38,8 +40,18 @@ import {
   copyValues,
   type SchemaCopy,
 } from './duplicate-content';
+import { type FolderActor, ownedFolderPolicy } from './structure';
 
 type Folder = typeof folders.$inferSelect;
+type CopyOptions = { storage?: ObjectStorage; origins?: string[]; actor?: FolderActor };
+async function copyPolicy<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof PropertyError) throw new FolderDuplicationError(error.message, error.status);
+    throw error;
+  }
+}
 function digest(value: unknown) {
   return createHash('sha256')
     .update(
@@ -75,7 +87,28 @@ async function ownedPath(tx: MetadataTx, actor: string, id: string) {
   }
   return path;
 }
-async function snapshot(tx: MetadataTx, actor: string, sourceId: string, parentId: string | null, origins: string[]) {
+async function snapshot(
+  tx: MetadataTx,
+  actor: string,
+  sourceId: string,
+  parentId: string | null,
+  origins: string[],
+  context?: FolderActor
+) {
+  return copyPolicy(() => snapshotData(tx, actor, sourceId, parentId, origins, context));
+}
+async function snapshotData(
+  tx: MetadataTx,
+  actor: string,
+  sourceId: string,
+  parentId: string | null,
+  origins: string[],
+  context?: FolderActor
+) {
+  if (context && context.actorUserId !== actor) throw new FolderDuplicationError('Folder not found', 404);
+  const policy = context ? await ownedFolderPolicy(tx, context) : null;
+  policy?.check(sourceId, 'read');
+  policy?.destination(parentId, true);
   const sourcePath = await ownedPath(tx, actor, sourceId);
   const destinationPath = parentId ? await ownedPath(tx, actor, parentId) : [];
   if (destinationPath.some((row) => row.isPrivate))
@@ -98,6 +131,7 @@ async function snapshot(tx: MetadataTx, actor: string, sourceId: string, parentI
     frontier = children.map((row) => row.id);
   }
   const folderIds = tree.map((row) => row.id);
+  if (policy) for (const id of folderIds) policy.check(id, 'read');
   if (parentId && folderIds.includes(parentId))
     throw new FolderDuplicationError('Choose a destination outside the source folder', 400);
   if (destinationPath.length + height > 4 || sourcePath.length - 1 + height > 4)
@@ -133,6 +167,14 @@ async function snapshot(tx: MetadataTx, actor: string, sourceId: string, parentI
     actor,
     sql`(${inArray(notes.folderId, folderIds)} or (${notes.type} = 'template' and exists (select 1 from ${templateFolderAssignments} where ${assignmentWhere} and ${templateFolderAssignments.templateId} = ${notes.id})))`
   );
+  if (policy) {
+    const contexts = await tx
+      .select({ folderId: notes.folderId })
+      .from(notes)
+      .where(noteWhere)
+      .limit(FOLDER_COPY_LIMITS.notes + 1);
+    for (const id of new Set(contexts.map((row) => row.folderId))) policy.check(id, 'read');
+  }
   const documents = await read(notes, noteWhere, notes.content, () =>
     tx
       .select()
@@ -190,6 +232,22 @@ async function snapshot(tx: MetadataTx, actor: string, sourceId: string, parentI
     inArray(attachments.id, attachmentIds),
     eq(attachments.status, 'ready')
   );
+  if (policy && attachmentIds.length) {
+    const refs = await tx.select({ noteId: attachments.noteId }).from(attachments).where(attachmentWhere);
+    const sourceFolders = await tx
+      .select({ folderId: notes.folderId })
+      .from(notes)
+      .where(
+        activeNoteWhere(
+          actor,
+          inArray(
+            notes.id,
+            refs.map((row) => row.noteId)
+          )
+        )
+      );
+    for (const id of new Set(sourceFolders.map((row) => row.folderId))) policy.check(id, 'read');
+  }
   const images = await read(attachments, attachmentWhere, sql`''`, () =>
     tx.select().from(attachments).where(attachmentWhere).orderBy(asc(attachments.id))
   );
@@ -217,12 +275,18 @@ async function snapshot(tx: MetadataTx, actor: string, sourceId: string, parentI
   const wanted = [...titleTargets].sort();
   for (let start = 0; start < wanted.length; start += 100) {
     const candidates = await tx
-      .select({ title: notes.title, id: sql<string>`min(${notes.id})`, count: sql<number>`count(*)` })
+      .select({
+        title: notes.title,
+        id: sql<string>`min(${notes.id})`,
+        folderId: sql<string>`min(${notes.folderId})`,
+        count: sql<number>`count(*)`,
+      })
       .from(notes)
       .where(activeNoteWhere(actor, eq(notes.type, 'note'), inArray(notes.title, wanted.slice(start, start + 100))))
       .groupBy(notes.title)
       .orderBy(asc(notes.title));
-    for (const row of candidates) if (Number(row.count) === 1) titles.set(row.title, row.id);
+    for (const row of candidates)
+      if (Number(row.count) === 1 && (!policy || policy.allowed(row.folderId, 'read'))) titles.set(row.title, row.id);
   }
   bytes += Buffer.byteLength(JSON.stringify([importedPaths, [...titles], [...refs]]));
   if (bytes > FOLDER_COPY_LIMITS.bytes) throw limit();
@@ -254,13 +318,30 @@ async function replay(
   tx: MetadataTx,
   actor: string,
   row: typeof folderDuplicationRequests.$inferSelect,
-  fingerprint: string
+  fingerprint: string,
+  context?: FolderActor,
+  origins?: string[]
 ): Promise<FolderDuplicationResult> {
   if (row.fingerprint !== fingerprint)
     throw new FolderDuplicationError('Request ID already used with a different duplication', 409);
+  let parentUnavailable = false;
+  if (context)
+    await copyPolicy(async () => {
+      const policy = await ownedFolderPolicy(tx, context);
+      if (context.actorUserId !== actor) throw new PropertyError('Folder not found', 404);
+      // Revalidate all current descendants and imported template/image contexts, not just the source root.
+      await snapshot(tx, actor, row.sourceFolderId, row.parentFolderId, copyOrigins(origins), context);
+      policy.destination(row.parentFolderId, true);
+      for (const folder of policy.tree.folders)
+        if (isDescendantOrSelf(folder.id, row.rootFolderId, policy.tree.byId)) policy.check(folder.id, 'read');
+      policy.check(row.rootFolderId, 'read');
+      const parent = policy.tree.byId.get(row.rootFolderId)?.parentFolderId;
+      parentUnavailable = Boolean(parent && !policy.allowed(parent, 'read'));
+    });
   const path = await ownedPath(tx, actor, row.rootFolderId);
   return {
-    folder: { id: path[0].id, title: path[0].title, parentFolderId: path[0].parentFolderId },
+    folder: { id: path[0].id, title: path[0].title, parentFolderId: parentUnavailable ? null : path[0].parentFolderId },
+    ...(parentUnavailable ? { parentContext: 'unavailable' as const } : {}),
     counts: JSON.parse(row.counts),
     replayed: true,
   };
@@ -280,7 +361,7 @@ export async function previewFolderDuplication(
   actor: string,
   sourceId: string,
   parentId: unknown,
-  options: { origins?: string[] } = {}
+  options: Pick<CopyOptions, 'origins' | 'actor'> = {}
 ): Promise<FolderDuplicationPreview> {
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(sourceId)) throw new FolderDuplicationError('Folder not found', 404);
   const parent = parseFolderDuplication({
@@ -289,7 +370,7 @@ export async function previewFolderDuplication(
     requestId: 'preview_request_0',
   }).parentFolderId;
   const original = await metadataTransaction((tx) =>
-    snapshot(tx, actor, sourceId, parent, copyOrigins(options.origins))
+    snapshot(tx, actor, sourceId, parent, copyOrigins(options.origins), options.actor)
   );
   // Reuse image validation/count semantics, but never initialize storage or stage objects here.
   const plans = planAttachments(
@@ -317,7 +398,7 @@ export async function duplicateFolder(
   actor: string,
   sourceId: string,
   input: unknown,
-  options: { storage?: ObjectStorage; origins?: string[] } = {}
+  options: CopyOptions = {}
 ): Promise<FolderDuplicationResult> {
   const request = parseFolderDuplication(input);
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(sourceId)) throw new FolderDuplicationError('Folder not found', 404);
@@ -328,6 +409,9 @@ export async function duplicateFolder(
     title: request.title,
     parentFolderId: request.parentFolderId,
     requestId: request.requestId,
+    ...(options.actor?.actorType === 'agent'
+      ? { authorizationId: options.actor.authorizationId, actorId: options.actor.actorId }
+      : {}),
   });
   try {
     return await duplicateAttempt(actor, sourceId, request, fingerprint, options);
@@ -339,7 +423,7 @@ export async function duplicateFolder(
     try {
       committed = await metadataTransaction(async (tx) => {
         const prior = await receipt(tx, actor, request.requestId);
-        return prior ? replay(tx, actor, prior, fingerprint) : null;
+        return prior ? replay(tx, actor, prior, fingerprint, options.actor, options.origins) : null;
       });
     } catch (probeError) {
       if (probeError instanceof FolderDuplicationError) throw probeError;
@@ -358,15 +442,19 @@ async function duplicateAttempt(
   sourceId: string,
   request: FolderDuplicationRequest,
   fingerprint: string,
-  options: { storage?: ObjectStorage; origins?: string[] }
+  options: CopyOptions
 ): Promise<FolderDuplicationResult> {
   const captured = await metadataTransaction(async (tx) => {
     const prior = await receipt(tx, actor, request.requestId);
-    if (prior) return { kind: 'replay' as const, result: await replay(tx, actor, prior, fingerprint) };
+    if (prior)
+      return {
+        kind: 'replay' as const,
+        result: await replay(tx, actor, prior, fingerprint, options.actor, options.origins),
+      };
     // Receipt and validation share one consistent database snapshot. A completed copy's new
     // titles must never be visible here while its receipt is still observed as absent.
     const origins = copyOrigins(options.origins);
-    const original = await snapshot(tx, actor, sourceId, request.parentFolderId, origins);
+    const original = await snapshot(tx, actor, sourceId, request.parentFolderId, origins, options.actor);
     const sourceHash = digest(original);
     if (!request.previewToken)
       throw new FolderDuplicationError('Review the copy summary to continue this same attempt', 428);
@@ -397,8 +485,8 @@ async function duplicateAttempt(
     createdByUserId: actor,
     createdAt: now,
     updatedAt: now,
-    updatedByActorType: 'user',
-    updatedByActorId: actor,
+    updatedByActorType: options.actor?.actorType ?? 'user',
+    updatedByActorId: options.actor?.actorId ?? actor,
     deletedAt: null,
     trashBatchId: null,
     content: copyContent(note.content, note.documentType, {
@@ -523,8 +611,8 @@ async function duplicateAttempt(
     finalStarted = true;
     const result = await metadataTransaction(async (tx) => {
       const prior = await receipt(tx, actor, request.requestId);
-      if (prior) return replay(tx, actor, prior, fingerprint);
-      if (digest(await snapshot(tx, actor, sourceId, request.parentFolderId, origins)) !== sourceHash)
+      if (prior) return replay(tx, actor, prior, fingerprint, options.actor, options.origins);
+      if (digest(await snapshot(tx, actor, sourceId, request.parentFolderId, origins, options.actor)) !== sourceHash)
         throw new FolderDuplicationError('Source or destination changed while copying; review and retry');
       for (const row of copiedFolders) await tx.insert(folders).values(row);
       for (const row of copiedSchemas) await tx.insert(folderPropertySchemas).values(row);
@@ -540,13 +628,21 @@ async function duplicateAttempt(
           { userId: actor, noteId: note.id, markdown: note.content, documentType: note.documentType },
           tx
         );
-        await createNoteVersion({ note, reason: 'create', actorType: 'user', actorId: actor }, tx);
+        await createNoteVersion(
+          {
+            note,
+            reason: 'create',
+            actorType: options.actor?.actorType ?? 'user',
+            actorId: options.actor?.actorId ?? actor,
+          },
+          tx
+        );
         await tx.insert(noteEvents).values({
           id: createId('event'),
           noteId: note.id,
           userId: actor,
-          actorType: 'user',
-          actorId: actor,
+          actorType: options.actor?.actorType ?? 'user',
+          actorId: options.actor?.actorId ?? actor,
           eventType: 'create',
           summary: 'Created by duplicating a folder',
           afterHash: createHash('sha256').update(note.content).digest('hex'),
@@ -592,7 +688,9 @@ async function duplicateAttempt(
     }
     if (existing) {
       if (existing.rootFolderId !== rootId && storage) await discardStaged(storage, staged);
-      return metadataTransaction((tx) => replay(tx, actor, required(existing), fingerprint));
+      return metadataTransaction((tx) =>
+        replay(tx, actor, required(existing), fingerprint, options.actor, options.origins)
+      );
     }
     if (storage) await discardStaged(storage, staged);
     if (error instanceof FolderDuplicationError) throw error;

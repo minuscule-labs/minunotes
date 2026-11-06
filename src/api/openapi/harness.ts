@@ -12,6 +12,46 @@ const propertyResponses = (schema: string) => ({
     content: { 'application/json': { schema: { type: 'object', properties: { error: { type: 'string' } } } } },
   },
 });
+const folderResponses = (schema: string) => ({
+  '200': {
+    description: 'Authorized folder operation result',
+    content: { 'application/json': { schema: { $ref: `#/components/schemas/${schema}` } } },
+  },
+  '400': { $ref: '#/components/responses/BadRequest' },
+  '401': { $ref: '#/components/responses/Unauthorized' },
+  '403': { $ref: '#/components/responses/Forbidden' },
+  '404': { $ref: '#/components/responses/NotFound' },
+  '409': { $ref: '#/components/responses/Conflict' },
+  '413': { description: 'Native copy or request limit exceeded' },
+  '503': {
+    description: 'Copy outcome may be uncertain; retain same requestId and exact payload, no automatic retries',
+    content: {
+      'application/json': {
+        schema: { type: 'object', properties: { error: { type: 'string' }, uncertain: { type: 'boolean' } } },
+      },
+    },
+  },
+});
+const templateId = { type: 'string', minLength: 1, maxLength: 100 };
+const templateTitle = { type: 'string', minLength: 1, maxLength: 1000, pattern: '\\S' };
+const templateRevision = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 };
+const templateParameters = [{ name: 'templateId', in: 'path' as const, required: true, schema: templateId }];
+const templateBody = (schema: string) => ({
+  required: true,
+  content: { 'application/json': { schema: { $ref: `#/components/schemas/${schema}` } } },
+});
+const templateResponses = (schema: string) => ({
+  ...propertyResponses(schema),
+  '200': {
+    description: 'Current authorized owner template state',
+    content: { 'application/json': { schema: { $ref: `#/components/schemas/${schema}` } } },
+  },
+  '409': {
+    description: 'Stale title/body, membership, tag, assignment or schema revision; review without retry/rebase',
+    content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+  },
+  '413': { description: 'Request body exceeds 256 KiB' },
+});
 const propertyLabel = { type: 'string', minLength: 1, maxLength: 80 };
 const mutationObject = (type: string, properties: Record<string, unknown>, required: string[]) => ({
   type: 'object',
@@ -40,6 +80,106 @@ export const harnessOpenApiSpec = {
     { name: 'Templates' },
   ],
   paths: {
+    '/v1/harness/folders/{folderId}/template-library': {
+      get: {
+        tags: ['Templates'],
+        operationId: 'listTemplateLibrary',
+        summary: 'List owned template library',
+        description:
+          'Compact exact-folder owned templates only, not descendants, ordinary notes, bodies or assigned-template discovery. Requires current owner source read scope. SQL title/ID keyset pagination; follow unchanged actor-bound cursors only as needed.',
+        parameters: [
+          { $ref: '#/components/parameters/FolderId' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+          { name: 'cursor', in: 'query', schema: { type: 'string' } },
+        ],
+        responses: templateResponses('TemplateLibraryResponse'),
+      },
+    },
+    '/v1/harness/templates': {
+      post: {
+        tags: ['Templates'],
+        operationId: 'createTemplate',
+        summary: 'Create owned template',
+        description:
+          'Create an owned Markdown template with source read/create scope and normal private/read-only policy. Native link/attachment/version/event handling and agent attribution. No implicit assignments/defaults or new variables. No durable creation receipt or automatic retry: resolve unknown outcomes through library discovery before explicitly creating again.',
+        requestBody: templateBody('TemplateAuthoring'),
+        responses: {
+          ...templateResponses('ManagedTemplate'),
+          '201': {
+            description: 'Created template',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/ManagedTemplate' } } },
+          },
+        },
+      },
+    },
+    '/v1/harness/templates/{templateId}': {
+      get: {
+        tags: ['Templates'],
+        operationId: 'readTemplate',
+        summary: 'Read owned template',
+        description:
+          'Owned Markdown body/title/contentHash and API-editability. Current source read scope; no shared library access. Assigned-template preview remains separate.',
+        parameters: templateParameters,
+        responses: templateResponses('ManagedTemplate'),
+      },
+      patch: {
+        tags: ['Templates'],
+        operationId: 'updateTemplate',
+        summary: 'Edit or rename owned template',
+        description:
+          'Read first. Atomic title/body changes require exact expectedTitle plus contentHash as baseHash, source read/edit and template API-editability. At least one title/markdown field; identity, assignments/defaults stay unchanged. Native history/events/link/attachment behavior. Preserve drafts and explicitly review conflicts; no automatic retry/rebase. Generic note editing still rejects templates.',
+        parameters: templateParameters,
+        requestBody: templateBody('TemplateUpdate'),
+        responses: templateResponses('ManagedTemplate'),
+      },
+    },
+    '/v1/harness/templates/{templateId}/settings': {
+      get: {
+        tags: ['Templates'],
+        operationId: 'readTemplateSettings',
+        summary: 'Read owned template settings',
+        description:
+          'Source read required. Independent tag revision/tags, opaque membershipSnapshot and only readable active destination assignments/default revisions/values. Scoped view, never a replace-all membership list; omitted hidden/trashed assignments remain retained. Read destination schema separately before changing property defaults.',
+        parameters: templateParameters,
+        responses: templateResponses('TemplateSettings'),
+      },
+    },
+    '/v1/harness/templates/{templateId}/folders/{folderId}': {
+      put: {
+        tags: ['Templates'],
+        operationId: 'setTemplateAssignment',
+        summary: 'Set one template assignment',
+        description:
+          'Use membershipSnapshot from current settings as snapshot. Only the named destination is assigned/unassigned; unrelated/hidden/trashed memberships stay intact. Source/destination owner read/edit and source API-editability required. Unassign removes this assignment/defaults, matching native semantics. Explicit intent and conflict review; no automatic retries.',
+        parameters: [...templateParameters, { $ref: '#/components/parameters/FolderId' }],
+        requestBody: templateBody('TemplateAssignment'),
+        responses: templateResponses('TemplateMembershipResult'),
+      },
+    },
+    '/v1/harness/templates/{templateId}/defaults': {
+      put: {
+        tags: ['Templates'],
+        operationId: 'setTemplateTags',
+        summary: 'Set template default tags',
+        description:
+          'Source owner read/edit and API-editability. Replace default tags using their independent expectedRevision from settings, not body hash. Complete final explicit tags; empty clears only when requested. Does not tag the template note. No invented tags or automatic retries.',
+        parameters: templateParameters,
+        requestBody: templateBody('TemplateTagDefaults'),
+        responses: templateResponses('TemplateTagState'),
+      },
+    },
+    '/v1/harness/templates/{templateId}/folders/{folderId}/defaults': {
+      put: {
+        tags: ['Templates'],
+        operationId: 'setTemplatePropertyDefaults',
+        summary: 'Set destination template defaults',
+        description:
+          'Source/destination owner read/edit and source API-editability. Read current settings and destination schema first. Exact assignmentId/default revision and independent schema identity/revision; complete final values using stable property/option IDs, not labels/contentHash. No new fields, schema remapping or automatic retries. Conflicts preserve stored defaults.',
+        parameters: [...templateParameters, { $ref: '#/components/parameters/FolderId' }],
+        requestBody: templateBody('TemplatePropertyDefaults'),
+        responses: templateResponses('TemplatePropertyState'),
+      },
+    },
     '/v1/harness/folders/{folderId}/templates': {
       get: {
         tags: ['Templates'],
@@ -916,6 +1056,125 @@ export const harnessOpenApiSpec = {
         },
       },
     },
+    '/v1/harness/folders/{folderId}/rename': {
+      post: {
+        tags: ['Folders'],
+        operationId: 'renameFolder',
+        summary: 'Rename owned folder',
+        description:
+          'Owner-only scoped title compare-and-set using exact expectedTitle; preserves identity. No automatic retries.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/RenameFolderRequest' } } },
+        },
+        responses: folderResponses('FolderResponse'),
+      },
+    },
+    '/v1/harness/folders/{folderId}/move': {
+      post: {
+        tags: ['Folders'],
+        operationId: 'moveFolder',
+        summary: 'Move owned folder subtree',
+        description:
+          'Explicitly confirmed owner-only move with exact expectedParentFolderId, preserving identities. Destination-inherited sharing applies. Checks all affected folders/notes, API-editability, resulting scope, hierarchy and protection retention; never adds grants. Root requires all-folder scope. No automatic retries.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/MoveFolderRequest' } } },
+        },
+        responses: folderResponses('FolderResponse'),
+      },
+    },
+    '/v1/harness/folders/{folderId}/duplicate-preview': {
+      get: {
+        tags: ['Folders'],
+        operationId: 'previewFolderDuplication',
+        summary: 'Review owned folder duplication',
+        description:
+          'Read-only native copy preview into the selected parent (omitted means Root), including imported templates/images. Requires source read and destination read/create/folder creation; generated IDs must inherit scope without adding grants. Returns token/counts/imageBytes only, never stages storage or copies. Preview is not an access grant.',
+        parameters: [
+          { $ref: '#/components/parameters/FolderId' },
+          { name: 'parentFolderId', in: 'query', schema: { type: 'string' } },
+        ],
+        responses: folderResponses('FolderCopyPreview'),
+      },
+    },
+    '/v1/harness/folders/{folderId}/duplicate': {
+      post: {
+        tags: ['Folders'],
+        operationId: 'duplicateFolder',
+        summary: 'Duplicate reviewed owned folder',
+        description:
+          'Execute the exact reviewed native copy, preserving properties/boards/templates/images/links/protections but not sharing tokens/grants. Destination-inherited access applies. Rechecks authorization on execution/replay. Freeze title, parentFolderId, previewToken and requestId: uncertain results require the SAME ID and exact payload, never automatic retries or refreshed previews. Stale reviews require explicit re-review. Completed unavailable copies are never recreated.',
+        parameters: [{ $ref: '#/components/parameters/FolderId' }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/DuplicateFolderRequest' } } },
+        },
+        responses: {
+          ...folderResponses('FolderCopyResult'),
+          '201': {
+            description: 'New native folder copy',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/FolderCopyResult' } } },
+          },
+          '428': { description: 'Reviewed preview token required for new copies' },
+        },
+      },
+    },
+    '/v1/harness/folders/{folderId}/notes': {
+      get: {
+        tags: ['Folders'],
+        operationId: 'listFolderNotes',
+        summary: 'List exact folder notes',
+        description:
+          'One page of compact ordinary-note metadata, including canvas formats, without content or templates. Requires current folder read scope; direct-note grants cannot enumerate folders. Ordered by title and ID using bounded SQL keyset pagination. Cursors are bound to the actor, credential and folder.',
+        parameters: [
+          { $ref: '#/components/parameters/FolderId' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 } },
+          { name: 'cursor', in: 'query', schema: { type: 'string', minLength: 1 } },
+        ],
+        responses: {
+          '200': {
+            description: 'Compact exact-folder notes',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/SearchNotesResponse' } } },
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': { $ref: '#/components/responses/Conflict' },
+        },
+      },
+    },
+    '/v1/harness/notes/{noteId}/rename': {
+      post: {
+        tags: ['Notes'],
+        operationId: 'renameNote',
+        summary: 'Rename an existing Markdown note',
+        description:
+          'Title-only rename for an ordinary Markdown note, preserving content, properties, ID and links. Supply exact expectedTitle from current metadata; a body hash cannot detect another rename. Read/edit permissions and API-editability are checked in the transaction. Stale titles conflict without partial changes; no automatic retry. Shared responses always return null folder context.',
+        parameters: [{ $ref: '#/components/parameters/NoteId' }],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/RenameNoteRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Renamed note metadata and unchanged contentHash',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/NoteMutationResponse' } } },
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': {
+            description: 'Title changed or metadata busy; review before an explicit retry. No partial changes.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
+          },
+        },
+      },
+    },
     '/v1/harness/notes/{noteId}/edit': {
       post: {
         tags: ['Notes'],
@@ -1094,6 +1353,123 @@ export const harnessOpenApiSpec = {
       },
     },
     schemas: {
+      TemplateLibraryResponse: {
+        type: 'object',
+        required: ['templates', 'pageInfo'],
+        properties: {
+          templates: { type: 'array', maxItems: 100, items: { $ref: '#/components/schemas/CompactNote' } },
+          pageInfo: { $ref: '#/components/schemas/PageInfo' },
+        },
+      },
+      ManagedTemplate: {
+        type: 'object',
+        required: ['template', 'contentHash'],
+        properties: {
+          template: {
+            type: 'object',
+            required: ['id', 'folderId', 'title', 'body', 'isApiEditable'],
+            properties: {
+              id: templateId,
+              folderId: templateId,
+              title: { type: 'string' },
+              body: { type: 'string' },
+              isApiEditable: { type: 'boolean' },
+            },
+          },
+          contentHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        },
+      },
+      TemplateAuthoring: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['folderId', 'title', 'markdown'],
+        properties: { folderId: templateId, title: templateTitle, markdown: { type: 'string', maxLength: 200000 } },
+      },
+      TemplateUpdate: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['baseHash', 'expectedTitle'],
+        anyOf: [{ required: ['title'] }, { required: ['markdown'] }],
+        properties: {
+          baseHash: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          expectedTitle: { type: 'string', maxLength: 200000 },
+          title: templateTitle,
+          markdown: { type: 'string', maxLength: 200000 },
+        },
+      },
+      TemplateSettings: {
+        type: 'object',
+        required: ['revision', 'tags', 'membershipSnapshot', 'assignments'],
+        properties: {
+          revision: templateRevision,
+          tags: { type: 'array', maxItems: 50, items: propertyLabel },
+          membershipSnapshot: { type: 'string', maxLength: 128 },
+          assignments: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'folderId', 'title', 'revision', 'schemaId', 'values'],
+              properties: {
+                id: templateId,
+                folderId: templateId,
+                title: { type: 'string' },
+                revision: templateRevision,
+                schemaId: { type: ['string', 'null'] },
+                values: { type: 'object', additionalProperties: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+      TemplateAssignment: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['assigned', 'snapshot'],
+        properties: { assigned: { type: 'boolean' }, snapshot: { type: 'string', minLength: 1, maxLength: 128 } },
+      },
+      TemplateMembershipResult: {
+        type: 'object',
+        required: ['ok', 'snapshot'],
+        properties: { ok: { const: true }, snapshot: { type: 'string' } },
+      },
+      TemplateTagDefaults: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedRevision', 'tags'],
+        properties: { expectedRevision: templateRevision, tags: { type: 'array', maxItems: 50, items: propertyLabel } },
+      },
+      TemplateTagState: {
+        type: 'object',
+        required: ['revision', 'tags'],
+        properties: { revision: templateRevision, tags: { type: 'array', items: { type: 'string' } } },
+      },
+      TemplatePropertyDefaults: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['assignmentId', 'expectedRevision', 'schemaId', 'schemaRevision', 'values'],
+        properties: {
+          assignmentId: templateId,
+          expectedRevision: templateRevision,
+          schemaId: { type: ['string', 'null'], maxLength: 100 },
+          schemaRevision: templateRevision,
+          values: {
+            type: 'object',
+            maxProperties: 12,
+            propertyNames: { maxLength: 100 },
+            additionalProperties: { type: ['string', 'null'], maxLength: 1000 },
+          },
+        },
+      },
+      TemplatePropertyState: {
+        type: 'object',
+        required: ['id', 'revision', 'schemaId', 'values'],
+        properties: {
+          id: templateId,
+          revision: templateRevision,
+          schemaId: { type: ['string', 'null'] },
+          values: { type: 'object', additionalProperties: { type: 'string' } },
+        },
+      },
       AssignedTemplatesResponse: {
         type: 'object',
         required: ['templates'],
@@ -1574,7 +1950,14 @@ export const harnessOpenApiSpec = {
       FolderResponse: {
         type: 'object',
         required: ['folder'],
-        properties: { folder: { $ref: '#/components/schemas/Folder' } },
+        properties: {
+          folder: { $ref: '#/components/schemas/Folder' },
+          parentContext: {
+            type: 'string',
+            const: 'unavailable',
+            description: 'parentFolderId null is hidden context, not a claim that the folder is at Root.',
+          },
+        },
       },
       CreateFolderRequest: {
         type: 'object',
@@ -2013,6 +2396,88 @@ export const harnessOpenApiSpec = {
             },
           },
         ],
+      },
+      RenameFolderRequest: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'expectedTitle'],
+        properties: { title: { type: 'string', minLength: 1, maxLength: 200 }, expectedTitle: { type: 'string' } },
+      },
+      MoveFolderRequest: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['parentFolderId', 'expectedParentFolderId', 'confirm'],
+        properties: {
+          parentFolderId: { type: ['string', 'null'] },
+          expectedParentFolderId: { type: ['string', 'null'] },
+          confirm: { const: true },
+        },
+      },
+      DuplicateFolderRequest: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'parentFolderId', 'requestId', 'previewToken'],
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 200 },
+          parentFolderId: { type: ['string', 'null'] },
+          requestId: { type: 'string', pattern: '^[a-zA-Z0-9_-]{16,128}$' },
+          previewToken: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        },
+      },
+      FolderCopyCounts: {
+        type: 'object',
+        required: ['folders', 'notes', 'templates', 'attachments'],
+        properties: {
+          folders: { type: 'integer', minimum: 1, maximum: 100 },
+          notes: { type: 'integer', minimum: 0, maximum: 100 },
+          templates: { type: 'integer', minimum: 0, maximum: 100 },
+          attachments: { type: 'integer', minimum: 0, maximum: 200 },
+        },
+      },
+      FolderCopyPreview: {
+        type: 'object',
+        required: ['sourceFolderId', 'parentFolderId', 'token', 'counts', 'imageBytes'],
+        properties: {
+          sourceFolderId: { type: 'string' },
+          parentFolderId: { type: ['string', 'null'] },
+          token: { type: 'string' },
+          counts: { $ref: '#/components/schemas/FolderCopyCounts' },
+          imageBytes: { type: 'integer', minimum: 0, maximum: 26214400 },
+        },
+      },
+      FolderCopyResult: {
+        type: 'object',
+        required: ['folder', 'counts', 'replayed'],
+        properties: {
+          parentContext: {
+            type: 'string',
+            const: 'unavailable',
+            description: 'The current parent is not discoverable; null parentFolderId does not imply Root.',
+          },
+          folder: {
+            type: 'object',
+            required: ['id', 'title', 'parentFolderId'],
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              parentFolderId: { type: ['string', 'null'] },
+            },
+          },
+          counts: { $ref: '#/components/schemas/FolderCopyCounts' },
+          replayed: { type: 'boolean' },
+        },
+      },
+      RenameNoteRequest: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'expectedTitle'],
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 1000, description: 'Trimmed, nonempty new title.' },
+          expectedTitle: {
+            type: 'string',
+            description: 'Exact current title, including any literal whitespace, from metadata or a read.',
+          },
+        },
       },
       EditNoteRequest: {
         type: 'object',

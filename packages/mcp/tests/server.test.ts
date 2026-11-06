@@ -3,7 +3,22 @@ import { createNotesMcpServer } from '../src/server';
 
 function mockClient() {
   return {
+    templates: {
+      library: vi.fn(async () => ({ templates: [] })),
+      read: vi.fn(async () => ({})),
+      create: vi.fn(async () => ({})),
+      update: vi.fn(async () => ({})),
+      settings: vi.fn(async () => ({})),
+      assign: vi.fn(async () => ({})),
+      tags: vi.fn(async () => ({})),
+      defaults: vi.fn(async () => ({})),
+    },
     folders: {
+      rename: vi.fn(async () => ({ folder: { id: 'f', title: 'New' } })),
+      move: vi.fn(async () => ({ folder: { id: 'f', parentFolderId: null } })),
+      duplicatePreview: vi.fn(async () => ({ token: 'a'.repeat(64), counts: {} })),
+      duplicate: vi.fn(async () => ({ folder: { id: 'copy' }, replayed: false })),
+      notes: vi.fn(async () => ({ notes: [{ id: 'note-1' }], pageInfo: { hasMore: false, nextCursor: null } })),
       templates: vi.fn(async () => ({ templates: [{ id: 'template-1', title: 'Feature' }] })),
       templatePreview: vi.fn(async () => ({
         snapshot: 'snapshot',
@@ -19,6 +34,7 @@ function mockClient() {
       trash: vi.fn(async () => ({ ok: true, folderCount: 1, noteCount: 0 })),
     },
     notes: {
+      rename: vi.fn(async () => ({ note: { id: 'note-1', title: 'After' }, contentHash: 'unchanged' })),
       fromTemplate: vi.fn(async () => ({ note: { id: 'created' }, replayed: false })),
       properties: vi.fn(async () => ({
         schema: { schemaId: 'schema-1', revision: 1, definitions: [] },
@@ -82,6 +98,110 @@ function tools(server: unknown) {
 }
 
 describe('createNotesMcpServer', () => {
+  it('forwards all owner template operations, strips only routing IDs and never retries stale mutations', async () => {
+    const client = mockClient(),
+      registered = tools(createNotesMcpServer(client as never));
+    const update = { baseHash: 'a'.repeat(64), expectedTitle: ' Exact ', title: 'New', markdown: '' };
+    const defaults = { assignmentId: 'assignment', expectedRevision: 4, schemaId: null, schemaRevision: 0, values: {} };
+    await registered.notes_list_template_library.handler({ folderId: 'f', limit: 1, cursor: 'literal' } as never);
+    await registered.notes_read_template.handler({ templateId: 't' } as never);
+    await registered.notes_create_template.handler({ folderId: 'f', title: 'T', markdown: '' } as never);
+    await registered.notes_update_template.handler({ templateId: 't', ...update } as never);
+    await registered.notes_read_template_settings.handler({ templateId: 't' } as never);
+    await registered.notes_set_template_assignment.handler({
+      templateId: 't',
+      folderId: 'f',
+      assigned: false,
+      snapshot: 'membership',
+    } as never);
+    await registered.notes_set_template_tags.handler({ templateId: 't', expectedRevision: 2, tags: [] } as never);
+    await registered.notes_set_template_property_defaults.handler({
+      templateId: 't',
+      folderId: 'f',
+      ...defaults,
+    } as never);
+    expect(client.templates.library).toHaveBeenCalledWith('f', { limit: 1, cursor: 'literal' });
+    expect(client.templates.read).toHaveBeenCalledWith('t');
+    expect(client.templates.settings).toHaveBeenCalledWith('t');
+    expect(client.templates.create).toHaveBeenCalledWith({ folderId: 'f', title: 'T', markdown: '' });
+    expect(client.templates.update).toHaveBeenCalledWith('t', update);
+    expect(client.templates.assign).toHaveBeenCalledWith('t', 'f', { assigned: false, snapshot: 'membership' });
+    expect(client.templates.tags).toHaveBeenCalledWith('t', { expectedRevision: 2, tags: [] });
+    expect(client.templates.defaults).toHaveBeenCalledWith('t', 'f', defaults);
+    client.templates.update.mockRejectedValueOnce(new Error('409 stale'));
+    await expect(registered.notes_update_template.handler({ templateId: 't', ...update } as never)).rejects.toThrow(
+      '409'
+    );
+    expect(client.templates.update).toHaveBeenCalledTimes(2);
+    await expect(
+      registered.notes_update_template.handler({
+        templateId: 't',
+        baseHash: update.baseHash,
+        expectedTitle: 'T',
+      } as never)
+    ).rejects.toThrow('required');
+    expect(client.templates.update).toHaveBeenCalledTimes(2);
+    expect(registered.notes_create_template.annotations).toMatchObject({ idempotentHint: false });
+    expect(registered.notes_read_template_settings.annotations).toMatchObject({ readOnlyHint: true });
+  });
+  it('forwards folder structure contracts and preserves definitive versus uncertain copy errors', async () => {
+    const client = mockClient();
+    const registered = tools(createNotesMcpServer(client as never));
+    await registered.notes_rename_folder.handler({ folderId: 'f', title: 'New', expectedTitle: 'Old' } as never);
+    expect(client.folders.rename).toHaveBeenCalledWith('f', { title: 'New', expectedTitle: 'Old' });
+    await registered.notes_move_folder.handler({
+      folderId: 'f',
+      parentFolderId: null,
+      expectedParentFolderId: 'old',
+      confirm: true,
+    } as never);
+    expect(client.folders.move).toHaveBeenCalledWith('f', {
+      parentFolderId: null,
+      expectedParentFolderId: 'old',
+      confirm: true,
+    });
+    await registered.notes_preview_folder_duplication.handler({ folderId: 'f' } as never);
+    expect(client.folders.duplicatePreview).toHaveBeenCalledWith('f', null);
+    const payload = {
+      title: 'Copy',
+      parentFolderId: null,
+      requestId: 'fixed_request_0001',
+      previewToken: 'a'.repeat(64),
+    };
+    await registered.notes_duplicate_folder.handler({ folderId: 'f', ...payload, confirm: true } as never);
+    expect(client.folders.duplicate).toHaveBeenCalledExactlyOnceWith('f', payload);
+    client.folders.duplicate.mockRejectedValueOnce(
+      Object.assign(new Error('Denied'), { status: 403, data: { uncertain: false } })
+    );
+    expect(
+      await registered.notes_duplicate_folder.handler({ folderId: 'f', ...payload, confirm: true } as never)
+    ).toMatchObject({ isError: true, structuredContent: { result: { status: 403, uncertain: false } } });
+    client.folders.duplicate.mockRejectedValueOnce(new Error('Lost response'));
+    expect(
+      await registered.notes_duplicate_folder.handler({ folderId: 'f', ...payload, confirm: true } as never)
+    ).toMatchObject({ isError: true, structuredContent: { result: { status: null, uncertain: true } } });
+    expect(client.folders.duplicate).toHaveBeenCalledTimes(3);
+  });
+  it('lists exact folder metadata and forwards exact rename preconditions with appropriate annotations', async () => {
+    const client = mockClient();
+    const registered = tools(createNotesMcpServer(client as never));
+    const list = { folderId: 'folder /1', limit: 2, cursor: 'literal +/=' };
+    const listed = await registered.notes_list_folder_notes.handler(list as never);
+    expect(client.folders.notes).toHaveBeenCalledExactlyOnceWith(list.folderId, {
+      limit: list.limit,
+      cursor: list.cursor,
+    });
+    expect(listed).toMatchObject({ structuredContent: { result: { notes: [{ id: 'note-1' }] } } });
+    const rename = { noteId: 'note /1', title: 'After', expectedTitle: ' Before "quoted" ' };
+    const renamed = await registered.notes_rename_note.handler(rename as never);
+    expect(client.notes.rename).toHaveBeenCalledExactlyOnceWith(rename.noteId, {
+      title: rename.title,
+      expectedTitle: rename.expectedTitle,
+    });
+    expect(renamed).toMatchObject({ structuredContent: { result: { contentHash: 'unchanged' } } });
+    expect(registered.notes_list_folder_notes.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: true });
+    expect(registered.notes_rename_note.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: false });
+  });
   it('delegates properties with independent revisions and structured results', async () => {
     const client = mockClient();
     const registered = tools(createNotesMcpServer(client as never));
@@ -146,6 +266,14 @@ describe('createNotesMcpServer', () => {
     const registered = tools(server);
 
     expect(Object.keys(registered)).toEqual([
+      'notes_list_template_library',
+      'notes_read_template',
+      'notes_create_template',
+      'notes_update_template',
+      'notes_read_template_settings',
+      'notes_set_template_assignment',
+      'notes_set_template_tags',
+      'notes_set_template_property_defaults',
       'notes_list_assigned_templates',
       'notes_preview_assigned_template',
       'notes_create_from_template',
@@ -186,6 +314,12 @@ describe('createNotesMcpServer', () => {
       'notes_mutate_folder_properties',
       'notes_read_note_properties',
       'notes_patch_note_properties',
+      'notes_list_folder_notes',
+      'notes_rename_note',
+      'notes_rename_folder',
+      'notes_move_folder',
+      'notes_preview_folder_duplication',
+      'notes_duplicate_folder',
     ]);
     expect(Object.keys(registered).filter((name) => /restore|permanent.*delete/i.test(name))).toEqual([]);
     expect(registered.notes_list_folders.description).toContain('explicitly scoped shared folders');

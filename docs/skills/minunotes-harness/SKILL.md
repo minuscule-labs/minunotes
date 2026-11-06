@@ -1,6 +1,6 @@
 ---
 name: minunotes-harness
-description: Tool-first MinuNotes skill for registered Pi or MCP tools. Use for notes, properties, reviewed templates, comments, tags and canvases.
+description: Tool-first MinuNotes skill for registered Pi or MCP tools. Use for notes, properties, template management/reviewed creation, comments, tags and canvases.
 ---
 
 # MinuNotes Harness Tool Skill
@@ -24,7 +24,7 @@ A full note read may include privacy-safe role/source context, but never read a 
 - Find/create location: `minunotes_list_folders` → `minunotes_create_folder` if needed.
 - Discovery first: `minunotes_search_notes` and `minunotes_orphans` return compact metadata only; use `minunotes_read_note`, `minunotes_read_lines`, or outline/section tools to expand a selected note.
 - Safe note edit: search or `minunotes_read_note` → capture `contentHash` → `minunotes_edit_note` with `baseHash`.
-- Organize/move notes only when a registered move tool exists or direct Harness use is authorized; verify the target is inside granted scope. Pi has no move wrapper.
+- Organize/move notes only when a registered move tool exists or direct Harness use is authorized; verify the target is inside granted scope. Updated Pi adapters expose `minunotes_move_notes`; MCP exposes `notes_move_notes`. These move up to 100 owned notes atomically, not folders. Property values are not automatically mapped to the destination schema.
 
 ## Net-new note fast path
 
@@ -49,7 +49,7 @@ Folder, note-search, tag and orphan discovery accepts optional `limit` (1–100,
 
 Do not read every search result automatically. Rank candidates by title, folder, document type, and matched context, then expand only the notes needed to answer the task.
 - Section edit: `minunotes_read_outline` → `minunotes_read_section` → targeted `replace_text` or `replace_range`.
-- Canvas create/update: use `minunotes_create_canvas_from_syntax` for generated diagrams. It auto-detects Mermaid `flowchart`/`graph` headers; optional `format: "minu" | "mermaid"` forces a parser. Mermaid's supported flowchart subset compiles to editable native JSON Canvas (not SVG): standard directions, basic shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs. Styling, actions, rich labels, and other diagram types fail with diagnostics; imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Use Minu syntax for mind maps or Minu-specific layout; use raw JSON Canvas for exact imports or when the user explicitly requires specific IDs, coordinates, links, or metadata.
+- Canvas create/update: use `minunotes_create_canvas_from_syntax` for generated diagrams. It auto-detects Mermaid `flowchart`/`graph` headers. Harness and MCP additionally expose optional `format: "auto" | "minu" | "mermaid"`; the Pi syntax tools currently expose auto-detection only, not that override. Mermaid's supported flowchart subset compiles to editable native JSON Canvas (not SVG): standard directions, basic shapes, labeled directed/undirected/bidirectional/dotted edges, and nested subgraphs. Styling, actions, rich labels, and other diagram types fail with diagnostics; imports are limited to 100,000 source characters, 500 native nodes, 1,000 edges, and 16 subgraph levels. Use Minu syntax for mind maps or Minu-specific layout; use raw JSON Canvas for exact imports or when the user explicitly requires specific IDs, coordinates, links, or metadata.
 - Canvas replacement: `minunotes_read_note` → use `minunotes_replace_canvas` or `minunotes_replace_canvas_from_syntax` with `baseHash`.
 
 ## Canvas generation default
@@ -64,6 +64,35 @@ Do not read every search result automatically. Rank candidates by title, folder,
 - Canvas note link: `minunotes_read_note` → `minunotes_link_canvas_node_to_note` or `minunotes_unlink_canvas_node` with the latest `contentHash` as `baseHash`.
 - Organization/links: prefer defined properties for structured labels; use tag tools for explicitly requested legacy tags and backlink/link tools for wikilinks.
 - Review comments: read the note and current `contentHash` before creating or remapping an anchor. Anchors use zero-based Markdown offsets and an exact quote. Comment message bodies are plain text, not Markdown. List a thread before editing its messages; message edits/deletes are author-only, and reactions are actor-specific toggles.
+
+## Owned template management
+
+Updated Pi (`minunotes_`) and hosted/stdio MCP (`notes_`) expose these tool suffixes: `list_template_library`, `read_template`, `create_template`, `update_template`, `read_template_settings`, `set_template_assignment`, `set_template_tags`, `set_template_property_defaults`. Library discovery is compact, exact-folder and cursor-paginated (25 default/100 maximum); it is separate from destination-assigned templates.
+
+- Creation needs owned source read/create; Markdown only, title 1–1,000 characters and body up to 200,000 characters within the 256-KiB request bound. It does not assign the template or set defaults. No creation receipt: resolve an unknown outcome through library discovery before explicitly creating again.
+- Before editing/renaming, read the template; send exact original `expectedTitle`, `contentHash` as `baseHash`, and new `title` and/or `markdown`. Source read/edit and API-editability apply. IDs, assignments, defaults and existing instances stay intact. Preserve drafts and explicitly review conflicts; no automatic retries/rebasing.
+- Read settings before changing assignments/tags/defaults. Assign one destination with `assigned` plus settings `membershipSnapshot` as `snapshot`; source and destination owner read/edit are required. Settings include only readable active assignments, never a complete replace-all list. Unassign removes that destination's defaults; unrelated/hidden/trashed assignments stay retained.
+- Default tags use the settings tag `revision` as `expectedRevision`. Destination property defaults use that assignment's `id`/`revision` as `assignmentId`/`expectedRevision` plus the current destination folder schema's independent `schemaId`/`schemaRevision`. Submit **complete final** tags/values, preserving unrequested defaults; empty clears only when requested. Stable field/option IDs only, not labels, invented definitions or body hashes. Default tags are not tags on the template note itself.
+
+Shared editor/note grants do not authorize owner administration. Current private/read-only/Trash policies and credential ceilings still apply; no grants, variables or schema inheritance are added. Assigned preview → reviewed ordinary-note creation remains a separate capability with its existing frozen snapshot/request-ID/date-time protocol. Installed/source support does not prove registration or deployment.
+
+## Owned folder structure and reviewed copying
+
+Updated Pi/MCP adapters expose `minunotes_rename_folder` / `notes_rename_folder`, `minunotes_move_folder` / `notes_move_folder`, `minunotes_preview_folder_duplication` / `notes_preview_folder_duplication`, and `minunotes_duplicate_folder` / `notes_duplicate_folder`. These are owner-only; shared editor grants do not authorize structural administration.
+
+If a structure result has `parentContext: "unavailable"` and null `parentFolderId`, the parent is hidden—not necessarily Root. A move has no copy receipt: uncertain move outcomes need fresh location review and explicit approval, never replay of a stale move payload. Copy replay rechecks current source/imported-resource availability and limits as well as result access.
+
+Rename uses exact `expectedTitle`; move uses explicit `parentFolderId` (null for Root), exact `expectedParentFolderId` and `confirm: true`. Get approval for the exact subtree/destination: destination-inherited sharing applies. Moves preserve IDs but require whole-subtree edit/read scope, applicable note/template API-editability and retained inherited protection. Cycles, excess depth and leaving scope are rejected; no automatic grant changes.
+
+For copying, preview the exact source/destination first, review token/counts/imageBytes and get explicit approval before confirming with `confirm: true`, literal `title`, `parentFolderId`, `previewToken` and frozen `requestId`. New IDs must inherit existing read/create scope; restricted Root and exact-only destinations are unsupported rather than granted automatically. Source/imported templates/images require read scope, while destination requires read/create and folder-creation permission. Copies preserve native properties/options/boards/templates/defaults/images/links and protection flags, not sharing grants/tokens/history/comments/personal view state. Source API-editability need not permit editing to copy it; copied flags remain unchanged.
+
+On an uncertain result retain the SAME requestId and exact payload; never retry automatically, replace the ID, refresh preview or change the clock. A definitive stale review needs explicit re-review. Execution and receipt replay recheck current authorization; unavailable committed copies are never recreated. MCP copy errors retain status and uncertainty explicitly. New source/tool support does not establish deployment or active session registration.
+
+## Exact-folder notes and renaming
+
+Updated adapters expose `minunotes_list_folder_notes` / `notes_list_folder_notes` with `folderId`, optional `limit` (1–100, default 25) and `cursor`. Results are compact ordinary-note metadata, including canvas formats but not templates or content. Follow only the returned `pageInfo.nextCursor`, unchanged, when another page is needed. A direct-note grant never authorizes folder enumeration.
+
+Use `minunotes_rename_note` / `notes_rename_note` to change an existing ordinary Markdown note name. Supply `noteId`, new `title` (trimmed, nonempty, at most 1,000 characters) and exact `expectedTitle` from current metadata/read. Do not trim or rewrite the precondition. A body hash does not detect a title change and is not used for this operation. Content, properties, IDs and links remain unchanged; shared rename responses hide containing-folder context. Read/edit capabilities, current grants and API-editability are enforced transactionally. On conflicts or uncertain outcomes preserve intent and review; never automatically replay. Canvas renaming remains part of existing canvas replacement, not this Markdown-only tool. Source support is not proof of deployment or registration.
 
 ## Properties
 
@@ -89,11 +118,11 @@ Normal Markdown/canvas/mind-map notes support optional Text/Select/Date values. 
 
 Column visibility is presentation only and is configured by the owner in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
-Board configuration, personal List/Board filters/sorting, folder duplication, template-default administration and destructive Delete option remain web-only on these agent surfaces. Archive is non-destructive, not Delete option. Do not emulate them with note/tag writes. Existing comments, authorized MCP Trash and ordinary tag operations remain available; Pi does not provide move/Trash tools. MCP intentionally omits outgoing-link/backlink/orphan tools; use only registered tools, not assumed aliases.
+Board configuration, personal List/Board filters/sorting and destructive Delete option remain web-only on these agent surfaces. Archive is non-destructive, not Delete option. Do not emulate them with note/tag writes. Existing comments, authorized note moves, note/folder Trash and ordinary tag operations remain available. Updated Pi adapters expose `minunotes_move_notes`, `minunotes_trash_note` and `minunotes_trash_folder`; use them only when registered. Trash requires explicit user approval plus `confirm: true`, not automatic retries. MCP intentionally omits outgoing-link/backlink/orphan tools; use only registered tools, not assumed aliases.
 
 ## Reviewed template creation
 
-Use the registered list → preview → create aliases above with the destination folder. These require destination create plus read capability, including credential scope ceilings; they never grant template-library access. Agents cannot use an effectively private source template folder. Source API-editability does not need to permit edits to copy an assigned template; destination creation does not edit the source. Direct-note grants do not enable discovery or creation. Owner defaults management remains web-only for agents.
+Use the registered list → preview → create aliases above with the destination folder. These require destination create plus read capability, including credential scope ceilings; they never grant template-library access. Agents cannot use an effectively private source template folder. Source API-editability does not need to permit edits to copy an assigned template; destination creation does not edit the source. Direct-note grants do not enable discovery or creation. Owner management uses the separate scoped template tools.
 
 Review the returned body/defaults/schema and submit destination/template IDs, `snapshot`, `schemaId`, `schemaRevision`, final title, **complete final** tags/values, `requestId` and frozen literal `variables: {date,time,datetime}`. Empty tags/values explicitly clear defaults; retain reviewed template tags unless the user deliberately clears them. Only the original four substitutions (including title) are supported; never send a replacement body. The atomic result is an ordinary destination-owned note with authenticated provenance and one create event.
 
@@ -124,14 +153,28 @@ Review tools require explicit Comment permission plus read scope for every opera
 
 ## Available Pi tools
 
-The updated installed adapter registers these 39 tools when loaded. This inventory is not proof that the current session or deployed API already supports them.
+The updated installed adapter registers these 56 tools when loaded. This inventory is not proof that the current session or deployed API already supports them.
 
 - `minunotes_list_folders`
 - `minunotes_create_folder`
+- `minunotes_rename_folder`
+- `minunotes_move_folder`
+- `minunotes_preview_folder_duplication`
+- `minunotes_duplicate_folder`
+- `minunotes_list_folder_notes`
+- `minunotes_trash_folder`
 - `minunotes_read_folder_properties`
 - `minunotes_mutate_folder_properties`
 - `minunotes_read_note_properties`
 - `minunotes_patch_note_properties`
+- `minunotes_list_template_library`
+- `minunotes_read_template`
+- `minunotes_create_template`
+- `minunotes_update_template`
+- `minunotes_read_template_settings`
+- `minunotes_set_template_assignment`
+- `minunotes_set_template_tags`
+- `minunotes_set_template_property_defaults`
 - `minunotes_list_assigned_templates`
 - `minunotes_preview_assigned_template`
 - `minunotes_create_from_template`
@@ -144,6 +187,9 @@ The updated installed adapter registers these 39 tools when loaded. This invento
 - `minunotes_read_events`
 - `minunotes_create_note`
 - `minunotes_edit_note`
+- `minunotes_rename_note`
+- `minunotes_move_notes`
+- `minunotes_trash_note`
 - `minunotes_read_tags`
 - `minunotes_replace_tags`
 - `minunotes_list_tags`
@@ -179,7 +225,7 @@ The updated installed adapter registers these 39 tools when loaded. This invento
 - Folder lists, search, direct reads, line reads, tags, links, backlinks, and orphan results include active content only. Folder, tag, search, line-search, and orphan discovery lists are cursor-paginated; compact folder/note discovery records omit owner fields and full note content.
 - A trashed note, template, or folder subtree is unavailable through harness tools and normally returns not found when addressed by ID.
 - Harness tools cannot list Trash, restore, or permanently delete content. Focused note/folder Trash commands may move creator-owned content to the owner’s Trash when the authorizing human is an Editor, the credential has edit capability and shared scope, and owner policy permits it. Direct-note grants, shared roots, mixed-creator subtrees, and resources with owner-managed sharing configuration are denied.
-- Moving content to Trash is destructive. Proceed only when the user explicitly requested that deletion or approved the exact destructive change; otherwise present the plan and obtain approval first.
+- Moving content to Trash is destructive. Proceed only when the user explicitly requested that deletion or approved the exact destructive change; otherwise present the plan and obtain approval first. Pi/MCP Trash tools require `confirm: true`. Do not automatically retry after errors or uncertain outcomes.
 - Do not interpret a not-found response as proof that content was permanently deleted; it may be outside the connection's scope or recoverable in the owner's Trash.
 
 ## Safety rules

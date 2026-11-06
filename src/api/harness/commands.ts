@@ -614,7 +614,7 @@ export function getNoteEventSummary(
   return changed.length > 0 ? `Updated ${changed.join(', ')}` : 'Updated note';
 }
 
-async function insertNoteEvent(
+export async function insertNoteEvent(
   input: {
     noteId: string;
     userId: string;
