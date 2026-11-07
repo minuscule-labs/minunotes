@@ -27,6 +27,54 @@
       "value": "template_id_from_assigned_list"
     },
     {
+      "key": "managedTemplateId",
+      "value": "owned_template_id_from_library"
+    },
+    {
+      "key": "templateLibraryCursor",
+      "value": ""
+    },
+    {
+      "key": "templateBaseHash",
+      "value": "content_hash_from_owned_template_read"
+    },
+    {
+      "key": "templateExpectedTitleJson",
+      "value": "\"exact_owned_template_title_from_read\""
+    },
+    {
+      "key": "templateMembershipSnapshot",
+      "value": "membership_snapshot_from_settings"
+    },
+    {
+      "key": "templateTagRevision",
+      "value": "0"
+    },
+    {
+      "key": "templateDefaultTagsJson",
+      "value": "[]"
+    },
+    {
+      "key": "templateAssignmentId",
+      "value": "assignment_id_from_settings"
+    },
+    {
+      "key": "templateDefaultRevision",
+      "value": "0"
+    },
+    {
+      "key": "templateDefaultsSchemaIdJson",
+      "value": "null"
+    },
+    {
+      "key": "templateDefaultsSchemaRevision",
+      "value": "0"
+    },
+    {
+      "key": "templateDefaultValuesJson",
+      "value": "{}"
+    },
+    {
       "key": "templateSnapshot",
       "value": "snapshot_from_preview"
     },
@@ -69,6 +117,38 @@
     {
       "key": "baseHash",
       "value": "hash_from_read"
+    },
+    {
+      "key": "expectedTitleJson",
+      "value": "\"title_from_read\""
+    },
+    {
+      "key": "folderNotesCursor",
+      "value": ""
+    },
+    {
+      "key": "folderExpectedTitleJson",
+      "value": "\"exact_folder_name_from_metadata\""
+    },
+    {
+      "key": "folderExpectedParentJson",
+      "value": "null"
+    },
+    {
+      "key": "folderCopyParentJson",
+      "value": "null"
+    },
+    {
+      "key": "folderCopyParentId",
+      "value": "authorized_destination_folder_id"
+    },
+    {
+      "key": "folderCopyToken",
+      "value": "reviewed_token_from_preview"
+    },
+    {
+      "key": "folderCopyRequestId",
+      "value": "explicit_request_id_0001"
     },
     {
       "key": "propertySchemaId",
@@ -184,7 +264,8 @@
                 "exec": [
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
                   "const body = pm.response.json(); if (body.note?.id) pm.collectionVariables.set('noteId', body.note.id);",
-                  "const body = pm.response.json(); if (body.contentHash) pm.collectionVariables.set('baseHash', body.contentHash);"
+                  "const readState = pm.response.json(); if (readState.contentHash) pm.collectionVariables.set('baseHash', readState.contentHash);",
+                  "const renameState = pm.response.json(); if (pm.response.code === 200 && typeof renameState.note?.title === 'string') pm.collectionVariables.set('expectedTitleJson', JSON.stringify(renameState.note.title));"
                 ]
               }
             }
@@ -195,6 +276,308 @@
     {
       "name": "Templates",
       "item": [
+        {
+          "name": "List owned template library",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Compact exact-folder owned templates only, not descendants, ordinary notes, bodies or assigned-template discovery. Requires current owner source read scope. SQL title/ID keyset pagination; follow unchanged actor-bound cursors only as needed.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/template-library?limit=10&cursor={{templateLibraryCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "template-library"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{templateLibraryCursor}}",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); pm.collectionVariables.set('templateLibraryCursor', body.pageInfo?.nextCursor ?? '');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create owned template",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Create an owned Markdown template with source read/create scope and normal private/read-only policy. Native link/attachment/version/event handling and agent attribution. No implicit assignments/defaults or new variables. No durable creation receipt or automatic retry: resolve unknown outcomes through library discovery before explicitly creating again.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"folderId\": \"{{folderId}}\",\n  \"title\": \"Task template\",\n  \"markdown\": \"# Task\\n\\n{{date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const managed = pm.response.json(); if ([200,201].includes(pm.response.code)) { pm.collectionVariables.set('managedTemplateId',managed.template.id); pm.collectionVariables.set('templateBaseHash',managed.contentHash); pm.collectionVariables.set('templateExpectedTitleJson',JSON.stringify(managed.template.title)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read owned template",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Owned Markdown body/title/contentHash and API-editability. Current source read scope; no shared library access. Assigned-template preview remains separate.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const managed = pm.response.json(); if ([200,201].includes(pm.response.code)) { pm.collectionVariables.set('managedTemplateId',managed.template.id); pm.collectionVariables.set('templateBaseHash',managed.contentHash); pm.collectionVariables.set('templateExpectedTitleJson',JSON.stringify(managed.template.title)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Edit or rename owned template",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Read first. Atomic title/body changes require exact expectedTitle plus contentHash as baseHash, source read/edit and template API-editability. At least one title/markdown field; identity, assignments/defaults stay unchanged. Native history/events/link/attachment behavior. Preserve drafts and explicitly review conflicts; no automatic retry/rebase. Generic note editing still rejects templates.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"baseHash\": \"{{templateBaseHash}}\",\n  \"expectedTitle\": {{templateExpectedTitleJson}},\n  \"title\": \"Renamed task template\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const managed = pm.response.json(); if ([200,201].includes(pm.response.code)) { pm.collectionVariables.set('managedTemplateId',managed.template.id); pm.collectionVariables.set('templateBaseHash',managed.contentHash); pm.collectionVariables.set('templateExpectedTitleJson',JSON.stringify(managed.template.title)); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read owned template settings",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Source read required. Independent tag revision/tags, opaque membershipSnapshot and only readable active destination assignments/default revisions/values. Scoped view, never a replace-all membership list; omitted hidden/trashed assignments remain retained. Read destination schema separately before changing property defaults.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}/settings",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}", "settings"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const settings = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('templateMembershipSnapshot',settings.membershipSnapshot); pm.collectionVariables.set('templateTagRevision',String(settings.revision)); pm.collectionVariables.set('templateDefaultTagsJson',JSON.stringify(settings.tags)); const assignment = settings.assignments.find(a=>a.folderId===pm.collectionVariables.get('folderId')); pm.collectionVariables.set('templateAssignmentId',assignment?.id ?? ''); pm.collectionVariables.set('templateDefaultRevision',String(assignment?.revision ?? 0)); pm.collectionVariables.set('templateDefaultValuesJson',JSON.stringify(assignment?.values ?? {})); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Set one template assignment",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Use membershipSnapshot from current settings as snapshot. Only the named destination is assigned/unassigned; unrelated/hidden/trashed memberships stay intact. Source/destination owner read/edit and source API-editability required. Unassign removes this assignment/defaults, matching native semantics. Explicit intent and conflict review; no automatic retries.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assigned\": true,\n  \"snapshot\": \"{{templateMembershipSnapshot}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}/folders/{{folderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}", "folders", "{{folderId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Set template default tags",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Source owner read/edit and API-editability. Replace default tags using their independent expectedRevision from settings, not body hash. Complete final explicit tags; empty clears only when requested. Does not tag the template note. No invented tags or automatic retries.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"expectedRevision\": {{templateTagRevision}},\n  \"tags\": {{templateDefaultTagsJson}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}/defaults",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}", "defaults"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Set destination template defaults",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Source/destination owner read/edit and source API-editability. Read current settings and destination schema first. Exact assignmentId/default revision and independent schema identity/revision; complete final values using stable property/option IDs, not labels/contentHash. No new fields, schema remapping or automatic retries. Conflicts preserve stored defaults.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"assignmentId\": \"{{templateAssignmentId}}\",\n  \"expectedRevision\": {{templateDefaultRevision}},\n  \"schemaId\": {{templateDefaultsSchemaIdJson}},\n  \"schemaRevision\": {{templateDefaultsSchemaRevision}},\n  \"values\": {{templateDefaultValuesJson}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/templates/{{managedTemplateId}}/folders/{{folderId}}/defaults",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "templates", "{{managedTemplateId}}", "folders", "{{folderId}}", "defaults"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "List assigned templates",
           "request": {
@@ -327,7 +710,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
-                  "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+                  "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('folderSchemaRevision', String(body.revision)); pm.collectionVariables.set('templateDefaultsSchemaIdJson',JSON.stringify(body.schemaId)); pm.collectionVariables.set('templateDefaultsSchemaRevision',String(body.revision)); }"
                 ]
               }
             }
@@ -367,7 +750,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
-                  "const body = pm.response.json(); if (pm.response.code === 200) pm.collectionVariables.set('folderSchemaRevision', String(body.revision));"
+                  "const body = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('folderSchemaRevision', String(body.revision)); pm.collectionVariables.set('templateDefaultsSchemaIdJson',JSON.stringify(body.schemaId)); pm.collectionVariables.set('templateDefaultsSchemaRevision',String(body.revision)); }"
                 ]
               }
             }
@@ -677,6 +1060,204 @@
               }
             }
           ]
+        },
+        {
+          "name": "Rename owned folder",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Owner-only scoped title compare-and-set using exact expectedTitle; preserves identity. No automatic retries.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Renamed folder\",\n  \"expectedTitle\": {{folderExpectedTitleJson}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/rename",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "rename"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Move owned folder subtree",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Explicitly confirmed owner-only move with exact expectedParentFolderId, preserving identities. Destination-inherited sharing applies. Checks all affected folders/notes, API-editability, resulting scope, hierarchy and protection retention; never adds grants. Root requires all-folder scope. No automatic retries.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"parentFolderId\": {{folderCopyParentJson}},\n  \"expectedParentFolderId\": {{folderExpectedParentJson}},\n  \"confirm\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/move",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "move"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Review owned folder duplication",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Read-only native copy preview into the selected parent (omitted means Root), including imported templates/images. Requires source read and destination read/create/folder creation; generated IDs must inherit scope without adding grants. Returns token/counts/imageBytes only, never stages storage or copies. Preview is not an access grant.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/duplicate-preview?parentFolderId={{folderCopyParentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "duplicate-preview"],
+              "query": [
+                {
+                  "key": "parentFolderId",
+                  "value": "{{folderCopyParentId}}",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const copyPreview = pm.response.json(); if (pm.response.code === 200) { pm.collectionVariables.set('folderCopyToken', copyPreview.token); pm.collectionVariables.set('folderCopyParentJson', JSON.stringify(copyPreview.parentFolderId)); pm.collectionVariables.set('folderCopyRequestId', pm.variables.replaceIn('{{$guid}}')); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Duplicate reviewed owned folder",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Execute the exact reviewed native copy, preserving properties/boards/templates/images/links/protections but not sharing tokens/grants. Destination-inherited access applies. Rechecks authorization on execution/replay. Freeze title, parentFolderId, previewToken and requestId: uncertain results require the SAME ID and exact payload, never automatic retries or refreshed previews. Stale reviews require explicit re-review. Completed unavailable copies are never recreated.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Reviewed project copy\",\n  \"parentFolderId\": {{folderCopyParentJson}},\n  \"requestId\": \"{{folderCopyRequestId}}\",\n  \"previewToken\": \"{{folderCopyToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/duplicate",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "duplicate"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List exact folder notes",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "One page of compact ordinary-note metadata, including canvas formats, without content or templates. Requires current folder read scope; direct-note grants cannot enumerate folders. Ordered by title and ID using bounded SQL keyset pagination. Cursors are bound to the actor, credential and folder.",
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/folders/{{folderId}}/notes?limit=10&cursor={{folderNotesCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "folders", "{{folderId}}", "notes"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{folderNotesCursor}}",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const body = pm.response.json(); pm.collectionVariables.set('folderNotesCursor', body.pageInfo?.nextCursor ?? '');"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -947,7 +1528,8 @@
                 "exec": [
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
                   "const body = pm.response.json(); if (body.note?.id) pm.collectionVariables.set('noteId', body.note.id);",
-                  "const body = pm.response.json(); if (body.contentHash) pm.collectionVariables.set('baseHash', body.contentHash);"
+                  "const readState = pm.response.json(); if (readState.contentHash) pm.collectionVariables.set('baseHash', readState.contentHash);",
+                  "const renameState = pm.response.json(); if (pm.response.code === 200 && typeof renameState.note?.title === 'string') pm.collectionVariables.set('expectedTitleJson', JSON.stringify(renameState.note.title));"
                 ]
               }
             }
@@ -1224,6 +1806,46 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rename an existing Markdown note",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}",
+                "type": "text"
+              }
+            ],
+            "description": "Title-only rename for an ordinary Markdown note, preserving content, properties, ID and links. Supply exact expectedTitle from current metadata; a body hash cannot detect another rename. Read/edit permissions and API-editability are checked in the transaction. Stale titles conflict without partial changes; no automatic retry. Shared responses always return null folder context.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Renamed evaluation note\",\n  \"expectedTitle\": {{expectedTitleJson}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/harness/notes/{{noteId}}/rename",
+              "host": ["{{baseUrl}}"],
+              "path": ["v1", "harness", "notes", "{{noteId}}", "rename"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('returns a successful response', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const renameState = pm.response.json(); if (pm.response.code === 200 && typeof renameState.note?.title === 'string') pm.collectionVariables.set('expectedTitleJson', JSON.stringify(renameState.note.title));"
                 ]
               }
             }

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
+import { setupBoardTest } from './board-fixtures';
 import { cleanupPropertiesTests, setupPropertiesTest } from './properties-fixtures';
 
 afterEach(cleanupPropertiesTests);
@@ -29,6 +30,251 @@ function oauthAuthorization() {
 }
 
 describe('hosted MCP route', () => {
+  it('exposes scoped owner template authoring, assignments and independent defaults through hosted OAuth', async () => {
+    const f = await setupPropertiesTest();
+    const auth = {
+      id: 'template-manager',
+      userId: 'owner',
+      accessMode: 'all' as const,
+      sharedAccessMode: 'none' as const,
+      canRead: true,
+      canCreate: true,
+      canEdit: true,
+      canComment: false,
+      createdAt: f.now,
+      updatedAt: f.now,
+    };
+    await f.db.insert(f.schema.integrationAuthorizations).values(auth);
+    const credential = {
+      ...auth,
+      id: 'template-oauth',
+      integrationAuthorizationId: auth.id,
+      clientId: 'client',
+      scope: 'notes.read notes.create notes.edit',
+    };
+    const local = new Hono();
+    local.use('*', async (c, next) => {
+      c.set('user', { id: 'owner' });
+      c.set('session', null);
+      c.set('apiKey', null);
+      c.set('oauthAuthorization', credential);
+      await next();
+    });
+    local.route('/mcp', (await import('../src/api/routes/mcp')).mcpRoutes);
+    const call = async (name: string, args: unknown) =>
+      (
+        await local.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer synthetic',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        })
+      ).json();
+    const made = (await call('notes_create_template', { folderId: 'other', title: 'Managed', markdown: '{{title}}' }))
+      .result.structuredContent.result;
+    const templateId = made.template.id;
+    expect(
+      (await call('notes_list_template_library', { folderId: 'other', limit: 1 })).result.structuredContent.result
+        .templates[0].id
+    ).toBe(templateId);
+    expect((await call('notes_read_template', { templateId })).result.structuredContent.result.contentHash).toBe(
+      made.contentHash
+    );
+    const changed = await call('notes_update_template', {
+      templateId,
+      expectedTitle: 'Managed',
+      baseHash: made.contentHash,
+      title: 'Renamed',
+      markdown: '{{date}}',
+    });
+    expect(changed.result.structuredContent.result.template.title).toBe('Renamed');
+    const settings = (await call('notes_read_template_settings', { templateId })).result.structuredContent.result;
+    expect(
+      (
+        await call('notes_set_template_assignment', {
+          templateId,
+          folderId: 'board',
+          assigned: true,
+          snapshot: settings.membershipSnapshot,
+        })
+      ).result.structuredContent.result.ok
+    ).toBe(true);
+    expect(
+      (await call('notes_set_template_tags', { templateId, expectedRevision: settings.revision, tags: ['feature'] }))
+        .result.structuredContent.result.tags
+    ).toEqual(['feature']);
+    const updated = (await call('notes_read_template_settings', { templateId })).result.structuredContent.result;
+    const a = updated.assignments[0];
+    expect(
+      (
+        await call('notes_set_template_property_defaults', {
+          templateId,
+          folderId: 'board',
+          assignmentId: a.id,
+          expectedRevision: a.revision,
+          schemaId: null,
+          schemaRevision: 0,
+          values: {},
+        })
+      ).result.structuredContent.result.revision
+    ).toBe(1);
+    credential.canEdit = false;
+    const denied = await call('notes_set_template_tags', { templateId, expectedRevision: 1, tags: [] });
+    expect(denied.result.isError).toBe(true);
+    expect((await call('notes_read_template_settings', { templateId })).result.structuredContent.result.tags).toEqual([
+      'feature',
+    ]);
+  });
+  it('uses owner-scoped structure commands through hosted MCP and preserves copy error uncertainty', async () => {
+    const f = await setupBoardTest(44);
+    await f.addNote('task', 'Task', [], { isApiEditable: true });
+    const auth = {
+      id: 'structure-auth',
+      userId: 'owner',
+      canRead: true,
+      canEdit: true,
+      canCreate: true,
+      canComment: false,
+      canCreateFolders: true,
+      accessMode: 'all' as const,
+      sharedAccessMode: 'none' as const,
+      createdAt: f.now,
+      updatedAt: f.now,
+    };
+    await f.db.insert(f.schema.integrationAuthorizations).values(auth);
+    const credential = {
+      ...auth,
+      id: 'oauth',
+      integrationAuthorizationId: auth.id,
+      clientId: 'client',
+      scope: 'notes.read notes.edit notes.create folders.create',
+    };
+    const local = new Hono();
+    local.use('*', async (c, next) => {
+      c.set('user', { id: 'owner' });
+      c.set('session', null);
+      c.set('apiKey', null);
+      c.set('oauthAuthorization', credential);
+      await next();
+    });
+    local.route('/mcp', (await import('../src/api/routes/mcp')).mcpRoutes);
+    const call = async (name: string, args: unknown) =>
+      (
+        await local.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer synthetic',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        })
+      ).json();
+    expect(
+      (await call('notes_rename_folder', { folderId: 'board', title: 'Renamed', expectedTitle: 'Board' })).result
+        .structuredContent.result.folder.title
+    ).toBe('Renamed');
+    expect(
+      (
+        await call('notes_move_folder', {
+          folderId: 'board',
+          parentFolderId: 'other',
+          expectedParentFolderId: 'root',
+          confirm: true,
+        })
+      ).result.structuredContent.result.folder.parentFolderId
+    ).toBe('other');
+    const p = (await call('notes_preview_folder_duplication', { folderId: 'board', parentFolderId: null })).result
+      .structuredContent.result;
+    const payload = {
+      folderId: 'board',
+      title: 'Copy',
+      parentFolderId: null,
+      requestId: 'fixed_request_0001',
+      previewToken: p.token,
+      confirm: true,
+    };
+    const copy = await call('notes_duplicate_folder', payload);
+    expect(copy.result.structuredContent.result.replayed).toBe(false);
+    expect((await call('notes_duplicate_folder', payload)).result.structuredContent.result.replayed).toBe(true);
+    credential.canCreateFolders = false;
+    expect((await call('notes_duplicate_folder', payload)).result).toMatchObject({
+      isError: true,
+      structuredContent: { result: { status: 403, uncertain: false } },
+    });
+  });
+  it('exposes exact-folder discovery and metadata-safe rename through the real hosted OAuth boundary', async () => {
+    const f = await setupPropertiesTest();
+    await f.addNote('task', 'Before', [], { isApiEditable: true });
+    const auth = {
+      id: 'task-auth',
+      userId: 'owner',
+      canRead: true,
+      canEdit: true,
+      canCreate: false,
+      canComment: false,
+      accessMode: 'all' as const,
+      sharedAccessMode: 'none' as const,
+      createdAt: f.now,
+      updatedAt: f.now,
+    };
+    await f.db.insert(f.schema.integrationAuthorizations).values(auth);
+    const credential = {
+      ...auth,
+      id: 'task-oauth',
+      integrationAuthorizationId: auth.id,
+      clientId: 'client',
+      scope: 'notes.read notes.edit',
+    };
+    const local = new Hono();
+    local.use('*', async (c, next) => {
+      c.set('user', { id: 'owner' });
+      c.set('session', null);
+      c.set('apiKey', null);
+      c.set('oauthAuthorization', credential);
+      await next();
+    });
+    local.route('/mcp', (await import('../src/api/routes/mcp')).mcpRoutes);
+    const call = async (name: string, args: unknown) =>
+      (
+        await local.request('/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer synthetic',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+        })
+      ).json();
+    const list = await call('notes_list_folder_notes', { folderId: 'board', limit: 1 });
+    expect(list.result.structuredContent.result.notes).toEqual([
+      expect.objectContaining({ id: 'task', title: 'Before' }),
+    ]);
+    expect(list.result.structuredContent.result.notes[0]).not.toHaveProperty('content');
+    const rename = await call('notes_rename_note', { noteId: 'task', title: 'After', expectedTitle: 'Before' });
+    expect(rename.result.structuredContent.result.note).toMatchObject({ id: 'task', title: 'After' });
+    const stale = await call('notes_rename_note', { noteId: 'task', title: 'Overwrite', expectedTitle: 'Before' });
+    expect(JSON.stringify(stale)).toContain('Title changed');
+    const invalid = await call('notes_rename_note', {
+      noteId: 'task',
+      title: 'Overwrite',
+      expectedTitle: 'After',
+      folderId: 'other',
+    });
+    expect(invalid.result?.structuredContent).toBeUndefined();
+    credential.canEdit = false;
+    expect(
+      JSON.stringify(await call('notes_rename_note', { noteId: 'task', title: 'Overwrite', expectedTitle: 'After' }))
+    ).toContain('Forbidden');
+    const [stored] = await f.db.select().from(f.schema.notes);
+    expect(stored.title).toBe('After');
+    credential.canRead = false;
+    expect(JSON.stringify(await call('notes_list_folder_notes', { folderId: 'board' }))).toContain('Folder not found');
+  });
   it('hosted template tools share reviewed creation, frozen receipts and OAuth create ceiling', async () => {
     const f = await setupPropertiesTest();
     await f.addNote('template', 'Feature', [], {

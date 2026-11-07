@@ -11,6 +11,7 @@ import { templateObject } from '../../shared/templates';
 import { db } from '../db/client';
 import { folderShareLinks, folders, user as users } from '../db/schema';
 import { duplicateFolder, previewFolderDuplication } from '../folders/duplicate';
+import { updateOwnedFolder } from '../folders/structure';
 import { createDocument, listDocuments, listFolders } from '../harness/commands';
 import type { auth } from '../lib/auth';
 import {
@@ -27,7 +28,7 @@ import {
   resolveFolderTrashEligibility,
   trashEligibilityStatus,
 } from '../lib/collaboration-trash';
-import { loadFolderAccessTree, validateFolderMove, validateFolderParent } from '../lib/folder-access';
+import { loadFolderAccessTree, validateFolderParent } from '../lib/folder-access';
 import { createId } from '../lib/id';
 import { parsePageRequest } from '../lib/pagination';
 import { buildFolderShareUrl, generateShareToken, hashShareToken } from '../lib/share-tokens';
@@ -267,47 +268,13 @@ folderRoutes.post('/:folderId/duplicate', async (c) => {
 folderRoutes.patch('/:folderId', async (c) => {
   const user = getUser(c);
   if (!user) return c.json({ error: 'Unauthorized' }, 401);
-
-  const body = (await c.req.json().catch(() => null)) as {
-    title?: string;
-    isPrivate?: boolean;
-    isAgentReadOnly?: boolean;
-    parentFolderId?: string | null;
-  } | null;
-  const title = body?.title?.trim();
-  if (body?.title !== undefined && !title) return c.json({ error: 'Folder title is required' }, 400);
-  if (
-    !body ||
-    (title === undefined &&
-      body.isPrivate === undefined &&
-      body.isAgentReadOnly === undefined &&
-      body.parentFolderId === undefined)
-  )
-    return c.json({ error: 'No folder updates provided' }, 400);
-
-  if (body.parentFolderId !== undefined) {
-    const move = await validateFolderMove({
-      userId: user.id,
-      folderId: c.req.param('folderId'),
-      parentFolderId: body.parentFolderId,
-    });
-    if (!move.ok) return c.json({ error: move.error }, move.status);
+  try {
+    const folder = await updateOwnedFolder(user.id, c.req.param('folderId'), await c.req.json().catch(() => null));
+    return c.json({ folder: omitResourceCreator(folder) });
+  } catch (error) {
+    if (error instanceof PropertyError) return c.json({ error: error.message }, error.status);
+    throw error;
   }
-
-  const [folder] = await db
-    .update(folders)
-    .set({
-      ...(title !== undefined ? { title } : {}),
-      ...(body.isPrivate !== undefined ? { isPrivate: body.isPrivate } : {}),
-      ...(body.isAgentReadOnly !== undefined ? { isAgentReadOnly: body.isAgentReadOnly } : {}),
-      ...(body.parentFolderId !== undefined ? { parentFolderId: body.parentFolderId } : {}),
-      updatedAt: new Date(),
-    })
-    .where(activeFolderWhere(user.id, eq(folders.id, c.req.param('folderId'))))
-    .returning();
-
-  if (!folder) return c.json({ error: 'Folder not found' }, 404);
-  return c.json({ folder: omitResourceCreator(folder) });
 });
 
 folderRoutes.get('/:folderId/share-link', async (c) => {

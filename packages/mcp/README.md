@@ -56,6 +56,10 @@ Folders and notes:
 
 - `notes_list_folders`
 - `notes_create_folder` (supports optional `parentFolderId` for subfolders)
+- `notes_rename_folder`
+- `notes_move_folder` (explicit confirmation; owner-only subtree move)
+- `notes_preview_folder_duplication`
+- `notes_duplicate_folder` (explicitly confirmed native reviewed copy)
 - `notes_trash_folder` (destructive; requires `confirm: true`)
 - `notes_search`
 - `notes_get_note`
@@ -63,6 +67,8 @@ Folders and notes:
 - `notes_edit_note`
 - `notes_trash_note` (destructive; requires `confirm: true`)
 - `notes_move_notes` (all-or-nothing, up to 100 notes)
+- `notes_list_folder_notes` (`folderId`, optional `limit`/`cursor`; ordinary-note metadata only)
+- `notes_rename_note` (`noteId`, `title`, exact `expectedTitle`; ordinary Markdown only)
 
 Properties:
 
@@ -79,11 +85,19 @@ Properties use existing note read/edit scopes, folder privacy/read-only policy a
 
 Reviewed templates:
 
+- `notes_list_template_library`
+- `notes_read_template`
+- `notes_create_template`
+- `notes_update_template`
+- `notes_read_template_settings`
+- `notes_set_template_assignment`
+- `notes_set_template_tags`
+- `notes_set_template_property_defaults`
 - `notes_list_assigned_templates` (`folderId`)
 - `notes_preview_assigned_template` (`folderId`, `templateId`)
 - `notes_create_from_template` (destination/template IDs, preview `snapshot`, `schemaId`, `schemaRevision`, final title, complete final tags/values, `requestId`, frozen `variables: {date,time,datetime}`)
 
-Use only destination-assigned previews, not unrelated template/library reads. Both create/read capability and the credential ceiling apply; note-only grants cannot discover/create. Agents cannot copy an effectively private source folder, but source API-editability need not allow edits. Owner defaults management is not exposed as an agent tool. Tags/defaults are independent of body saves and existing instances; properties use destination stable IDs. Empty final tags/values explicitly clear defaults; retain reviewed template tags unless deliberately cleared. No replacement body or new variables; preserve only the original four substitutions with review-time date/time literals.
+Use only destination-assigned previews, not unrelated template/library reads. Both create/read capability and the credential ceiling apply; note-only grants cannot discover/create. Agents cannot copy an effectively private source folder, but source API-editability need not allow edits. Owner management uses the separate source-scoped template tools. Tags/defaults are independent of body saves and existing instances; properties use destination stable IDs. Empty final tags/values explicitly clear defaults; retain reviewed template tags unless deliberately cleared. No replacement body or new variables; preserve only the original four substitutions with review-time date/time literals.
 
 Creation is one atomic ordinary note, initial version and create event with tags/properties/references/receipt. Retry uncertain/network/busy responses using the SAME request ID and exact frozen payload. Never replace it with a fresh clock or another ID before resolution. Different payload with the same actor/destination/key conflicts. Stale review requires explicit re-review; completed receipts ignore newer defaults but check current access. Inaccessible, trashed or deleted notes are unavailable, never recreated. Snapshots/defaults are not access grants. Boards use their owner's selected Select property on refresh, never tags. Adapters do not automatically retry, generate request IDs/clocks, refresh a preview or rewrite the frozen payload.
 
@@ -123,11 +137,36 @@ Tags:
 - `notes_read_note_tags`
 - `notes_replace_note_tags`
 
+## Owned template management
+
+Updated Pi (`minunotes_`) and hosted/stdio MCP (`notes_`) expose these tool suffixes: `list_template_library`, `read_template`, `create_template`, `update_template`, `read_template_settings`, `set_template_assignment`, `set_template_tags`, `set_template_property_defaults`. Library discovery is compact, exact-folder and cursor-paginated (25 default/100 maximum); it is separate from destination-assigned templates.
+
+- Creation needs owned source read/create; Markdown only, title 1–1,000 characters and body up to 200,000 characters within the 256-KiB request bound. It does not assign the template or set defaults. No creation receipt: resolve an unknown outcome through library discovery before explicitly creating again.
+- Before editing/renaming, read the template; send exact original `expectedTitle`, `contentHash` as `baseHash`, and new `title` and/or `markdown`. Source read/edit and API-editability apply. IDs, assignments, defaults and existing instances stay intact. Preserve drafts and explicitly review conflicts; no automatic retries/rebasing.
+- Read settings before changing assignments/tags/defaults. Assign one destination with `assigned` plus settings `membershipSnapshot` as `snapshot`; source and destination owner read/edit are required. Settings include only readable active assignments, never a complete replace-all list. Unassign removes that destination's defaults; unrelated/hidden/trashed assignments stay retained.
+- Default tags use the settings tag `revision` as `expectedRevision`. Destination property defaults use that assignment's `id`/`revision` as `assignmentId`/`expectedRevision` plus the current destination folder schema's independent `schemaId`/`schemaRevision`. Submit **complete final** tags/values, preserving unrequested defaults; empty clears only when requested. Stable field/option IDs only, not labels, invented definitions or body hashes. Default tags are not tags on the template note itself.
+
+Shared editor/note grants do not authorize owner administration. Current private/read-only/Trash policies and credential ceilings still apply; no grants, variables or schema inheritance are added. Assigned preview → reviewed ordinary-note creation remains a separate capability with its existing frozen snapshot/request-ID/date-time protocol. Installed/source support does not prove registration or deployment.
+
+## Owned folder structure
+
+`parentContext: "unavailable"` with null parentFolderId indicates hidden ancestry, not Root. Moves have no copy receipt: uncertain outcomes require fresh location review and explicit approval, not a stale-payload retry. Copy replays recheck current source/imported-resource availability and limits plus result access.
+
+Owner-only structure tools are `notes_rename_folder`, `notes_move_folder`, `notes_preview_folder_duplication` and `notes_duplicate_folder`, with equivalent `minunotes_` aliases in updated Pi adapters. Rename requires exact expectedTitle; move requires exact expectedParentFolderId and confirm:true. Destination-inherited sharing applies. Whole-subtree scope/API-editability, hierarchy and retained inherited protection are checked. No cross-owner operations or automatic grants.
+
+Copy preview is read-only and returns token/counts/imageBytes. Confirm the exact reviewed title/destination/token with a frozen requestId and confirm:true; native properties/boards/templates/defaults/images/links/protections are preserved, not sharing tokens/grants/history/comments/personal view state. Source/imported resources require read scope, destination read/create and folder creation; generated IDs must inherit existing scope, so restricted Root and exact-only destinations are unsupported. Recheck execution/replay authorization. Keep SAME ID and exact payload after uncertain outcomes; stale review needs explicit re-review, never automatic retries or preview refresh. Copy errors retain status and uncertainty in structured results.
+
+## Exact-folder listing and note rename
+
+`notes_list_folder_notes` lists one exact folder with SQL title/ID keyset pagination (default 25, maximum 100). Results are compact metadata for ordinary Markdown/canvas/mind-map notes, never templates, descendants or content. Direct-note grants cannot enumerate folders. Continue with the exact returned cursor only when another page is needed.
+
+`notes_rename_note` changes only an ordinary Markdown note title. Supply the exact current `expectedTitle` from metadata/read and a nonempty new `title` up to 1,000 characters. A body hash cannot detect another rename. Current read/edit scope and API-editability are enforced in the same transaction as the title compare-and-set, native history, event and link updates. Content, properties, ID and links remain intact. Shared responses hide folder context. Review conflicts/uncertain outcomes; never automatically retry. Pi equivalents are `minunotes_list_folder_notes` and `minunotes_rename_note` when registered. No installation, registration or deployment is implied by source support.
+
 ## Discovery and adapter parity
 
 `notes_list_folders`, `notes_search` and `notes_list_tags` accept `limit` (1–100, default 25) and opaque `cursor`. `notes_search_lines` supports cross-note continuation with the same query/filters; `notes_search_note_lines` does not accept a cursor. Follow `pageInfo.nextCursor` only when `hasMore` is true and more metadata is needed. Never aggregate pages or expand every note automatically.
 
-The local Pi adapter uses `minunotes_*` aliases, including all four property and three reviewed-template operations above. Pi search/read aliases are `minunotes_search_notes` / `minunotes_read_note`; its cross-note and single-note line search share `minunotes_search_lines`. Pi and Harness additionally expose outgoing links, backlinks and orphans; their deliberate omission from MCP is not a missing registration to work around.
+The updated local Pi adapter uses `minunotes_*` aliases, including all four property and three reviewed-template operations above, plus `minunotes_move_notes`, `minunotes_trash_note` and `minunotes_trash_folder`. Pi/MCP Trash tools require explicit user approval and `confirm: true`; no automatic write retries. These wrappers do not add folder relocation, duplication, recovery or permanent deletion. Pi search/read aliases are `minunotes_search_notes` / `minunotes_read_note`; its cross-note and single-note line search share `minunotes_search_lines`. Pi and Harness additionally expose outgoing links, backlinks and orphans; their deliberate omission from MCP is not a missing registration to work around.
 
 Canonical guidance is in `docs/skills/`; install/synchronize it deliberately. An installed adapter file does not update tools in an already-running session, and source support does not establish deployed support. Reloads and live checks are separate actions, not automatic fallbacks after a missing tool or denial.
 
@@ -175,7 +214,7 @@ Canvas replacement and node-link mutations require a current `baseHash`. Setting
 
 Column visibility is presentation only and is configured by the owner in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
-Board configuration, personal folder filters/sorting, folder duplication, owner template-default administration and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive and does not delete option values. Existing comments, tags and authorized MCP Trash remain available.
+Board configuration, personal folder filters/sorting and destructive Delete option remain web-only on Harness/MCP/Pi. Controlled schema archive is non-destructive and does not delete option values. Existing comments, tags, authorized note moves and note/folder Trash remain available on updated Pi and MCP adapters.
 
 MCP tools expose owned content plus authenticated collaboration explicitly enabled by the connection owner. Shared access defaults to `none`; `specific` selects active grants and `all` includes current and future grants after an explicit warning. Effective permissions also intersect the collaborator's current role, credential capabilities, OAuth scope, owner safety policy, and note API-editability.
 

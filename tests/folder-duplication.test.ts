@@ -157,7 +157,108 @@ async function setup(full = false) {
     );
   return { ...f, duplicate, rawDuplicate, preview, objects, storage };
 }
+async function agentSetup() {
+  const f = await setup(true);
+  await f.db
+    .update(f.schema.folders)
+    .set({ isPrivate: false, isAgentReadOnly: false })
+    .where(eq(f.schema.folders.id, 'root'));
+  const auth = {
+    id: 'copy-auth',
+    userId: 'owner',
+    accessMode: 'all' as const,
+    sharedAccessMode: 'none' as const,
+    canRead: true,
+    canCreate: true,
+    canEdit: true,
+    canComment: false,
+    canCreateFolders: true,
+    createdAt: f.now,
+    updatedAt: f.now,
+  };
+  await f.db.insert(f.schema.integrationAuthorizations).values(auth);
+  const actor = {
+    actorUserId: 'owner',
+    actorType: 'agent' as const,
+    actorId: 'agent-key',
+    authorizationId: auth.id,
+    credentialCapabilities: auth,
+  };
+  const copy = await import('../src/api/folders/duplicate');
+  const options = { storage: f.storage, origins: ['https://notes.test'], actor };
+  return {
+    ...f,
+    auth,
+    actor,
+    previewAgent: () => copy.previewFolderDuplication('owner', 'board', null, options),
+    copyAgent: (previewToken: string) => copy.duplicateFolder('owner', 'board', { ...payload, previewToken }, options),
+  };
+}
+
 describe('folder duplication', () => {
+  it('preserves native metadata/templates/defaults/images for an authorized agent with authenticated attribution', async () => {
+    const f = await agentSetup();
+    const preview = await f.previewAgent();
+    expect(f.storage.putObject).not.toHaveBeenCalled();
+    const result = await f.copyAgent(preview.token);
+    expect(result.counts).toEqual({ folders: 2, notes: 2, templates: 2, attachments: 1 });
+    const copied = (await f.db.select().from(f.schema.notes)).filter((row) => row.updatedByActorId === 'agent-key');
+    expect(copied).toHaveLength(4);
+    const target = copied.find((n) => n.title === 'Target');
+    const template = copied.find((n) => n.title === 'Assigned template');
+    expect(template).toMatchObject({ type: 'template', isApiEditable: false, folderId: result.folder.id });
+    expect(target?.content).not.toContain('/att_image/');
+    expect((await f.db.select().from(f.schema.notePropertyState)).some((row) => row.noteId === target?.id)).toBe(true);
+    expect(
+      (await f.db.select().from(f.schema.templateFolderAssignments)).some(
+        (row) => row.templateId === template?.id && row.folderId === result.folder.id
+      )
+    ).toBe(true);
+    expect(
+      (await f.db.select().from(f.schema.templateDefaultState)).some((row) => row.templateId === template?.id)
+    ).toBe(true);
+    expect((await f.db.select().from(f.schema.folderBoardViews)).some((row) => row.folderId === result.folder.id)).toBe(
+      true
+    );
+    expect(await f.copyAgent(preview.token)).toMatchObject({ replayed: true, folder: { id: result.folder.id } });
+    await f.db.update(f.schema.folders).set({ isPrivate: true }).where(eq(f.schema.folders.id, 'other'));
+    await expect(f.copyAgent(preview.token)).rejects.toMatchObject({ status: 403 });
+    await f.db.update(f.schema.folders).set({ isPrivate: false }).where(eq(f.schema.folders.id, 'other'));
+    await f.db.update(f.schema.folders).set({ isPrivate: true }).where(eq(f.schema.folders.id, result.folder.id));
+    await expect(f.copyAgent(preview.token)).rejects.toMatchObject({ status: 403 });
+  });
+  it('rechecks agent authorization after staging and compensates uncommitted images on revocation', async () => {
+    const f = await agentSetup();
+    const preview = await f.previewAgent();
+    const foldersBefore = await f.db.select().from(f.schema.folders);
+    const put = f.storage.putObject;
+    f.storage.putObject = vi.fn(async (input) => {
+      await put(input);
+      await f.db
+        .update(f.schema.integrationAuthorizations)
+        .set({ revokedAt: f.now })
+        .where(eq(f.schema.integrationAuthorizations.id, f.auth.id));
+    });
+    await expect(f.copyAgent(preview.token)).rejects.toMatchObject({ status: 403 });
+    expect(await f.db.select().from(f.schema.folders)).toEqual(foldersBefore);
+    expect(await f.db.select().from(f.schema.folderDuplicationRequests)).toHaveLength(0);
+    expect(f.storage.deleteObject).toHaveBeenCalled();
+    expect(f.objects.has('original-image')).toBe(true);
+  });
+  it('denies an imported private image source before initializing or staging storage', async () => {
+    const f = await agentSetup();
+    await f.db
+      .insert(f.schema.folders)
+      .values({ id: 'images', userId: 'owner', title: 'Private images', isPrivate: true });
+    await f.db.update(f.schema.notes).set({ folderId: 'images' }).where(eq(f.schema.notes.id, 'note_target'));
+    await f.db
+      .update(f.schema.notes)
+      .set({ content: '![](/internal/attachments/att_image/content)' })
+      .where(eq(f.schema.notes.id, 'note_inside'));
+    await expect(f.previewAgent()).rejects.toMatchObject({ status: 403 });
+    expect(f.storage.getObject).not.toHaveBeenCalled();
+    expect(f.storage.putObject).not.toHaveBeenCalled();
+  });
   it('copies a complete recursive project with independent metadata/templates/images/links and unchanged source', async () => {
     const f = await setup(true);
     const tables = [

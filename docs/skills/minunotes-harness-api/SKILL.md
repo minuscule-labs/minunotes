@@ -36,6 +36,53 @@ Authenticated collaboration uses a separate `sharedAccessMode`: `none` (the defa
 
 A full note read may include privacy-safe role/source context, but never read a note solely to inspect permissions. Direct-note grants return `folderId: null`; never infer or probe for the hidden containing folder. Resources created in a shared folder belong to its owner and are attributed to the authorizing user. Agents cannot move shared resources, reshare, administer public links, restore, permanently delete, or generally manage Trash. An edit-capable agent may move only eligible resources created by its authorizing user to the owner’s Trash. Treat `403` and `404` as intentional boundaries and do not retry against unrelated folders, infer resource existence, or attempt permission escalation.
 
+## Owned template management
+
+```txt
+GET /v1/harness/folders/:folderId/template-library?limit=25&cursor=...
+GET /v1/harness/templates/:templateId
+POST /v1/harness/templates
+PATCH /v1/harness/templates/:templateId
+GET /v1/harness/templates/:templateId/settings
+PUT /v1/harness/templates/:templateId/folders/:folderId
+PUT /v1/harness/templates/:templateId/defaults
+PUT /v1/harness/templates/:templateId/folders/:folderId/defaults
+```
+
+Updated Pi (`minunotes_`) and hosted/stdio MCP (`notes_`) expose these tool suffixes: `list_template_library`, `read_template`, `create_template`, `update_template`, `read_template_settings`, `set_template_assignment`, `set_template_tags`, `set_template_property_defaults`. Library discovery is compact, exact-folder and cursor-paginated (25 default/100 maximum); it is separate from destination-assigned templates.
+
+- Creation needs owned source read/create; Markdown only, title 1–1,000 characters and body up to 200,000 characters within the 256-KiB request bound. It does not assign the template or set defaults. No creation receipt: resolve an unknown outcome through library discovery before explicitly creating again.
+- Before editing/renaming, read the template; send exact original `expectedTitle`, `contentHash` as `baseHash`, and new `title` and/or `markdown`. Source read/edit and API-editability apply. IDs, assignments, defaults and existing instances stay intact. Preserve drafts and explicitly review conflicts; no automatic retries/rebasing.
+- Read settings before changing assignments/tags/defaults. Assign one destination with `assigned` plus settings `membershipSnapshot` as `snapshot`; source and destination owner read/edit are required. Settings include only readable active assignments, never a complete replace-all list. Unassign removes that destination's defaults; unrelated/hidden/trashed assignments stay retained.
+- Default tags use the settings tag `revision` as `expectedRevision`. Destination property defaults use that assignment's `id`/`revision` as `assignmentId`/`expectedRevision` plus the current destination folder schema's independent `schemaId`/`schemaRevision`. Submit **complete final** tags/values, preserving unrequested defaults; empty clears only when requested. Stable field/option IDs only, not labels, invented definitions or body hashes. Default tags are not tags on the template note itself.
+
+Shared editor/note grants do not authorize owner administration. Current private/read-only/Trash policies and credential ceilings still apply; no grants, variables or schema inheritance are added. Assigned preview → reviewed ordinary-note creation remains a separate capability with its existing frozen snapshot/request-ID/date-time protocol. Installed/source support does not prove registration or deployment.
+
+## Owned folder structure and reviewed copying
+
+```txt
+POST /v1/harness/folders/:folderId/rename
+POST /v1/harness/folders/:folderId/move
+GET /v1/harness/folders/:folderId/duplicate-preview?parentFolderId=...
+POST /v1/harness/folders/:folderId/duplicate
+```
+
+Updated Pi/MCP adapters expose `minunotes_rename_folder` / `notes_rename_folder`, `minunotes_move_folder` / `notes_move_folder`, `minunotes_preview_folder_duplication` / `notes_preview_folder_duplication`, and `minunotes_duplicate_folder` / `notes_duplicate_folder`. These are owner-only; shared editor grants do not authorize structural administration.
+
+If a structure result has `parentContext: "unavailable"` and null `parentFolderId`, the parent is hidden—not necessarily Root. A move has no copy receipt: uncertain move outcomes need fresh location review and explicit approval, never replay of a stale move payload. Copy replay rechecks current source/imported-resource availability and limits as well as result access.
+
+Rename uses exact `expectedTitle`; move uses explicit `parentFolderId` (null for Root), exact `expectedParentFolderId` and `confirm: true`. Get approval for the exact subtree/destination: destination-inherited sharing applies. Moves preserve IDs but require whole-subtree edit/read scope, applicable note/template API-editability and retained inherited protection. Cycles, excess depth and leaving scope are rejected; no automatic grant changes.
+
+For copying, preview the exact source/destination first, review token/counts/imageBytes and get explicit approval before confirming with `confirm: true`, literal `title`, `parentFolderId`, `previewToken` and frozen `requestId`. New IDs must inherit existing read/create scope; restricted Root and exact-only destinations are unsupported rather than granted automatically. Source/imported templates/images require read scope, while destination requires read/create and folder-creation permission. Copies preserve native properties/options/boards/templates/defaults/images/links and protection flags, not sharing grants/tokens/history/comments/personal view state. Source API-editability need not permit editing to copy it; copied flags remain unchanged.
+
+On an uncertain result retain the SAME requestId and exact payload; never retry automatically, replace the ID, refresh preview or change the clock. A definitive stale review needs explicit re-review. Execution and receipt replay recheck current authorization; unavailable committed copies are never recreated. MCP copy errors retain status and uncertainty explicitly. New source/tool support does not establish deployment or active session registration.
+
+## Exact-folder listing and note names
+
+`GET /v1/harness/folders/:folderId/notes?limit=25&cursor=...` returns one SQL-keyset page of compact ordinary-note metadata, including canvas formats, not content/templates/descendants. Limits are 1–100. Keep actor, credential and folder unchanged when continuing an opaque cursor. Direct-note access never authorizes folder enumeration.
+
+`POST /v1/harness/notes/:noteId/rename` accepts only `{ "title": "New name", "expectedTitle": "Exact current name" }`. Obtain exact `expectedTitle` from current metadata/read; do not normalize it. The new title is trimmed, nonempty and at most 1,000 characters. This applies only to ordinary Markdown notes and requires current read/edit scope plus API-editability. Compare-and-set, history, event and link updates are transactional. It preserves body, properties, identity and links, returns compact metadata plus unchanged contentHash, and hides folder context in shared responses. Body hashes alone cannot detect a rename; no `baseHash` is used here. On 409 or uncertain outcomes review intent and current metadata, never automatically retry. Existing body edits remain unchanged.
+
 ## Properties
 
 Prefer defined folder properties for structured labels such as Status and Type. For requested classification, read the authorized schema and use stable property/option IDs, not labels. Ask if no suitable definition exists; do not invent fields, options or tags. Do not mirror Status/Type into tags unless requested. Honor explicit tag requests and reviewed template tags; preserve stored tags even though board cards hide them. This guidance does not remove tag endpoints or change permissions.
@@ -64,7 +111,7 @@ Preserve the draft on `409`; read current properties and explicitly review befor
 
 Column visibility is presentation only and is configured by the owner in the web UI. A successful property edit can place a card in a hidden column without changing note access.
 
-Board configuration, personal folder filters/sorting, folder duplication, owner template-default administration and destructive Delete option have no Harness/MCP/Pi operations. Do not emulate these web-only actions with tag/body edits. Schema `archive_option` is non-destructive. Existing comments, authorized Trash and ordinary tag operations remain independent.
+Board configuration, personal folder filters/sorting and destructive Delete option have no Harness/MCP/Pi operations. Do not emulate these web-only actions with tag/body edits. Schema `archive_option` is non-destructive. Existing comments, authorized Trash and ordinary tag operations remain independent.
 
 ## Reviewed template creation
 
@@ -89,11 +136,11 @@ Board configuration, personal folder filters/sorting, folder duplication, owner 
 
 Use actual preview schema identity/revision, including null/0 only when absent. Tags/values are **complete final** payloads; empty explicitly clears defaults. The empty example applies only when reviewed defaults are absent or deliberately cleared; otherwise retain the reviewed template tags/values. Stable destination IDs only; unknown/archived IDs, bad dates and empty/duplicate normalized tags are rejected. Tags: at most 50 entries, 80 raw characters each. Title: 1–1,000 characters. Request ID: 1–128. Each variable literal: at most 80. Only the original title/date/time/datetime substitutions are preserved; no replacement body, script or new variables.
 
-Both stored connection and credential ceiling must allow destination create/read. Editor folder collaboration may create, viewer/commenter and note-only grants may not. Assigned preview grants no private-library enumeration or source editing; an effectively agent-private source folder is forbidden. A non-API-editable source may be copied. The destination owns the note; authenticated creator/actor provenance is retained. Defaults are owner-managed separately through the web UI.
+Both stored connection and credential ceiling must allow destination create/read. Editor folder collaboration may create, viewer/commenter and note-only grants may not. Assigned preview grants no private-library enumeration or source editing; an effectively agent-private source folder is forbidden. A non-API-editable source may be copied. The destination owns the note; authenticated creator/actor provenance is retained. Defaults are owner-managed separately through the scoped template endpoints.
 
 Success is 201 (new) or 200 (replayed), with privacy-safe note ID/title/folder, contentHash and replayed flag. Retry uncertain/network/busy results with the SAME request ID and exact frozen payload, never a fresh clock. A changed payload using that actor/destination/key returns 409. Definitive stale snapshot/schema conflicts preserve the draft for explicit review before a new ID. A completed receipt does not require today's defaults, but current access is checked; unavailable/trashed/deleted notes never recreate. One create event/version and all body/tags/properties/reference/receipt writes commit together or roll back. Existing instances and blank creation remain unchanged. On refresh, boards use the owner's selected Select property, never tags. Do not automatically retry, refresh a preview, regenerate IDs/clocks or rewrite a frozen request.
 
-The generated Postman Templates group captures preview tokens/defaults/frozen variables and a new request ID. Review/edit its final payload deliberately; do not re-run preview to retry an uncertain create, because that would replace its frozen request.
+The generated Postman Templates group captures assigned-preview tokens/defaults/frozen variables and a new request ID. Owner management uses separate managedTemplateId/hash/revision variables, without replacing assigned-template creation intent. Review/edit its final payload deliberately; do not re-run preview to retry an uncertain create, because that would replace its frozen request.
 
 ## Rich Markdown
 
@@ -113,8 +160,8 @@ The generated Postman Templates group captures preview tokens/defaults/frozen va
 
 - Use only the harness/API. Do not use browser access unless explicitly asked.
 - Never fabricate existing note contents. Read or search only when existing content is required for the task.
-- Always read a note and capture `contentHash` before editing.
-- Include `baseHash` when editing to avoid overwriting concurrent changes.
+- Always read a note and capture `contentHash` before editing its body.
+- Include `baseHash` for body edits; title-only rename uses exact `expectedTitle` from current metadata instead.
 - Prefer small, targeted edits.
 - Preserve markdown structure, headings, links, wikilinks, tags, and image URLs.
 - Check `documentType` before editing. Markdown patch edits only work for `markdown` notes.
@@ -211,7 +258,7 @@ Cross-note line matches retain the matching line and requested context plus note
 1. Search note metadata first; do not expect `content` in search or orphan responses.
 2. Use `search-lines` when body text is the deciding signal, especially for long notes.
 3. Read only the selected note, line range, or section needed for the task.
-4. Before any edit, read the current note and use its returned `contentHash` as `baseHash`.
+4. Before a body edit, read the current note and use its returned `contentHash` as `baseHash`. For title-only rename use exact current `expectedTitle` from metadata/read instead.
 
 Do not fetch every search result in full. Choose candidates using title, folder, document type, and matching context, then expand selectively.
 
@@ -379,6 +426,8 @@ curl -s "${AUTH[@]}" "$API/v1/harness/notes/orphans"
 ## Endpoint reference
 
 - `GET /v1/harness/folders?limit=25&cursor=...`
+- `GET /v1/harness/folders/:folderId/notes?limit=25&cursor=...`
+- `POST /v1/harness/notes/:noteId/rename` (strict title/expectedTitle compare-and-set)
 - `POST /v1/harness/folders`
 - `POST /v1/harness/folders/:folderId/trash` (destructive; requires explicit user intent)
 - `GET /v1/harness/folders/:folderId/properties`
@@ -441,5 +490,5 @@ For canvases, default to Minu diagram syntax for generated diagrams and mind map
 - `403`: API key lacks folder permission.
 - `404`: note/folder/section not found.
 - `409`: stale body/anchor hash, metadata revisions, template review or request-intent conflict. Preserve the draft and distinguish a definitive uncommitted stale review from an unknown create outcome; never blindly replay/rebase.
-- Transport, busy or server uncertainty after template creation: report it and retain the same request ID and exact frozen payload for an explicitly authorized retry. Never generate a new ID before resolution.
+- Transport, busy or server uncertainty after creating an ordinary note from an assigned template: report it and retain the same request ID and exact frozen payload for an explicitly authorized retry. Never generate a new ID before resolution.
 - Other server errors: report endpoint and response body without automatic retries.
