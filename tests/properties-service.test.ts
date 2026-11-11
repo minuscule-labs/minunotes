@@ -54,6 +54,91 @@ describe('transactional properties', () => {
     expect((await f.properties.readNoteProperties(f.actor, 'n')).revision).toBe(1);
     expect((await f.libsql.execute('select * from note_events')).rows).toHaveLength(1);
   }, 30000);
+  it.each([
+    { stage: 'lookup', begin: 'BEGIN EXCLUSIVE' },
+    { stage: 'transaction', begin: 'BEGIN IMMEDIATE' },
+  ])('returns a conflict without retrying when Trash $stage is locked', async ({ stage, begin }) => {
+    const f = await setupPropertiesTest();
+    await f.addNote('n', 'Untitled note', [], {
+      content: '',
+      createdByUserId: 'owner',
+      updatedByActorType: 'user',
+      updatedByActorId: 'owner',
+    });
+    await f.addNote('saved', 'Saved work');
+    const s = await f.addField('Text', 'text');
+    await f.patch('saved', { [s.definitions[0].id]: 'Keep this property' });
+    await f.db.insert(f.schema.noteShareLinks).values({
+      id: 'share',
+      userId: 'owner',
+      noteId: 'n',
+      tokenHash: 'share-token',
+      createdAt: f.now,
+      updatedAt: f.now,
+    });
+    const snapshot = async () =>
+      (
+        await f.libsql.batch(
+          [
+            'select * from notes order by id',
+            'select * from note_property_state order by note_id',
+            'select * from note_events order by id',
+            'select * from note_share_links order by id',
+          ],
+          'read'
+        )
+      ).map((result) => result.rows);
+    const before = await snapshot();
+    const result = await child(`
+      const {trashNote,trashNotes}=await import('./src/api/trash/operations');
+      const {libsql}=await import('./src/api/db/client');
+      const {createClient}=await import('@libsql/client');
+      const blocker=createClient({url:process.env.TURSO_DB_URL});
+      const calls={read:0,transaction:0};
+      const execute=libsql.execute.bind(libsql);
+      const transaction=libsql.transaction.bind(libsql);
+      libsql.execute=(...args)=>{calls.read++;return execute(...args)};
+      libsql.transaction=(...args)=>{calls.transaction++;return transaction(...args)};
+      try {
+        await blocker.execute('${begin}');
+        const single=await trashNote({userId:'owner',noteId:'n',emptyDraft:{creatorUserId:'owner',createdAt:new Date('${f.now.toISOString()}'),updatedAt:new Date('${f.now.toISOString()}')}});
+        const bulk=await trashNotes({userId:'owner',noteIds:['n','saved']});
+        console.log(JSON.stringify({single,bulk,calls}));
+      } finally {
+        await blocker.execute('ROLLBACK');
+        blocker.close();
+      }
+    `);
+    expect(result.status, result.output).toBe(0);
+    expect(JSON.parse(result.output)).toEqual({
+      single: { ok: false, status: 409, error: expect.any(String) },
+      bulk: { ok: false, status: 409, error: expect.any(String) },
+      calls: { read: 2, transaction: stage === 'lookup' ? 0 : 2 },
+    });
+    expect(await snapshot()).toEqual(before);
+  }, 30000);
+  it('rolls back unrelated Trash failures instead of treating message text as a lock conflict', async () => {
+    const f = await setupPropertiesTest();
+    await f.addNote('n', 'Note');
+    await f.db.insert(f.schema.noteShareLinks).values({
+      id: 'share',
+      userId: 'owner',
+      noteId: 'n',
+      tokenHash: 'share-token',
+      createdAt: f.now,
+      updatedAt: f.now,
+    });
+    const before = await f.db.select().from(f.schema.notes);
+    const shares = await f.db.select().from(f.schema.noteShareLinks);
+    await f.libsql.execute(
+      "create trigger fail_trash before insert on note_events when new.event_type='trash' begin select raise(abort, 'SQLITE_BUSY is only test text'); end"
+    );
+    const { trashNote } = await import('../src/api/trash/operations');
+    await expect(trashNote({ userId: 'owner', noteId: 'n' })).rejects.toThrow('Failed query');
+    expect(await f.db.select().from(f.schema.notes)).toEqual(before);
+    expect(await f.db.select().from(f.schema.noteShareLinks)).toEqual(shares);
+    expect((await f.libsql.execute('select * from note_events')).rows).toHaveLength(0);
+  });
   it('automatic cleanup versus metadata save is mutually safe on separate connections', async () => {
     const f = await setupPropertiesTest();
     await f.addNote('n', 'Untitled note', [], {

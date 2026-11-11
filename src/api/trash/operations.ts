@@ -604,14 +604,14 @@ export async function trashNotes(input: {
   const noteIds = [...new Set(input.noteIds)];
   if (noteIds.length === 0) return { ok: false, status: 404, error: 'No notes were found' };
 
-  const current = await db
-    .select({ id: notes.id, userId: notes.userId, content: notes.content })
-    .from(notes)
-    .where(activeNoteWhere(input.userId, inArray(notes.id, noteIds)));
-  if (current.length !== noteIds.length) return { ok: false, status: 404, error: 'One or more notes were not found' };
-
-  const now = new Date();
   try {
+    const current = await db
+      .select({ id: notes.id, userId: notes.userId, content: notes.content })
+      .from(notes)
+      .where(activeNoteWhere(input.userId, inArray(notes.id, noteIds)));
+    if (current.length !== noteIds.length) return { ok: false, status: 404, error: 'One or more notes were not found' };
+
+    const now = new Date();
     await db.transaction(async (tx) => {
       const changed = await tx
         .update(notes)
@@ -688,13 +688,19 @@ export async function trashNotes(input: {
         )
       );
     });
+    return { ok: true, value: { deletedAt: now, noteCount: noteIds.length } };
   } catch (error) {
     if (error instanceof NoteTrashStateChangedError)
       return { ok: false, status: 409, error: 'Note trash state changed; refresh and try again' };
+    // Drizzle can wrap libSQL lock errors; inspect codes, not query or user-supplied message text.
+    let cause = error;
+    for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+      if ('code' in cause && typeof cause.code === 'string' && /^SQLITE_(BUSY|LOCKED)(_|$)/.test(cause.code))
+        return { ok: false, status: 409, error: 'Note trash is busy; refresh and try again' };
+      cause = cause.cause;
+    }
     throw error;
   }
-
-  return { ok: true, value: { deletedAt: now, noteCount: noteIds.length } };
 }
 
 export async function trashNote(input: {
