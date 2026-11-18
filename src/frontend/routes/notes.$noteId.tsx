@@ -23,9 +23,11 @@ import {
   type CommentThread,
   type NoteCommentsResponse,
 } from '../lib/api';
+import { authClient } from '../lib/auth-client';
 import { forgetEmptyDraft, getEmptyDraft } from '../lib/empty-draft';
 import { internalNoteLinkTarget } from '../lib/link-policy';
 import { createConfiguredInternalNoteUrlPasteResolver } from '../lib/note-urls';
+import { usePersonalVisit } from '../lib/use-personal-visit';
 import { rootRoute } from './__root';
 
 type ConflictDraft = { title: string; content: string };
@@ -55,6 +57,13 @@ function NoteView() {
     queryFn: () => api.note(noteId),
     retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   });
+  const session = authClient.useSession();
+  usePersonalVisit(
+    session.data?.user.id,
+    'note',
+    noteId,
+    Boolean(data?.note.id === noteId && data.note.type === 'note' && !error)
+  );
   const accessRole = data?.access?.role ?? 'viewer';
   const canEdit = accessRole === 'owner' || accessRole === 'editor';
   const canComment = canEdit || accessRole === 'commenter';

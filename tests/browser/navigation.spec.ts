@@ -215,7 +215,7 @@ test('hides shared-folder navigation when no folders are shared', async ({ page 
   await expect(primary.getByRole('button', { name: 'Shared with me', exact: true })).toHaveCount(0);
 });
 
-test('loads shared folder roots lazily and keeps Home focused on recent notes', async ({ page }) => {
+test('loads shared folder roots lazily and keeps Home focused on personal recents', async ({ page }) => {
   const api = await mockBrowserApi(page, { includeSharedFolderNavigation: true });
   await page.goto('/');
 
@@ -249,8 +249,8 @@ test('loads shared folder roots lazily and keeps Home focused on recent notes', 
   expect(api.sharedFolderNavigationRequests).toHaveLength(3);
 
   const home = page.getByRole('main');
-  await expect(home.getByRole('heading', { name: 'Folders' })).toHaveCount(0);
-  await expect(home.getByRole('heading', { name: 'Recent notes' })).toBeVisible();
+  await expect(home.getByRole('heading', { name: 'Folders', exact: true })).toHaveCount(0);
+  await expect(home.getByRole('heading', { name: 'Recently opened notes' })).toBeVisible();
 
   await page.reload();
   const reloadedPrimary = page.getByRole('navigation', { name: 'Primary' });
@@ -837,9 +837,12 @@ test('persists desktop sidebar and folder expansion preferences', async ({ page 
   await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible();
 });
 
-test('shows folder context on Recent Notes', async ({ page }) => {
+test('shows visited folders and opened notes on Home', async ({ page }) => {
   await mockBrowserApi(page);
-  await page.goto('/');
+  await page.goto(`/folders/${browserFixture.folder.id}`);
+  await page.getByRole('main').getByRole('link', { name: browserFixture.source.title, exact: true }).click();
+  await expect(page.locator('.cm-content')).toBeVisible();
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Home', exact: true }).click();
 
   const main = page.getByRole('main');
   const sourceLink = main.getByRole('link', { name: browserFixture.source.title });
@@ -895,7 +898,7 @@ test('sets descriptive titles for authenticated and shared routes', async ({ pag
   await mockBrowserApi(page);
 
   await page.goto('/');
-  await expect(page).toHaveTitle('Recent notes - MinuNotes');
+  await expect(page).toHaveTitle('Home - MinuNotes');
   await page.goto(`/folders/${browserFixture.folder.id}`);
   await expect(page).toHaveTitle(`${browserFixture.folder.title} - MinuNotes`);
   await page.goto(`/notes/${browserFixture.source.id}/activity`);

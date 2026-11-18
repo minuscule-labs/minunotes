@@ -114,7 +114,7 @@ export function buildAppNavigationModel({
   const shared: NavigationItem = { label: 'Shared with me', destination: { kind: 'shared' } };
 
   if (pathname === '/') {
-    return { section: 'home', activeFolderId: null, breadcrumbs: [home], mobileTitle: 'Recent notes', parent: null };
+    return { section: 'home', activeFolderId: null, breadcrumbs: [home], mobileTitle: 'Home', parent: null };
   }
 
   if (folderId) {
