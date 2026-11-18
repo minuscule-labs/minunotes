@@ -127,7 +127,7 @@ function Index() {
           type="search"
           aria-label="Search notes and folders"
           placeholder="Search notes and folders…"
-          className="notes-input w-full rounded-lg py-4 pr-14 pl-12 text-base"
+          className="notes-input w-full rounded-lg py-4 pr-14 pl-12 text-base [&::-webkit-search-cancel-button]:hidden"
           value={query}
           maxLength={200}
           onChange={(event) => setQuery(event.target.value)}

@@ -62,6 +62,9 @@ test('search replaces recents, clears back to them, and command-K still opens qu
   await page.screenshot({ path: 'artifacts/home-recents/desktop-idle.png', fullPage: true });
   const input = home(page).getByRole('searchbox');
   await input.fill('Source');
+  await expect(home(page).getByRole('button', { name: 'Clear search' })).toHaveCount(1);
+  // Keep search semantics while hiding the browser's duplicate clear control.
+  await expect(input).toHaveClass(/\[&::-webkit-search-cancel-button\]:hidden/);
   await expect(home(page).getByRole('heading', { name: 'Recent folders' })).toHaveCount(0);
   const results = home(page).getByRole('region', { name: 'Search results' });
   await expect(results.getByRole('link', { name: f.source.title })).toBeVisible();
