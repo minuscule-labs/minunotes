@@ -34,7 +34,7 @@ async function searchHome(query: string, signal: AbortSignal): Promise<HomeItem[
       const folders: HomeItem[] = [];
       let cursor: string | null = null;
       do {
-        const page = await api.sharedWithMePage('folder', cursor, 100);
+        const page = await api.sharedWithMePage('folder', cursor, 50);
         for (const item of page.collaborations) {
           if (item.type === 'folder') folders.push({ kind: 'folder', id: item.folder.id, title: item.folder.title });
         }

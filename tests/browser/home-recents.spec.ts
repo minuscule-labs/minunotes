@@ -118,6 +118,43 @@ test('checks access before display and excludes revoked, deleted and template it
   await expect(notes(page).getByRole('link')).toHaveCount(0);
 });
 
+test('Home search respects the shared-folder limit and follows the next cursor', async ({ page }) => {
+  await mockBrowserApi(page);
+  const requests: Array<{ limit: number; cursor: string | null }> = [];
+  await page.route('**/internal/collaborations/shared-with-me?*', (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const limit = Number(params.get('limit') ?? 25);
+    const cursor = params.get('cursor');
+    requests.push({ limit, cursor });
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+      return route.fulfill({ status: 400, json: { error: 'Limit must be between 1 and 50' } });
+    const offset = cursor === 'second-page' ? 50 : 0;
+    const count = offset ? 1 : 50;
+    return route.fulfill({
+      json: {
+        collaborations: Array.from({ length: count }, (_, index) => ({
+          type: 'folder',
+          grantId: `grant_${offset + index}`,
+          role: 'viewer',
+          owner: { label: 'Shared Owner' },
+          folder: { id: `folder_paged_${offset + index}`, title: `Paged workspace ${offset + index}` },
+        })),
+        pageInfo: { hasMore: !offset, nextCursor: offset ? null : 'second-page' },
+      },
+    });
+  });
+  await page.goto('/');
+  await home(page).getByRole('searchbox').fill('Paged workspace 50');
+  const results = home(page).getByRole('region', { name: 'Search results' });
+  await expect(results.getByRole('link', { name: 'Paged workspace 50', exact: true })).toBeVisible();
+  expect(requests).toEqual([
+    { limit: 50, cursor: null },
+    { limit: 50, cursor: 'second-page' },
+  ]);
+  await home(page).getByRole('button', { name: 'Clear search' }).click();
+  await expect(notes(page).getByText('No recently opened notes yet.')).toBeVisible();
+});
+
 test('does not display another account history', async ({ page }) => {
   await mockBrowserApi(page);
   await page.addInitScript(
