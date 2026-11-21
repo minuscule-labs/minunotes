@@ -28,20 +28,23 @@ test('moves an open note to Trash without typed confirmation', async ({ page }) 
   expect(fixture.notes.has(browserFixture.source.id)).toBe(false);
 });
 
-test('moves notes to Trash from folder and Recent Notes tables', async ({ page }) => {
+test('omits a trashed opened note from Home recents', async ({ page }) => {
   const fixture = await mockBrowserApi(page);
+  await page.goto(`/notes/${browserFixture.source.id}`);
+  await expect(page.locator('.cm-content')).toBeVisible();
   await page.goto(`/folders/${browserFixture.folder.id}`);
   await moveTableNoteToTrash(page, browserFixture.source.title);
   expect(fixture.notes.has(browserFixture.source.id)).toBe(false);
 
   await page.goto('/');
-  await moveTableNoteToTrash(page, browserFixture.target.title);
-  expect(fixture.notes.has(browserFixture.target.id)).toBe(false);
+  const recents = page.getByRole('region', { name: 'Recently opened notes' });
+  await expect(recents.getByText('No recently opened notes yet.')).toBeVisible();
+  await expect(recents.getByRole('link', { name: browserFixture.source.title })).toHaveCount(0);
 });
 
-test('moves selected notes to Trash from Recent Notes', async ({ page }) => {
+test('moves selected notes to Trash from the folder table', async ({ page }) => {
   const fixture = await mockBrowserApi(page);
-  await page.goto('/');
+  await page.goto(`/folders/${browserFixture.folder.id}`);
 
   const table = page.locator('table');
   await table.getByLabel(`Select ${browserFixture.source.title}`).check();

@@ -9,7 +9,7 @@ test('wraps and clamps long mobile note titles while preserving the full title',
   await page.goto(`/folders/${browserFixture.folder.id}`);
 
   const expectTitleClamp = async () => {
-    const titleNode = page.getByTitle(title);
+    const titleNode = page.getByTitle(title).filter({ visible: true });
     await expect(titleNode).toBeVisible();
 
     const metrics = await titleNode.evaluate((element) => {
@@ -42,6 +42,12 @@ test('wraps and clamps long mobile note titles while preserving the full title',
   };
 
   await expectTitleClamp();
+  await page.getByTitle(title).filter({ visible: true }).click();
+  await expect(page.locator('.cm-content')).toBeVisible();
   await page.goto('/');
-  await expectTitleClamp();
+  // Home uses compact links rather than folder cards, retaining the full title on hover.
+  const recentTitle = page.getByRole('region', { name: 'Recently opened notes' }).getByTitle(title);
+  await expect(recentTitle).toBeVisible();
+  await expect(recentTitle).toHaveCSS('text-overflow', 'ellipsis');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

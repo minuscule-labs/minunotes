@@ -481,6 +481,12 @@ export async function mockBrowserApi(
     }
 
     if (path === '/collaborations/shared-with-me' && method === 'GET') {
+      // Match the typed discovery endpoint's real pagination contract.
+      if (url.searchParams.has('type')) {
+        const limit = Number(url.searchParams.get('limit') ?? 25);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+          return json({ error: 'Limit must be between 1 and 50' }, 400);
+      }
       const collaborations = options.includeSharedCollaborations
         ? [
             {

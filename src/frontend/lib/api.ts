@@ -906,14 +906,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ folderIds, snapshot }),
     }),
-  folderDetail: (folderId: string) =>
+  folderDetail: (folderId: string, fresh = false) =>
     request<{
       folder: Folder;
       ancestors: Folder[];
       childFolders: Folder[];
       access: CollaborationAccess;
       sharedBy: CollaborationIdentity | null;
-    }>(`/folders/${folderId}/detail`),
+    }>(`/folders/${encodeURIComponent(folderId)}/detail`, fresh ? { cache: 'no-store' } : undefined),
   notes: (
     folderId: string,
     type: NoteType = 'note',
@@ -937,7 +937,8 @@ export const api = {
     folderId: string,
     data?: { title?: string; content?: string; type?: NoteType; documentType?: DocumentType }
   ) => request<{ note: Note }>(`/folders/${folderId}/notes`, { method: 'POST', body: JSON.stringify(data ?? {}) }),
-  note: (noteId: string) => request<NoteResponse>(`/notes/${noteId}`),
+  note: (noteId: string, fresh = false) =>
+    request<NoteResponse>(`/notes/${encodeURIComponent(noteId)}`, fresh ? { cache: 'no-store' } : undefined),
   noteStatus: (noteId: string) => request<NoteStatus>(`/notes/${noteId}/status`),
   noteComments: (noteId: string) => request<NoteCommentsResponse>(`/notes/${noteId}/comments`),
   createCommentThread: (noteId: string, data: { body: string; anchor: CommentAnchorInput }) =>

@@ -33,6 +33,7 @@ import {
   resolveFolderEntryView,
   storeFolderViewPreference,
 } from '../lib/folder-view-preferences';
+import { usePersonalVisit } from '../lib/use-personal-visit';
 import { rootRoute } from './__root';
 
 function folderDepth(folder: Folder, folders: Folder[]) {
@@ -562,6 +563,12 @@ function FolderViewContent({
     (deniedDetail?.userId === userId &&
       deniedDetail.folderId === folderId &&
       (deniedDetail.source === 'notes' || folderReadAt <= deniedDetail.readAt));
+  usePersonalVisit(
+    userId,
+    'folder',
+    folderId,
+    Boolean(folderDetail?.folder.id === folderId && !folderLoading && !folderAccessDenied)
+  );
   useEffect(() => {
     if (accessFailure) {
       setDeniedDetail((current) =>
